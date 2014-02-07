@@ -404,9 +404,9 @@ ISurfaceAllocator::PlatformAllocSurfaceDescriptor(const gfx::IntSize& aSize,
 
   if (!checkedDevice) {
     char propValue[PROPERTY_VALUE_MAX];
-    property_get("ro.product.manufacturer", propValue, "None");
+    property_get("ro.product.device", propValue, "None");
 
-    if (strcmp("Amazon",propValue) == 0) {
+    if (strcmp("tate",propValue) == 0) {
       NS_WARNING("SGX540 has issues with gralloc, falling back to shmem");
       disableGralloc = true;
     }
