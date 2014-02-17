@@ -364,7 +364,7 @@ DisableBatteryNotifications()
 static bool
 GetCurrentBatteryCharge(int* aCharge)
 {
-  bool success = ReadSysFile("/sys/class/power_supply/battery/capacity",
+  bool success = ReadSysFile("/sys/class/power_supply/bq27541/capacity",
                              aCharge);
   if (!success) {
     return false;
@@ -390,7 +390,7 @@ GetCurrentBatteryCharging(int* aCharging)
 
   int chargingSrc;
   bool success =
-    ReadSysFile("/sys/class/power_supply/battery/charging_source", &chargingSrc);
+    ReadSysFile("/sys/class/power_supply/bq27541/charging_source", &chargingSrc);
 
   if (success) {
     #ifdef DEBUG
@@ -410,7 +410,7 @@ GetCurrentBatteryCharging(int* aCharging)
 
   char chargingSrcString[16];
 
-  success = ReadSysFile("/sys/class/power_supply/battery/status",
+  success = ReadSysFile("/sys/class/power_supply/bq27541/status",
                         chargingSrcString, sizeof(chargingSrcString));
   if (success) {
     *aCharging = strcmp(chargingSrcString, "Charging") == 0 ||
