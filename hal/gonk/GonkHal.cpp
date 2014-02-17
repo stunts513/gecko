@@ -364,7 +364,7 @@ DisableBatteryNotifications()
 static bool
 GetCurrentBatteryCharge(int* aCharge)
 {
-  bool success = ReadSysFile("/sys/class/power_supply/bq2754/capacity",
+  bool success = ReadSysFile("/sys/class/power_supply/bq27541/capacity",
                              aCharge);
   if (!success) {
     return false;
