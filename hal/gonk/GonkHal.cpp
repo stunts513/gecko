@@ -311,7 +311,7 @@ public:
     // e.g. DEVPATH=/devices/platform/sec-battery/power_supply/battery
     const char *devpath = event->findParam("DEVPATH");
     if (strcmp(subsystem, "power_supply") == 0 &&
-        strstr(devpath, "battery")) {
+        strstr(devpath, "bq27541")) {
       // aEvent will be valid only in this method.
       NS_DispatchToMainThread(mUpdater);
     }
