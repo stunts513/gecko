@@ -33,6 +33,81 @@ typedef ScopedPtr<CERTCertList, CERT_DestroyCertList> ScopedCERTCertList;
 typedef ScopedPtr<SECKEYPublicKey, SECKEY_DestroyPublicKey>
         ScopedSECKEYPublicKey;
 
+typedef unsigned int KeyUsages;
+
+enum EndEntityOrCA { MustBeEndEntity, MustBeCA };
+
+// Applications control the behavior of path building and verification by
+// implementing the TrustDomain interface. The TrustDomain is used for all
+// cryptography and for determining which certificates are trusted or
+// distrusted.
+class TrustDomain
+{
+public:
+  virtual ~TrustDomain() { }
+
+  enum TrustLevel {
+    TrustAnchor = 1,        // certificate is a trusted root CA certificate or
+                            // equivalent *for the given policy*.
+    ActivelyDistrusted = 2, // certificate is known to be bad
+    InheritsTrust = 3       // certificate must chain to a trust anchor
+  };
+
+  // Determine the level of trust in the given certificate for the given role.
+  // This will be called for every certificate encountered during path
+  // building.
+  //
+  // When policy == SEC_OID_X509_ANY_POLICY, then no policy-related checking
+  // should be done. When policy != SEC_OID_X509_ANY_POLICY, then GetCertTrust
+  // MUST NOT return with *trustLevel == TrustAnchor unless the given cert is
+  // considered a trust anchor *for that policy*. In particular, if the user
+  // has marked an intermediate certificate as trusted, but that intermediate
+  // isn't in the list of EV roots, then GetCertTrust must result in
+  // *trustLevel == InheritsTrust instead of *trustLevel == TrustAnchor
+  // (assuming the candidate cert is not actively distrusted).
+  virtual SECStatus GetCertTrust(EndEntityOrCA endEntityOrCA,
+                                 SECOidTag policy,
+                                 const CERTCertificate* candidateCert,
+                         /*out*/ TrustLevel* trustLevel) = 0;
+
+  // Find all certificates (intermediate and/or root) in the certificate
+  // database that have a subject name matching |encodedIssuerName| at
+  // the given time. Certificates where the given time is not within the
+  // certificate's validity period may be excluded. On input, |results|
+  // will be null on input. If no potential issuers are found, then this
+  // function should return SECSuccess with results being either null or
+  // an empty list. Otherwise, this function should construct a
+  // CERTCertList and return it in |results|, transfering ownership.
+  virtual SECStatus FindPotentialIssuers(const SECItem* encodedIssuerName,
+                                         PRTime time,
+                                 /*out*/ ScopedCERTCertList& results) = 0;
+
+  // Verify the given signature using the public key of the given certificate.
+  // The implementation should be careful to ensure that the given certificate
+  // has all the public key information needed--i.e. it should ensure that the
+  // certificate is not trying to use EC(DSA) parameter inheritance.
+  //
+  // Most implementations of this function should probably forward the call
+  // directly to insanity::pkix::VerifySignedData.
+  virtual SECStatus VerifySignedData(const CERTSignedData* signedData,
+                                     const CERTCertificate* cert) = 0;
+
+  // issuerCertToDup is only non-const so CERT_DupCertificate can be called on
+  // it.
+  virtual SECStatus CheckRevocation(EndEntityOrCA endEntityOrCA,
+                                    const CERTCertificate* cert,
+                          /*const*/ CERTCertificate* issuerCertToDup,
+                                    PRTime time,
+                       /*optional*/ const SECItem* stapledOCSPresponse) = 0;
+
+protected:
+  TrustDomain() { }
+
+private:
+  TrustDomain(const TrustDomain&) /* = delete */;
+  void operator=(const TrustDomain&) /* = delete */;
+};
+
 } } // namespace insanity::pkix
 
 #endif // insanity_pkix__pkixtypes_h

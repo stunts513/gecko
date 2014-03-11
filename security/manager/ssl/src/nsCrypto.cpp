@@ -70,6 +70,7 @@
 #include "certdb.h"
 #include "secmod.h"
 #include "ScopedNSSTypes.h"
+#include "insanity/pkixtypes.h"
 
 #include "ssl.h" // For SSL_ClearSessionCache
 
@@ -2206,11 +2207,8 @@ nsCryptoRunnable::Run()
   JSAutoCompartment ac(cx, m_args->m_scope);
 
   bool ok =
-    JS_EvaluateScriptForPrincipals(cx, m_args->m_scope,
-                                   nsJSPrincipals::get(m_args->m_principals),
-                                   m_args->m_jsCallback, 
-                                   strlen(m_args->m_jsCallback),
-                                   nullptr, 0, nullptr);
+    JS_EvaluateScript(cx, m_args->m_scope, m_args->m_jsCallback, 
+                      strlen(m_args->m_jsCallback), nullptr, 0, nullptr);
   return ok ? NS_OK : NS_ERROR_FAILURE;
 }
 
@@ -2384,9 +2382,10 @@ nsCrypto::ImportUserCertificates(const nsAString& aNickname,
 
   //Import the root chain into the cert db.
  {
-  ScopedCERTCertList caPubs(CMMF_CertRepContentGetCAPubs(certRepContent));
+  insanity::pkix::ScopedCERTCertList
+    caPubs(CMMF_CertRepContentGetCAPubs(certRepContent));
   if (caPubs) {
-    int32_t numCAs = nsCertListCount(caPubs);
+    int32_t numCAs = nsCertListCount(caPubs.get());
     
     NS_ASSERTION(numCAs > 0, "Invalid number of CA's");
     if (numCAs > 0) {

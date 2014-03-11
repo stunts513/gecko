@@ -95,6 +95,7 @@ SetStrokeOptions(CGContextRef cg, const StrokeOptions &aStrokeOptions)
 class DrawTargetCG : public DrawTarget
 {
 public:
+  MOZ_DECLARE_REFCOUNTED_VIRTUAL_TYPENAME(DrawTargetCG)
   friend class BorrowedCGContext;
   DrawTargetCG();
   virtual ~DrawTargetCG();
@@ -154,7 +155,6 @@ public:
 
   virtual IntSize GetSize() { return mSize; }
 
-  virtual void SetPermitSubpixelAA(bool aPermitSubpixelAA) MOZ_OVERRIDE;
 
   /* This is for creating good compatible surfaces */
   virtual TemporaryRef<SourceSurface> CreateSourceSurfaceFromData(unsigned char *aData,

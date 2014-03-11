@@ -177,8 +177,10 @@ CacheFile::~CacheFile()
   LOG(("CacheFile::~CacheFile() [this=%p]", this));
 
   MutexAutoLock lock(mLock);
-  if (!mMemoryOnly)
+  if (!mMemoryOnly && mReady) {
+    // mReady flag indicates we have metadata plus in a valid state.
     WriteMetadataIfNeededLocked(true);
+  }
 }
 
 nsresult
@@ -743,13 +745,18 @@ CacheFile::ThrowMemoryCachedData()
 }
 
 nsresult
-CacheFile::GetElement(const char *aKey, const char **_retval)
+CacheFile::GetElement(const char *aKey, char **_retval)
 {
   CacheFileAutoLock lock(this);
   MOZ_ASSERT(mMetadata);
   NS_ENSURE_TRUE(mMetadata, NS_ERROR_UNEXPECTED);
 
-  *_retval = mMetadata->GetElement(aKey);
+  const char *value;
+  value = mMetadata->GetElement(aKey);
+  if (!value)
+    return NS_ERROR_NOT_AVAILABLE;
+
+  *_retval = NS_strdup(value);
   return NS_OK;
 }
 
@@ -1334,6 +1341,11 @@ CacheFile::WriteMetadataIfNeededLocked(bool aFireAndForget)
 
   AssertOwnsLock();
   MOZ_ASSERT(!mMemoryOnly);
+
+  if (!mMetadata) {
+    MOZ_CRASH("Must have metadata here");
+    return;
+  }
 
   if (!aFireAndForget) {
     // if aFireAndForget is set, we are called from dtor. Write

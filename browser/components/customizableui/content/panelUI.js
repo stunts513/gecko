@@ -33,6 +33,7 @@ const PanelUI = {
     };
   },
 
+  _initialized: false,
   init: function() {
     for (let [k, v] of Iterator(this.kElements)) {
       // Need to do fresh let-bindings per iteration
@@ -46,6 +47,9 @@ const PanelUI = {
 
     this.menuButton.addEventListener("mousedown", this);
     this.menuButton.addEventListener("keypress", this);
+    this._overlayScrollListenerBoundFn = this._overlayScrollListener.bind(this);
+    window.matchMedia("(-moz-overlay-scrollbars)").addListener(this._overlayScrollListenerBoundFn);
+    this._initialized = true;
   },
 
   _eventListenersAdded: false,
@@ -75,6 +79,8 @@ const PanelUI = {
     this.helpView.removeEventListener("ViewShowing", this._onHelpViewShow);
     this.menuButton.removeEventListener("mousedown", this);
     this.menuButton.removeEventListener("keypress", this);
+    window.matchMedia("(-moz-overlay-scrollbars)").removeListener(this._overlayScrollListenerBoundFn);
+    this._overlayScrollListenerBoundFn = null;
   },
 
   /**
@@ -119,16 +125,23 @@ const PanelUI = {
    */
   show: function(aEvent) {
     let deferred = Promise.defer();
-    if (this.panel.state == "open" ||
-        document.documentElement.hasAttribute("customizing")) {
-      deferred.resolve();
-      return deferred.promise;
-    }
 
     this.ensureReady().then(() => {
+      if (this.panel.state == "open" ||
+          document.documentElement.hasAttribute("customizing")) {
+        deferred.resolve();
+        return;
+      }
+
       let editControlPlacement = CustomizableUI.getPlacementOfWidget("edit-controls");
       if (editControlPlacement && editControlPlacement.area == CustomizableUI.AREA_PANEL) {
         updateEditUIVisibility();
+      }
+
+      let personalBookmarksPlacement = CustomizableUI.getPlacementOfWidget("personal-bookmarks");
+      if (personalBookmarksPlacement &&
+          personalBookmarksPlacement.area == CustomizableUI.AREA_PANEL) {
+        PlacesToolbarHelper.customizeChange();
       }
 
       let anchor;
@@ -141,10 +154,14 @@ const PanelUI = {
       let iconAnchor =
         document.getAnonymousElementByAttribute(anchor, "class",
                                                 "toolbarbutton-icon");
-      this.panel.openPopup(iconAnchor || anchor, "bottomcenter topright");
+      this.panel.openPopup(iconAnchor || anchor);
 
       this.panel.addEventListener("popupshown", function onPopupShown() {
         this.removeEventListener("popupshown", onPopupShown);
+        // As an optimization for the customize mode transition, we preload
+        // about:customizing in the background once the menu panel is first
+        // shown.
+        gCustomizationTabPreloader.ensurePreloading();
         deferred.resolve();
       });
     });
@@ -201,6 +218,18 @@ const PanelUI = {
       return this._readyPromise;
     }
     this._readyPromise = Task.spawn(function() {
+      if (!this._initialized) {
+        let delayedStartupDeferred = Promise.defer();
+        let delayedStartupObserver = (aSubject, aTopic, aData) => {
+          if (aSubject == window) {
+            Services.obs.removeObserver(delayedStartupObserver, "browser-delayed-startup-finished");
+            delayedStartupDeferred.resolve();
+          }
+        };
+        Services.obs.addObserver(delayedStartupObserver, "browser-delayed-startup-finished", false);
+        yield delayedStartupDeferred.promise;
+      }
+
       this.contents.setAttributeNS("http://www.w3.org/XML/1998/namespace", "lang",
                                    getLocale());
       if (!this._scrollWidth) {
@@ -295,7 +324,7 @@ const PanelUI = {
       tempPanel.setAttribute("type", "arrow");
       tempPanel.setAttribute("id", "customizationui-widget-panel");
       tempPanel.setAttribute("class", "cui-widget-panel");
-      tempPanel.setAttribute("level", "top");
+      tempPanel.setAttribute("context", "");
       document.getElementById(CustomizableUI.AREA_NAVBAR).appendChild(tempPanel);
       // If the view has a footer, set a convenience class on the panel.
       tempPanel.classList.toggle("cui-widget-panelWithFooter",
@@ -303,6 +332,7 @@ const PanelUI = {
 
       let multiView = document.createElement("panelmultiview");
       tempPanel.appendChild(multiView);
+      multiView.setAttribute("mainViewIsSubView", "true");
       multiView.setMainView(viewNode);
       viewNode.classList.add("cui-widget-panelview");
       CustomizableUI.addPanelCloseListeners(tempPanel);
@@ -326,22 +356,6 @@ const PanelUI = {
 
       tempPanel.openPopup(iconAnchor || aAnchor, "bottomcenter topright");
     }
-  },
-
-  /**
-   * This function can be used as a command event listener for subviews
-   * so that the panel knows if and when to close itself.
-   */
-  onCommandHandler: function(aEvent) {
-    let closemenu = aEvent.originalTarget.getAttribute("closemenu");
-    if (closemenu == "none") {
-      return;
-    }
-    if (closemenu == "single") {
-      this.showMainView();
-      return;
-    }
-    this.hide();
   },
 
   /**
@@ -432,6 +446,12 @@ const PanelUI = {
     let quitButton = document.getElementById("PanelUI-quit");
     quitButton.setAttribute("tooltiptext", tooltipString);
 #endif
+  },
+
+  _overlayScrollListenerBoundFn: null,
+  _overlayScrollListener: function(aMQL) {
+    ScrollbarSampler.resetSystemScrollbarWidth();
+    this._scrollWidth = null;
   },
 };
 

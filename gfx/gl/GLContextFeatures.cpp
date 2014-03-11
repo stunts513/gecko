@@ -112,6 +112,27 @@ static const FeatureInfo sFeatureInfoArr[] = {
         }
     },
     {
+        // Removes clamping for float color outputs from frag shaders.
+        "frag_color_float",
+        300, // OpenGL version
+        300, // OpenGL ES version
+        {
+            GLContext::ARB_color_buffer_float,
+            GLContext::EXT_color_buffer_float,
+            GLContext::EXT_color_buffer_half_float,
+            GLContext::Extensions_End
+        }
+    },
+    {
+        "frag_depth",
+        200, // OpenGL version
+        300, // OpenGL ES version
+        {
+            GLContext::EXT_frag_depth,
+            GLContext::Extensions_End
+        }
+    },
+    {
         "framebuffer_blit",
         300, // OpenGL version
         300, // OpenGL ES version
@@ -244,6 +265,26 @@ static const FeatureInfo sFeatureInfoArr[] = {
          */
     },
     {
+        "renderbuffer_float",
+        300, // OpenGL version
+        300, // OpenGL ES version
+        {
+            GLContext::ARB_texture_float,
+            GLContext::EXT_color_buffer_float,
+            GLContext::Extensions_End
+        }
+    },
+    {
+        "renderbuffer_half_float",
+        300, // OpenGL version
+        300, // OpenGL ES version
+        {
+            GLContext::ARB_texture_float,
+            GLContext::EXT_color_buffer_half_float,
+            GLContext::Extensions_End
+        }
+    },
+    {
         "robustness",
         0,   // OpenGL version
         0,   // OpenGL ES version
@@ -273,7 +314,7 @@ static const FeatureInfo sFeatureInfoArr[] = {
     },
     {
         "texture_float",
-        310, // OpenGL version
+        300, // OpenGL version
         300, // OpenGL ES version
         {
             GLContext::ARB_texture_float,
@@ -293,9 +334,10 @@ static const FeatureInfo sFeatureInfoArr[] = {
     },
     {
         "texture_half_float",
-        310, // OpenGL version
+        300, // OpenGL version
         300, // OpenGL ES version
         {
+            GLContext::ARB_half_float_pixel,
             GLContext::ARB_texture_float,
             GLContext::NV_half_float,
             GLContext::Extensions_End
@@ -308,6 +350,18 @@ static const FeatureInfo sFeatureInfoArr[] = {
          *   GL_HALF_FLOAT_OES = 0x8D61 != GL_HALF_FLOAT
          * WebGL handles this specifically with an OES_texture_half_float check.
          */
+    },
+    {
+        "texture_half_float_linear",
+        310, // OpenGL version
+        300, // OpenGL ES version
+        {
+            GLContext::ARB_half_float_pixel,
+            GLContext::ARB_texture_float,
+            GLContext::NV_half_float,
+            GLContext::OES_texture_half_float_linear,
+            GLContext::Extensions_End
+        }
     },
     {
         "texture_non_power_of_two",

@@ -5,25 +5,21 @@
 
 package org.mozilla.gecko.webapp;
 
+import java.util.ArrayList;
+
 import org.mozilla.gecko.GeckoAppShell;
-import org.mozilla.gecko.util.ThreadUtils;
 
 import android.content.Context;
 import android.content.SharedPreferences;
-import android.content.SharedPreferences.Editor;
-
-import java.util.ArrayList;
-
-import android.util.Log;
 
 public class Allocator {
 
-    private final String LOGTAG = "GeckoWebAppAllocator";
+    private final String LOGTAG = "GeckoWebappAllocator";
 
     private static final String PREFIX_ORIGIN = "webapp-origin-";
     private static final String PREFIX_PACKAGE_NAME = "webapp-package-name-";
 
-    // The number of WebApp# and WEBAPP# activites/apps/intents
+    // The number of Webapp# and WEBAPP# activities/apps/intents
     private final static int MAX_WEB_APPS = 100;
 
     protected static Allocator sInstance = null;

@@ -127,7 +127,7 @@ typedef NTSTATUS (NTAPI *NtFlushBuffersFileFn)(
   OUT   PIO_STATUS_BLOCK        aIoStatusBlock
 );
 
-typedef struct FILE_NETWORK_OPEN_INFORMATION* PFILE_NETWORK_OPEN_INFORMATION;
+typedef struct _FILE_NETWORK_OPEN_INFORMATION* PFILE_NETWORK_OPEN_INFORMATION;
 /**
  * Function pointer delaration for internal NT routine to query file attributes.
  * (equivalent to stat)
@@ -244,13 +244,13 @@ static NTSTATUS NTAPI InterposedNtCreateFile(
 )
 {
   // Report IO
-  char16_t* buf = aObjectAttributes ?
-                    aObjectAttributes->ObjectName->Buffer :
-                    MOZ_UTF16("");
+  const wchar_t* buf = aObjectAttributes ?
+                         aObjectAttributes->ObjectName->Buffer :
+                         L"";
   uint32_t len = aObjectAttributes ?
                    aObjectAttributes->ObjectName->Length / sizeof(WCHAR) :
                    0;
-  nsDependentString filename(buf, len);
+  nsDependentSubstring filename(buf, len);
   WinIOAutoObservation timer(IOInterposeObserver::OpCreateOrOpen, filename);
 
   // Something is badly wrong if this function is undefined
@@ -423,13 +423,13 @@ static NTSTATUS NTAPI InterposedNtQueryFullAttributesFile(
   PFILE_NETWORK_OPEN_INFORMATION  aFileInformation)
 {
   // Report IO
-  char16_t* buf = aObjectAttributes ?
-                    aObjectAttributes->ObjectName->Buffer :
-                    MOZ_UTF16("");
+  const wchar_t* buf = aObjectAttributes ?
+                         aObjectAttributes->ObjectName->Buffer :
+                         L"";
   uint32_t len = aObjectAttributes ?
                    aObjectAttributes->ObjectName->Length / sizeof(WCHAR) :
                    0;
-  nsDependentString filename(buf, len);
+  nsDependentSubstring filename(buf, len);
   WinIOAutoObservation timer(IOInterposeObserver::OpStat, filename);
 
   // Something is badly wrong if this function is undefined

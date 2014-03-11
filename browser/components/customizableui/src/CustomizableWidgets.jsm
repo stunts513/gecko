@@ -18,6 +18,8 @@ XPCOMUtils.defineLazyModuleGetter(this, "RecentlyClosedTabsAndWindowsMenuUtils",
   "resource:///modules/sessionstore/RecentlyClosedTabsAndWindowsMenuUtils.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "ShortcutUtils",
   "resource://gre/modules/ShortcutUtils.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "CharsetMenu",
+  "resource://gre/modules/CharsetMenu.jsm");
 XPCOMUtils.defineLazyServiceGetter(this, "CharsetManager",
                                    "@mozilla.org/charset-converter-manager;1",
                                    "nsICharsetConverterManager");
@@ -66,7 +68,7 @@ function setAttributes(aNode, aAttrs) {
 
 function updateCombinedWidgetStyle(aNode, aArea, aModifyCloseMenu) {
   let inPanel = (aArea == CustomizableUI.AREA_PANEL);
-  let cls = inPanel ? "panel-combined-button" : "toolbarbutton-1";
+  let cls = inPanel ? "panel-combined-button" : "toolbarbutton-1 toolbarbutton-combined";
   let attrs = {class: cls};
   if (aModifyCloseMenu) {
     attrs.closemenu = inPanel ? "none" : null;
@@ -123,9 +125,6 @@ const CustomizableWidgets = [{
               item.setAttribute("label", title || uri);
               item.setAttribute("targetURI", uri);
               item.setAttribute("class", "subviewbutton");
-              item.addEventListener("command", function (aEvent) {
-                onHistoryVisit(uri, aEvent, item);
-              });
               item.addEventListener("click", function (aEvent) {
                 onHistoryVisit(uri, aEvent, item);
               });
@@ -191,6 +190,19 @@ const CustomizableWidgets = [{
         windowsFragment.children[elementCount].classList.add("subviewbutton");
       }
       recentlyClosedWindows.appendChild(windowsFragment);
+    },
+    onCreated: function(aNode) {
+      // Middle clicking recently closed items won't close the panel - cope:
+      let onRecentlyClosedClick = function(aEvent) {
+        if (aEvent.button == 1) {
+          CustomizableUI.hidePanelForNode(this);
+        }
+      };
+      let doc = aNode.ownerDocument;
+      let recentlyClosedTabs = doc.getElementById("PanelUI-recentlyClosedTabs");
+      let recentlyClosedWindows = doc.getElementById("PanelUI-recentlyClosedWindows");
+      recentlyClosedTabs.addEventListener("click", onRecentlyClosedClick);
+      recentlyClosedWindows.addEventListener("click", onRecentlyClosedClick);
     },
     onViewHiding: function(aEvent) {
       LOG("History view is being hidden!");
@@ -331,7 +343,7 @@ const CustomizableWidgets = [{
     tooltiptext: "preferences-button.tooltiptext.withshortcut",
     shortcutId: "key_preferencesCmdMac",
 #else
-    tooltiptext: "preferences-button.tooltiptext",
+    tooltiptext: "preferences-button.tooltiptext2",
 #endif
 #endif
     onCommand: function(aEvent) {
@@ -352,7 +364,7 @@ const CustomizableWidgets = [{
       let inPanel = areaType == CustomizableUI.TYPE_MENU_PANEL;
       let inToolbar = areaType == CustomizableUI.TYPE_TOOLBAR;
       let closeMenu = inPanel ? "none" : null;
-      let cls = inPanel ? "panel-combined-button" : "toolbarbutton-1";
+      let cls = inPanel ? "panel-combined-button" : "toolbarbutton-1 toolbarbutton-combined";
 
       if (!this.currentArea)
         cls = null;
@@ -384,6 +396,7 @@ const CustomizableWidgets = [{
 
       let node = aDocument.createElementNS(kNSXUL, "toolbaritem");
       node.setAttribute("id", "zoom-controls");
+      node.setAttribute("label", CustomizableUI.getLocalizedProperty(this, "label"));
       node.setAttribute("title", CustomizableUI.getLocalizedProperty(this, "tooltiptext"));
       // Set this as an attribute in addition to the property to make sure we can style correctly.
       node.setAttribute("removable", "true");
@@ -403,6 +416,11 @@ const CustomizableWidgets = [{
       let zoomResetButton = node.childNodes[2];
       let window = aDocument.defaultView;
       function updateZoomResetButton() {
+        let updateDisplay = true;
+        // Label should always show 100% in customize mode, so don't update:
+        if (aDocument.documentElement.hasAttribute("customizing")) {
+          updateDisplay = false;
+        }
         //XXXgijs in some tests we get called very early, and there's no docShell on the
         // tabbrowser. This breaks the zoom toolkit code (see bug 897410). Don't let that happen:
         let zoomFactor = 100;
@@ -410,7 +428,7 @@ const CustomizableWidgets = [{
           zoomFactor = Math.floor(window.ZoomManager.zoom * 100);
         } catch (e) {}
         zoomResetButton.setAttribute("label", CustomizableUI.getLocalizedProperty(
-          buttons[1], "label", [zoomFactor]
+          buttons[1], "label", [updateDisplay ? zoomFactor : 100]
         ));
       };
 
@@ -495,6 +513,18 @@ const CustomizableWidgets = [{
           container.removeEventListener("TabSelect", updateZoomResetButton);
         }.bind(this),
 
+        onCustomizeStart: function(aWindow) {
+          if (aWindow.document == aDocument) {
+            updateZoomResetButton();
+          }
+        },
+
+        onCustomizeEnd: function(aWindow) {
+          if (aWindow.document == aDocument) {
+            updateZoomResetButton();
+          }
+        },
+
         onWidgetDrag: function(aWidgetId, aArea) {
           if (aWidgetId != this.id)
             return;
@@ -512,7 +542,7 @@ const CustomizableWidgets = [{
     defaultArea: CustomizableUI.AREA_PANEL,
     onBuild: function(aDocument) {
       let inPanel = (this.currentArea == CustomizableUI.AREA_PANEL);
-      let cls = inPanel ? "panel-combined-button" : "toolbarbutton-1";
+      let cls = inPanel ? "panel-combined-button" : "toolbarbutton-1 toolbarbutton-combined";
 
       if (!this.currentArea)
         cls = null;
@@ -542,6 +572,7 @@ const CustomizableWidgets = [{
 
       let node = aDocument.createElementNS(kNSXUL, "toolbaritem");
       node.setAttribute("id", "edit-controls");
+      node.setAttribute("label", CustomizableUI.getLocalizedProperty(this, "label"));
       node.setAttribute("title", CustomizableUI.getLocalizedProperty(this, "tooltiptext"));
       // Set this as an attribute in addition to the property to make sure we can style correctly.
       node.setAttribute("removable", "true");
@@ -653,115 +684,60 @@ const CustomizableWidgets = [{
                window.gBrowser.docShell &&
                window.gBrowser.docShell.mayEnableCharacterEncodingMenu);
     },
-    getCharsetList: function(aSection, aDocument) {
-      let currCharset = aDocument.defaultView.content.document.characterSet;
-
-      let list = "";
-      try {
-        let pref = "intl.charsetmenu.browser." + aSection;
-        list = Services.prefs.getComplexValue(pref,
-                                              Ci.nsIPrefLocalizedString).data;
-      } catch (e) {}
-
-      list = list.trim();
-      if (!list)
-        return [];
-
-      list = list.split(",");
-
-      let items = [];
-      for (let charset of list) {
-        charset = charset.trim();
-
-        let notForBrowser = false;
-        try {
-          notForBrowser = CharsetManager.getCharsetData(charset,
-                                                        "notForBrowser");
-        } catch (e) {}
-
-        if (notForBrowser)
-          continue;
-
-        let title = charset;
-        try {
-          title = CharsetManager.getCharsetTitle(charset);
-        } catch (e) {}
-
-        items.push({value: charset, name: title, current: charset == currCharset});
-      }
-
-      return items;
-    },
-    getAutoDetectors: function(aDocument) {
-      let detectorEnum = CharsetManager.GetCharsetDetectorList();
-      let currDetector;
-      try {
-        currDetector = Services.prefs.getComplexValue(
-          "intl.charset.detector", Ci.nsIPrefLocalizedString).data;
-      } catch (e) {}
-      if (!currDetector)
-        currDetector = "off";
-      currDetector = "chardet." + currDetector;
-
-      let items = [];
-
-      while (detectorEnum.hasMore()) {
-        let detector = detectorEnum.getNext();
-
-        let title = detector;
-        try {
-          title = CharsetManager.getCharsetTitle(detector);
-        } catch (e) {}
-
-        items.push({value: detector, name: title, current: detector == currDetector});
-      }
-
-      items.sort((aItem1, aItem2) => {
-        return aItem1.name.localeCompare(aItem2.name);
-      });
-
-      return items;
-    },
     populateList: function(aDocument, aContainerId, aSection) {
       let containerElem = aDocument.getElementById(aContainerId);
 
-      while (containerElem.firstChild) {
-        containerElem.removeChild(containerElem.firstChild);
-      }
-
       containerElem.addEventListener("command", this.onCommand, false);
 
-      let list = [];
-      if (aSection == "autodetect") {
-        list = this.getAutoDetectors(aDocument);
-      } else if (aSection == "browser") {
-        let staticList = this.getCharsetList("static", aDocument);
-        let cacheList = this.getCharsetList("cache", aDocument);
-        // Combine lists, and de-duplicate.
-        let checkedIn = new Set();
-        for (let item of staticList.concat(cacheList)) {
-          let itemName = item.name.toLowerCase();
-          if (!checkedIn.has(itemName)) {
-            list.push(item);
-            checkedIn.add(itemName);
-          }
-        }
-      }
+      let list = this.charsetInfo[aSection];
 
-      // Update the appearance of the buttons when it's not possible to
-      // customize encoding.
-      let disabled = this.maybeDisableMenu(aDocument);
       for (let item of list) {
         let elem = aDocument.createElementNS(kNSXUL, "toolbarbutton");
-        elem.setAttribute("label", item.name);
+        elem.setAttribute("label", item.label);
+        elem.setAttribute("type", "checkbox");
         elem.section = aSection;
         elem.value = item.value;
-        if (item.current)
-          elem.setAttribute("current", "true");
-        if (disabled)
-          elem.setAttribute("disabled", "true");
         elem.setAttribute("class", "subviewbutton");
         containerElem.appendChild(elem);
+      }
+    },
+    updateCurrentCharset: function(aDocument) {
+      let content = aDocument.defaultView.content;
+      let currentCharset = content && content.document && content.document.characterSet;
+      currentCharset = CharsetMenu.foldCharset(currentCharset);
+
+      let pinnedContainer = aDocument.getElementById("PanelUI-characterEncodingView-pinned");
+      let charsetContainer = aDocument.getElementById("PanelUI-characterEncodingView-charsets");
+      let elements = [...(pinnedContainer.childNodes), ...(charsetContainer.childNodes)];
+
+      this._updateElements(elements, currentCharset);
+    },
+    updateCurrentDetector: function(aDocument) {
+      let detectorContainer = aDocument.getElementById("PanelUI-characterEncodingView-autodetect");
+      let currentDetector;
+      try {
+        currentDetector = Services.prefs.getComplexValue(
+          "intl.charset.detector", Ci.nsIPrefLocalizedString).data;
+      } catch (e) {}
+
+      this._updateElements(detectorContainer.childNodes, currentDetector);
+    },
+    _updateElements: function(aElements, aCurrentItem) {
+      if (!aElements.length) {
+        return;
+      }
+      let disabled = this.maybeDisableMenu(aElements[0].ownerDocument);
+      for (let elem of aElements) {
+        if (disabled) {
+          elem.setAttribute("disabled", "true");
+        } else {
+          elem.removeAttribute("disabled");
+        }
+        if (elem.value.toLowerCase() == aCurrentItem.toLowerCase()) {
+          elem.setAttribute("checked", "true");
+        } else {
+          elem.removeAttribute("checked");
+        }
       }
     },
     onViewShowing: function(aEvent) {
@@ -769,15 +745,21 @@ const CustomizableWidgets = [{
 
       let autoDetectLabelId = "PanelUI-characterEncodingView-autodetect-label";
       let autoDetectLabel = document.getElementById(autoDetectLabelId);
-      let label = CharsetBundle.GetStringFromName("charsetMenuAutodet");
-      autoDetectLabel.setAttribute("value", label);
-
-      this.populateList(document,
-                        "PanelUI-characterEncodingView-customlist",
-                        "browser");
-      this.populateList(document,
-                        "PanelUI-characterEncodingView-autodetect",
-                        "autodetect");
+      if (!autoDetectLabel.hasAttribute("value")) {
+        let label = CharsetBundle.GetStringFromName("charsetMenuAutodet");
+        autoDetectLabel.setAttribute("value", label);
+        this.populateList(document,
+                          "PanelUI-characterEncodingView-pinned",
+                          "pinnedCharsets");
+        this.populateList(document,
+                          "PanelUI-characterEncodingView-charsets",
+                          "otherCharsets");
+        this.populateList(document,
+                          "PanelUI-characterEncodingView-autodetect",
+                          "detectors");
+      }
+      this.updateCurrentDetector(document);
+      this.updateCurrentCharset(document);
     },
     onCommand: function(aEvent) {
       let node = aEvent.target;
@@ -785,20 +767,15 @@ const CustomizableWidgets = [{
         return;
       }
 
-      CustomizableUI.hidePanelForNode(node);
       let window = node.ownerDocument.defaultView;
       let section = node.section;
       let value = node.value;
 
       // The behavior as implemented here is directly based off of the
       // `MultiplexHandler()` method in browser.js.
-      if (section == "browser") {
+      if (section != "detectors") {
         window.BrowserSetForcedCharacterSet(value);
-      } else if (section == "autodetect") {
-        value = value.replace(/^chardet\./, "");
-        if (value == "off") {
-          value = "";
-        }
+      } else {
         // Set the detector pref.
         try {
           let str = Cc["@mozilla.org/supports-string;1"]
@@ -840,6 +817,7 @@ const CustomizableWidgets = [{
         onWidgetRemoved: (aWidgetId, aPrevArea) => {
           if (aWidgetId != this.id)
             return;
+          aNode.removeAttribute("disabled");
           if (aPrevArea == CustomizableUI.AREA_PANEL) {
             let panel = document.getElementById(kPanelId);
             panel.removeEventListener("popupshowing", updateButton);
@@ -855,6 +833,9 @@ const CustomizableWidgets = [{
         }
       };
       CustomizableUI.addListener(listener);
+      if (!this.charsetInfo) {
+        this.charsetInfo = CharsetMenu.getData();
+      }
     }
   }, {
     id: "email-link-button",
@@ -867,7 +848,7 @@ const CustomizableWidgets = [{
 
 #ifdef XP_WIN
 #ifdef MOZ_METRO
-if (Services.sysinfo.getProperty("hasWindowsTouchInterface")) {
+if (Services.metro && Services.metro.supported) {
   let widgetArgs = {tooltiptext: "switch-to-metro-button2.tooltiptext"};
   let brandShortName = BrandBundle.GetStringFromName("brandShortName");
   let metroTooltip = CustomizableUI.getLocalizedProperty(widgetArgs, "tooltiptext",

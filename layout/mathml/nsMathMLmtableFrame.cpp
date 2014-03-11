@@ -7,7 +7,7 @@
 #include "nsPresContext.h"
 #include "nsStyleContext.h"
 #include "nsStyleConsts.h"
-#include "nsINameSpaceManager.h"
+#include "nsNameSpaceManager.h"
 #include "nsRenderingContext.h"
 #include "nsCSSRendering.h"
 
@@ -180,6 +180,55 @@ FindCellProperty(const nsIFrame* aCellFrame,
   return propertyData;
 }
 
+static void
+ApplyBorderToStyle(const nsMathMLmtdFrame* aFrame,
+                   nsStyleBorder& aStyleBorder)
+{
+  int32_t rowIndex;
+  int32_t columnIndex;
+  aFrame->GetRowIndex(rowIndex);
+  aFrame->GetColIndex(columnIndex);
+
+  nscoord borderWidth =
+    aFrame->PresContext()->GetBorderWidthTable()[NS_STYLE_BORDER_WIDTH_THIN];
+
+  nsTArray<int8_t>* rowLinesList =
+    FindCellProperty(aFrame, RowLinesProperty());
+
+  nsTArray<int8_t>* columnLinesList =
+    FindCellProperty(aFrame, ColumnLinesProperty());
+
+  // We don't place a row line on top of the first row
+  if (rowIndex > 0 && rowLinesList) {
+    // If the row number is greater than the number of provided rowline
+    // values, we simply repeat the last value.
+    int32_t listLength = rowLinesList->Length();
+    if (rowIndex < listLength) {
+      aStyleBorder.SetBorderStyle(NS_SIDE_TOP,
+                    rowLinesList->ElementAt(rowIndex - 1));
+    } else {
+      aStyleBorder.SetBorderStyle(NS_SIDE_TOP,
+                    rowLinesList->ElementAt(listLength - 1));
+    }
+    aStyleBorder.SetBorderWidth(NS_SIDE_TOP, borderWidth);
+  }
+
+  // We don't place a column line on the left of the first column.
+  if (columnIndex > 0 && columnLinesList) {
+    // If the column number is greater than the number of provided columline
+    // values, we simply repeat the last value.
+    int32_t listLength = columnLinesList->Length();
+    if (columnIndex < listLength) {
+      aStyleBorder.SetBorderStyle(NS_SIDE_LEFT,
+                    columnLinesList->ElementAt(columnIndex - 1));
+    } else {
+      aStyleBorder.SetBorderStyle(NS_SIDE_LEFT,
+                    columnLinesList->ElementAt(listLength - 1));
+    }
+    aStyleBorder.SetBorderWidth(NS_SIDE_LEFT, borderWidth);
+  }
+}
+
 /*
  * A variant of the nsDisplayBorder contains special code to render a border
  * around a nsMathMLmtdFrame based on the rowline and columnline properties
@@ -192,52 +241,17 @@ public:
   {
   }
 
+  virtual nsRect GetBounds(nsDisplayListBuilder* aBuilder, bool* aSnap) MOZ_OVERRIDE
+  {
+    nsStyleBorder styleBorder = *mFrame->StyleBorder();
+    ApplyBorderToStyle(static_cast<nsMathMLmtdFrame*>(mFrame), styleBorder);
+    return CalculateBounds(styleBorder);
+  }
+
   virtual void Paint(nsDisplayListBuilder* aBuilder, nsRenderingContext* aCtx) MOZ_OVERRIDE
   {
-    int32_t rowIndex;
-    int32_t columnIndex;
-    static_cast<nsTableCellFrame*>(mFrame)->
-      GetCellIndexes(rowIndex, columnIndex);
-
     nsStyleBorder styleBorder = *mFrame->StyleBorder();
-    nscoord borderWidth =
-      mFrame->PresContext()->GetBorderWidthTable()[NS_STYLE_BORDER_WIDTH_THIN];
-
-    nsTArray<int8_t>* rowLinesList =
-      FindCellProperty(mFrame, RowLinesProperty());
-
-    nsTArray<int8_t>* columnLinesList =
-      FindCellProperty(mFrame, ColumnLinesProperty());
-
-    // We don't place a row line on top of the first row
-    if (rowIndex > 0 && rowLinesList) {
-      // If the row number is greater than the number of provided rowline
-      // values, we simply repeat the last value.
-      int32_t listLength = rowLinesList->Length();
-      if (rowIndex < listLength) {
-        styleBorder.SetBorderStyle(NS_SIDE_TOP,
-                      rowLinesList->ElementAt(rowIndex - 1));
-      } else {
-        styleBorder.SetBorderStyle(NS_SIDE_TOP,
-                      rowLinesList->ElementAt(listLength - 1));
-      }
-      styleBorder.SetBorderWidth(NS_SIDE_TOP, borderWidth);
-    }
-
-    // We don't place a column line on the left of the first column.
-    if (columnIndex > 0 && columnLinesList) {
-      // If the column number is greater than the number of provided columline
-      // values, we simply repeat the last value.
-      int32_t listLength = columnLinesList->Length();
-      if (columnIndex < listLength) {
-        styleBorder.SetBorderStyle(NS_SIDE_LEFT,
-                      columnLinesList->ElementAt(columnIndex - 1));
-      } else {
-        styleBorder.SetBorderStyle(NS_SIDE_LEFT,
-                      columnLinesList->ElementAt(listLength - 1));
-      }
-      styleBorder.SetBorderWidth(NS_SIDE_LEFT, borderWidth);
-    }
+    ApplyBorderToStyle(static_cast<nsMathMLmtdFrame*>(mFrame), styleBorder);
 
     nsPoint offset = ToReferenceFrame();
     nsCSSRendering::PaintBorderWithStyleBorder(mFrame->PresContext(), *aCtx,
@@ -420,7 +434,7 @@ nsMathMLmtableOuterFrame::~nsMathMLmtableOuterFrame()
 {
 }
 
-NS_IMETHODIMP
+nsresult
 nsMathMLmtableOuterFrame::AttributeChanged(int32_t  aNameSpaceID,
                                            nsIAtom* aAttribute,
                                            int32_t  aModType)
@@ -531,7 +545,7 @@ nsMathMLmtableOuterFrame::GetRowFrameAt(nsPresContext* aPresContext,
   return nullptr;
 }
 
-NS_IMETHODIMP
+nsresult
 nsMathMLmtableOuterFrame::Reflow(nsPresContext*          aPresContext,
                                  nsHTMLReflowMetrics&     aDesiredSize,
                                  const nsHTMLReflowState& aReflowState,
@@ -649,7 +663,7 @@ nsMathMLmtableFrame::~nsMathMLmtableFrame()
 {
 }
 
-NS_IMETHODIMP
+nsresult
 nsMathMLmtableFrame::SetInitialChildList(ChildListID  aListID,
                                          nsFrameList& aChildList)
 {
@@ -686,7 +700,7 @@ nsMathMLmtrFrame::~nsMathMLmtrFrame()
 {
 }
 
-NS_IMETHODIMP
+nsresult
 nsMathMLmtrFrame::AttributeChanged(int32_t  aNameSpaceID,
                                    nsIAtom* aAttribute,
                                    int32_t  aModType)
@@ -771,7 +785,7 @@ nsMathMLmtdFrame::GetColSpan()
   return colspan;
 }
 
-NS_IMETHODIMP
+nsresult
 nsMathMLmtdFrame::AttributeChanged(int32_t  aNameSpaceID,
                                    nsIAtom* aAttribute,
                                    int32_t  aModType)
@@ -837,6 +851,16 @@ nsMathMLmtdFrame::ProcessBorders(nsTableFrame* aFrame,
                                             nsDisplaymtdBorder(aBuilder, this));
   return NS_OK;
 }
+
+nsMargin*
+nsMathMLmtdFrame::GetBorderWidth(nsMargin& aBorder) const
+{
+  nsStyleBorder styleBorder = *StyleBorder();
+  ApplyBorderToStyle(this, styleBorder);
+  aBorder = styleBorder.GetComputedBorder();
+  return &aBorder;
+}
+
 // --------
 // implementation of nsMathMLmtdInnerFrame
 
@@ -864,7 +888,7 @@ nsMathMLmtdInnerFrame::~nsMathMLmtdInnerFrame()
   mUniqueStyleText->Destroy(PresContext());
 }
 
-NS_IMETHODIMP
+nsresult
 nsMathMLmtdInnerFrame::Reflow(nsPresContext*          aPresContext,
                               nsHTMLReflowMetrics&     aDesiredSize,
                               const nsHTMLReflowState& aReflowState,

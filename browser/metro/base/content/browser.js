@@ -64,6 +64,7 @@ var Browser = {
       messageManager.loadFrameScript("chrome://browser/content/contenthandlers/SelectionHandler.js", true);
       messageManager.loadFrameScript("chrome://browser/content/contenthandlers/ContextMenuHandler.js", true);
       messageManager.loadFrameScript("chrome://browser/content/contenthandlers/ConsoleAPIObserver.js", true);
+      messageManager.loadFrameScript("chrome://browser/content/contenthandlers/PluginHelper.js", true);
     } catch (e) {
       // XXX whatever is calling startup needs to dump errors!
       dump("###########" + e + "\n");
@@ -163,7 +164,6 @@ var Browser = {
     messageManager.addMessageListener("scroll", this);
     messageManager.addMessageListener("Browser:CertException", this);
     messageManager.addMessageListener("Browser:BlockedSite", this);
-    messageManager.addMessageListener("Browser:TapOnSelection", this);
 
     Task.spawn(function() {
       // Activation URIs come from protocol activations, secondary tiles, and file activations
@@ -236,7 +236,6 @@ var Browser = {
     messageManager.removeMessageListener("scroll", this);
     messageManager.removeMessageListener("Browser:CertException", this);
     messageManager.removeMessageListener("Browser:BlockedSite", this);
-    messageManager.removeMessageListener("Browser:TapOnSelection", this);
 
     Services.obs.removeObserver(SessionHistoryObserver, "browser:purge-session-history");
 
@@ -866,16 +865,6 @@ var Browser = {
       case "Browser:BlockedSite":
         this._handleBlockedSite(aMessage);
         break;
-      case "Browser:TapOnSelection":
-        if (!InputSourceHelper.isPrecise) {
-          if (SelectionHelperUI.isActive) {
-            SelectionHelperUI.shutdown();
-          }
-          if (SelectionHelperUI.canHandle(aMessage)) {
-            SelectionHelperUI.openEditSession(aMessage);
-          }
-        }
-        break;
     }
   },
 };
@@ -1367,6 +1356,12 @@ Tab.prototype = {
         this.updateViewport();
         this._delayUpdateThumbnail();
         break;
+      case "AlertClose": {
+        if (this == Browser.selectedTab) {
+          this.updateViewport();
+        }
+        break;
+      }
     }
   },
 
@@ -1458,7 +1453,7 @@ Tab.prototype = {
     browser.id = "browser-" + this._id;
     this._chromeTab.linkedBrowser = browser;
 
-    browser.setAttribute("type", "content");
+    browser.setAttribute("type", "content-targetable");
 
     let useRemote = Services.appinfo.browserTabsRemote;
     let useLocal = Util.isLocalScheme(aURI);
@@ -1473,6 +1468,7 @@ Tab.prototype = {
     Elements.browsers.insertBefore(notification, aInsertBefore);
 
     notification.dir = "reverse";
+    notification.addEventListener("AlertClose", this);
 
      // let the content area manager know about this browser.
     ContentAreaObserver.onBrowserCreated(browser);
@@ -1494,6 +1490,7 @@ Tab.prototype = {
   _destroyBrowser: function _destroyBrowser() {
     if (this._browser) {
       let notification = this._notification;
+      notification.removeEventListener("AlertClose", this);
       let browser = this._browser;
       browser.active = false;
 
@@ -1532,7 +1529,7 @@ Tab.prototype = {
     } else {
       notification.classList.remove("active-tab-notificationbox");
       browser.messageManager.sendAsyncMessage("Browser:Blur", { });
-      browser.setAttribute("type", "content");
+      browser.setAttribute("type", "content-targetable");
       browser.active = false;
     }
   },

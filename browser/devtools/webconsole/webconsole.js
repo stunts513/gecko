@@ -15,7 +15,7 @@ loader.lazyServiceGetter(this, "clipboardHelper",
                          "nsIClipboardHelper");
 loader.lazyImporter(this, "Services", "resource://gre/modules/Services.jsm");
 loader.lazyImporter(this, "promise", "resource://gre/modules/Promise.jsm", "Promise");
-loader.lazyGetter(this, "EventEmitter", () => require("devtools/shared/event-emitter"));
+loader.lazyGetter(this, "EventEmitter", () => require("devtools/toolkit/event-emitter"));
 loader.lazyGetter(this, "AutocompletePopup",
                   () => require("devtools/shared/autocomplete-popup").AutocompletePopup);
 loader.lazyGetter(this, "ToolSidebar",
@@ -129,7 +129,8 @@ const LEVELS = {
   groupCollapsed: SEVERITY_LOG,
   groupEnd: SEVERITY_LOG,
   time: SEVERITY_LOG,
-  timeEnd: SEVERITY_LOG
+  timeEnd: SEVERITY_LOG,
+  count: SEVERITY_LOG
 };
 
 // The lowest HTTP response code (inclusive) that is considered an error.
@@ -143,6 +144,9 @@ const HISTORY_FORWARD = 1;
 
 // The indent of a console group in pixels.
 const GROUP_INDENT = 12;
+
+// The default indent in pixels, applied even without any groups.
+const GROUP_INDENT_DEFAULT = 6;
 
 // The number of messages to display in a single display update. If we display
 // too many messages at once we slow the Firefox UI too much.
@@ -533,12 +537,12 @@ WebConsoleFrame.prototype = {
     }
 
     let saveBodies = doc.getElementById("saveBodies");
-    saveBodies.addEventListener("click", reverseSaveBodiesPref);
+    saveBodies.addEventListener("command", reverseSaveBodiesPref);
     saveBodies.disabled = !this.getFilterState("networkinfo") &&
                           !this.getFilterState("network");
 
     let saveBodiesContextMenu = doc.getElementById("saveBodiesContextMenu");
-    saveBodiesContextMenu.addEventListener("click", reverseSaveBodiesPref);
+    saveBodiesContextMenu.addEventListener("command", reverseSaveBodiesPref);
     saveBodiesContextMenu.disabled = !this.getFilterState("networkinfo") &&
                                      !this.getFilterState("network");
 
@@ -562,7 +566,6 @@ WebConsoleFrame.prototype = {
 
     this.jsterm = new JSTerm(this);
     this.jsterm.init();
-    this.jsterm.inputNode.focus();
 
     let toolbox = gDevTools.getToolbox(this.owner.target);
     if (toolbox) {
@@ -576,8 +579,9 @@ WebConsoleFrame.prototype = {
      */
     this._addFocusCallback(this.outputNode, (evt) => {
       if ((evt.target.nodeName.toLowerCase() != "a") &&
-          (evt.target.parentNode.nodeName.toLowerCase() != "a"))
+          (evt.target.parentNode.nodeName.toLowerCase() != "a")) {
         this.jsterm.inputNode.focus();
+      }
     });
 
     // Toggle the timestamp on preference change
@@ -586,14 +590,17 @@ WebConsoleFrame.prototype = {
       pref: PREF_MESSAGE_TIMESTAMP,
       newValue: Services.prefs.getBoolPref(PREF_MESSAGE_TIMESTAMP),
     });
+
+    // focus input node
+    this.jsterm.inputNode.focus();
   },
 
   /**
    * Sets the focus to JavaScript input field when the web console tab is
-   * selected.
+   * selected or when there is a split console present.
    * @private
    */
-  _onPanelSelected: function WCF__onPanelSelected()
+  _onPanelSelected: function WCF__onPanelSelected(evt, id)
   {
     this.jsterm.inputNode.focus();
   },
@@ -1241,6 +1248,20 @@ WebConsoleFrame.prototype = {
         break;
       }
 
+      case "count": {
+        let counter = aMessage.counter;
+        if (!counter) {
+          return null;
+        }
+        if (counter.error) {
+          Cu.reportError(l10n.getStr(counter.error));
+          return null;
+        }
+        let msg = new Messages.ConsoleGeneric(aMessage);
+        node = msg.init(this.output).render().element;
+        break;
+      }
+
       default:
         Cu.reportError("Unknown Console API log level: " + level);
         return null;
@@ -1254,6 +1275,7 @@ WebConsoleFrame.prototype = {
       case "groupEnd":
       case "time":
       case "timeEnd":
+      case "count":
         for (let actor of objectActors) {
           this._releaseObject(actor);
         }
@@ -2118,13 +2140,8 @@ WebConsoleFrame.prototype = {
     }
     else {
       this._outputTimerInitialized = false;
-      if (this._flushCallback) {
-        try {
-          this._flushCallback();
-        }
-        catch (ex) {
-          console.error(ex);
-        }
+      if (this._flushCallback && this._flushCallback() === false) {
+        this._flushCallback = null;
       }
     }
 
@@ -2419,6 +2436,10 @@ WebConsoleFrame.prototype = {
     let iconContainer = this.document.createElementNS(XHTML_NS, "span");
     iconContainer.className = "icon";
 
+    // Apply the current group by indenting appropriately.
+    let iconMarginLeft = this.groupDepth * GROUP_INDENT + GROUP_INDENT_DEFAULT;
+    iconContainer.style.marginLeft = iconMarginLeft + "px";
+
     // Create the message body, which contains the actual text of the message.
     let bodyNode = this.document.createElementNS(XHTML_NS, "span");
     bodyNode.className = "body devtools-monospace";
@@ -2476,8 +2497,6 @@ WebConsoleFrame.prototype = {
     // Create the timestamp.
     let timestampNode = this.document.createElementNS(XHTML_NS, "span");
     timestampNode.className = "timestamp devtools-monospace";
-    // Apply the current group by indenting appropriately.
-    timestampNode.style.marginRight = this.groupDepth * GROUP_INDENT + "px";
 
     let timestampString = l10n.timestampString(timestamp);
     timestampNode.textContent = timestampString + " ";
@@ -2652,12 +2671,12 @@ WebConsoleFrame.prototype = {
       let mousedown = this._mousedown;
       this._mousedown = false;
 
+      aEvent.preventDefault();
+
       // Do not allow middle/right-click or 2+ clicks.
       if (aEvent.detail != 1 || aEvent.button != 0) {
         return;
       }
-
-      aEvent.preventDefault();
 
       // If this event started with a mousedown event and it ends at a different
       // location, we consider this text selection.
@@ -3083,14 +3102,22 @@ JSTerm.prototype = {
                                                    autocompleteOptions);
 
     let doc = this.hud.document;
+    let inputContainer = doc.querySelector(".jsterm-input-container");
     this.completeNode = doc.querySelector(".jsterm-complete-node");
     this.inputNode = doc.querySelector(".jsterm-input-node");
-    this.inputNode.addEventListener("keypress", this._keyPress, false);
-    this.inputNode.addEventListener("input", this._inputEventHandler, false);
-    this.inputNode.addEventListener("keyup", this._inputEventHandler, false);
-    this.inputNode.addEventListener("focus", this._focusEventHandler, false);
-    this.hud.window.addEventListener("blur", this._blurEventHandler, false);
 
+    if (this.hud.owner._browserConsole &&
+        !Services.prefs.getBoolPref("devtools.chrome.enabled")) {
+      inputContainer.style.display = "none";
+    }
+    else {
+      this.inputNode.addEventListener("keypress", this._keyPress, false);
+      this.inputNode.addEventListener("input", this._inputEventHandler, false);
+      this.inputNode.addEventListener("keyup", this._inputEventHandler, false);
+      this.inputNode.addEventListener("focus", this._focusEventHandler, false);
+    }
+
+    this.hud.window.addEventListener("blur", this._blurEventHandler, false);
     this.lastInputValue && this.setInputValue(this.lastInputValue);
   },
 
@@ -3172,10 +3199,10 @@ JSTerm.prototype = {
         if (oldFlushCallback) {
           oldFlushCallback();
           this.hud._flushCallback = oldFlushCallback;
+          return true;
         }
-        else {
-          this.hud._flushCallback = null;
-        }
+
+        return false;
       };
     }
 
@@ -3515,7 +3542,9 @@ JSTerm.prototype = {
       return view._consoleLastObjectActor != aActor;
     });
 
-    if (aOptions.objectActor) {
+    if (aOptions.objectActor &&
+        (!this.hud.owner._browserConsole ||
+         Services.prefs.getBoolPref("devtools.chrome.enabled"))) {
       // Make sure eval works in the correct context.
       view.eval = this._variablesViewEvaluate.bind(this, aOptions);
       view.switch = this._variablesViewSwitch.bind(this, aOptions);

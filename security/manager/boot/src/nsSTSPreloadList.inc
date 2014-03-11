@@ -8,7 +8,7 @@
 /*****************************************************************************/
 
 #include <stdint.h>
-const PRTime gPreloadListExpirationTime = INT64_C(1402139146259000);
+const PRTime gPreloadListExpirationTime = INT64_C(1405167392459000);
 
 class nsSTSPreload
 {
@@ -19,6 +19,7 @@ class nsSTSPreload
 
 static const nsSTSPreload kSTSPreloadList[] = {
   { "accounts.google.com", true },
+  { "aclu.org", false },
   { "aladdinschools.appspot.com", false },
   { "alpha.irccloud.com", false },
   { "api.intercom.io", false },
@@ -37,6 +38,7 @@ static const nsSTSPreload kSTSPreloadList[] = {
   { "blog.lookout.com", false },
   { "blog.torproject.org", false },
   { "blueseed.co", false },
+  { "boxcryptor.com", true },
   { "bugzilla.mozilla.org", true },
   { "business.lookout.com", false },
   { "carezone.com", false },
@@ -83,6 +85,7 @@ static const nsSTSPreload kSTSPreloadList[] = {
   { "forum.linode.com", false },
   { "forum.quantifiedself.com", true },
   { "gernert-server.de", true },
+  { "getcloak.com", false },
   { "getlantern.org", false },
   { "glass.google.com", true },
   { "go.xero.com", false },
@@ -104,7 +107,6 @@ static const nsSTSPreload kSTSPreloadList[] = {
   { "lastpass.com", false },
   { "launchkey.com", true },
   { "library.linode.com", false },
-  { "lifeguard.aecom.com", false },
   { "linode.com", false },
   { "linx.net", false },
   { "lockify.com", true },
@@ -119,6 +121,7 @@ static const nsSTSPreload kSTSPreloadList[] = {
   { "luneta.nearbuysystems.com", false },
   { "mail.de", true },
   { "mail.google.com", true },
+  { "mailbox.org", false },
   { "makeyourlaws.org", false },
   { "manage.zenpayroll.com", false },
   { "manager.linode.com", false },
@@ -136,9 +139,11 @@ static const nsSTSPreload kSTSPreloadList[] = {
   { "mykolab.com", true },
   { "mylookout.com", false },
   { "neg9.org", false },
+  { "neilwynne.com", false },
   { "oplop.appspot.com", true },
   { "opsmate.com", false },
   { "p.linode.com", false },
+  { "packagist.org", false },
   { "passwd.io", true },
   { "paste.linode.com", false },
   { "pastebin.linode.com", false },
@@ -187,11 +192,13 @@ static const nsSTSPreload kSTSPreloadList[] = {
   { "wiki.python.org", true },
   { "wiz.biz", true },
   { "writeapp.me", false },
+  { "www.aclu.org", false },
   { "www.apollo-auto.com", true },
   { "www.braintreepayments.com", false },
   { "www.cyveillance.com", true },
   { "www.entropia.de", false },
   { "www.evernote.com", false },
+  { "www.getcloak.com", false },
   { "www.gov.uk", false },
   { "www.grc.com", false },
   { "www.heliosnet.com", true },

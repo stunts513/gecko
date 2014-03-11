@@ -7,6 +7,7 @@
 
 #include "gfxPoint.h"
 #include "SharedSurface.h"
+#include "SharedSurfaceGL.h"
 #include "SurfaceFactory.h"
 #include "GeckoProfiler.h"
 
@@ -21,7 +22,7 @@ SurfaceStream::ChooseGLStreamType(SurfaceStream::OMTC omtc,
         if (preserveBuffer)
             return SurfaceStreamType::TripleBuffer_Copy;
         else
-            return SurfaceStreamType::TripleBuffer_Async;
+            return SurfaceStreamType::TripleBuffer;
     } else {
         if (preserveBuffer)
             return SurfaceStreamType::SingleBuffer;
@@ -42,9 +43,6 @@ SurfaceStream::CreateForType(SurfaceStreamType type, mozilla::gl::GLContext* glC
         case SurfaceStreamType::TripleBuffer_Copy:
             result = new SurfaceStream_TripleBuffer_Copy(prevStream);
             break;
-        case SurfaceStreamType::TripleBuffer_Async:
-            result = new SurfaceStream_TripleBuffer_Async(prevStream);
-            break;
         case SurfaceStreamType::TripleBuffer:
             result = new SurfaceStream_TripleBuffer(prevStream);
             break;
@@ -54,6 +52,22 @@ SurfaceStream::CreateForType(SurfaceStreamType type, mozilla::gl::GLContext* glC
 
     result->mGLContext = glContext;
     return result;
+}
+
+bool
+SurfaceStream_TripleBuffer::CopySurfaceToProducer(SharedSurface* src, SurfaceFactory* factory)
+{
+    if (!mProducer) {
+        New(factory, src->Size(), mProducer);
+        if (!mProducer) {
+            return false;
+        }
+    }
+
+    MOZ_ASSERT(src->Size() == mProducer->Size(), "Size mismatch");
+
+    SharedSurface::Copy(src, mProducer, factory);
+    return true;
 }
 
 void
@@ -415,9 +429,7 @@ SurfaceStream_TripleBuffer::SwapProducer(SurfaceFactory* factory,
     if (mProducer) {
         RecycleScraps(factory);
 
-        // If WaitForCompositor succeeds, mStaging has moved to mConsumer.
-        // If it failed, we might have to scrap it.
-        if (mStaging && !WaitForCompositor())
+        if (mStaging)
             Scrap(mStaging);
 
         MOZ_ASSERT(!mStaging);
@@ -442,27 +454,6 @@ SurfaceStream_TripleBuffer::SwapConsumer_NoWait()
     }
 
     return mConsumer;
-}
-
-SurfaceStream_TripleBuffer_Async::SurfaceStream_TripleBuffer_Async(SurfaceStream* prevStream)
-    : SurfaceStream_TripleBuffer(SurfaceStreamType::TripleBuffer_Async, prevStream)
-{
-}
-
-SurfaceStream_TripleBuffer_Async::~SurfaceStream_TripleBuffer_Async()
-{
-}
-
-bool
-SurfaceStream_TripleBuffer_Async::WaitForCompositor()
-{
-    PROFILER_LABEL("SurfaceStream_TripleBuffer_Async", "WaitForCompositor");
-
-    // We are assumed to be locked
-    while (mStaging)
-        mMonitor.Wait();
-
-    return true;
 }
 
 } /* namespace gfx */

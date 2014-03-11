@@ -7,6 +7,7 @@
 #define MediaData_h
 
 #include "nsSize.h"
+#include "mozilla/gfx/Rect.h"
 #include "nsRect.h"
 #include "AudioSampleFormat.h"
 #include "nsIMemoryReporter.h"
@@ -101,6 +102,7 @@ public:
 
 namespace layers {
 class GraphicBufferLocked;
+class PlanarYCbCrImage;
 }
 
 class VideoInfo;
@@ -108,8 +110,11 @@ class VideoInfo;
 // Holds a decoded video frame, in YCbCr format. These are queued in the reader.
 class VideoData : public MediaData {
 public:
+  typedef gfx::IntRect IntRect;
+  typedef gfx::IntSize IntSize;
   typedef layers::ImageContainer ImageContainer;
   typedef layers::Image Image;
+  typedef layers::PlanarYCbCrImage PlanarYCbCrImage;
 
   // YCbCr data obtained from decoding the video. The index's are:
   //   0 = Y
@@ -145,7 +150,7 @@ public:
                            const YCbCrBuffer &aBuffer,
                            bool aKeyframe,
                            int64_t aTimecode,
-                           nsIntRect aPicture);
+                           const IntRect& aPicture);
 
   // Variant that always makes a copy of aBuffer
   static VideoData* Create(VideoInfo& aInfo,
@@ -156,7 +161,7 @@ public:
                            const YCbCrBuffer &aBuffer,
                            bool aKeyframe,
                            int64_t aTimecode,
-                           nsIntRect aPicture);
+                           const IntRect& aPicture);
 
   // Variant to create a VideoData instance given an existing aImage
   static VideoData* Create(VideoInfo& aInfo,
@@ -167,7 +172,7 @@ public:
                            const YCbCrBuffer &aBuffer,
                            bool aKeyframe,
                            int64_t aTimecode,
-                           nsIntRect aPicture);
+                           const IntRect& aPicture);
 
   static VideoData* Create(VideoInfo& aInfo,
                            ImageContainer* aContainer,
@@ -177,7 +182,7 @@ public:
                            layers::GraphicBufferLocked* aBuffer,
                            bool aKeyframe,
                            int64_t aTimecode,
-                           nsIntRect aPicture);
+                           const IntRect& aPicture);
 
   static VideoData* CreateFromImage(VideoInfo& aInfo,
                                     ImageContainer* aContainer,
@@ -187,7 +192,7 @@ public:
                                     const nsRefPtr<Image>& aImage,
                                     bool aKeyframe,
                                     int64_t aTimecode,
-                                    nsIntRect aPicture);
+                                    const IntRect& aPicture);
 
   // Creates a new VideoData identical to aOther, but with a different
   // specified duration. All data from aOther is copied into the new
@@ -198,6 +203,14 @@ public:
   // duration field on a VideoData.
   static VideoData* ShallowCopyUpdateDuration(VideoData* aOther,
                                               int64_t aDuration);
+
+  // Initialize PlanarYCbCrImage. Only When aCopyData is true,
+  // video data is copied to PlanarYCbCrImage.
+  static void SetVideoDataToImage(PlanarYCbCrImage* aVideoImage,
+                                  VideoInfo& aInfo,                  
+                                  const YCbCrBuffer &aBuffer,
+                                  const IntRect& aPicture,
+                                  bool aCopyData);
 
   // Constructs a duplicate VideoData object. This intrinsically tells the
   // player that it does not need to update the displayed frame when this
@@ -215,7 +228,7 @@ public:
   // Dimensions at which to display the video frame. The picture region
   // will be scaled to this size. This is should be the picture region's
   // dimensions scaled with respect to its aspect ratio.
-  const nsIntSize mDisplay;
+  const IntSize mDisplay;
 
   // Codec specific internal time code. For Ogg based codecs this is the
   // granulepos.
@@ -240,7 +253,7 @@ public:
             int64_t aDuration,
             bool aKeyframe,
             int64_t aTimecode,
-            nsIntSize aDisplay);
+            IntSize aDisplay);
 
 };
 

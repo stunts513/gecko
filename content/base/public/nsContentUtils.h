@@ -9,7 +9,7 @@
 #ifndef nsContentUtils_h___
 #define nsContentUtils_h___
 
-#if defined(XP_WIN) || defined(XP_OS2)
+#if defined(XP_WIN)
 #include <float.h>
 #endif
 
@@ -68,7 +68,7 @@ class nsIInterfaceRequestor;
 class nsIIOService;
 class nsIJSRuntimeService;
 class nsILineBreaker;
-class nsINameSpaceManager;
+class nsNameSpaceManager;
 class nsINodeInfo;
 class nsIObserver;
 class nsIParser;
@@ -451,7 +451,7 @@ public:
 
   static nsIParserService* GetParserService();
 
-  static nsINameSpaceManager* NameSpaceManager()
+  static nsNameSpaceManager* NameSpaceManager()
   {
     return sNameSpaceManager;
   }
@@ -526,6 +526,12 @@ public:
    */
   static bool CheckForBOM(const unsigned char* aBuffer, uint32_t aLength,
                           nsACString& aCharset);
+
+  /**
+   * Returns true if |aName| is a valid name to be registered via
+   * document.registerElement.
+   */
+  static bool IsCustomElementName(nsIAtom* aName);
 
   static nsresult CheckQName(const nsAString& aQualifiedName,
                              bool aNamespaceAware = true,
@@ -1640,17 +1646,16 @@ public:
   MOZ_WARN_UNUSED_RESULT
   static nsresult WrapNative(JSContext *cx, JS::Handle<JSObject*> scope,
                              nsISupports *native, const nsIID* aIID,
-                             JS::MutableHandle<JS::Value> vp,
-                             bool aAllowWrapping = false)
+                             JS::MutableHandle<JS::Value> vp)
   {
-    return WrapNative(cx, scope, native, nullptr, aIID, vp, aAllowWrapping);
+    return WrapNative(cx, scope, native, nullptr, aIID, vp, true);
   }
 
   // Same as the WrapNative above, but use this one if aIID is nsISupports' IID.
   MOZ_WARN_UNUSED_RESULT
   static nsresult WrapNative(JSContext *cx, JS::Handle<JSObject*> scope,
                              nsISupports *native, JS::MutableHandle<JS::Value> vp,
-                             bool aAllowWrapping = false)
+                             bool aAllowWrapping = true)
   {
     return WrapNative(cx, scope, native, nullptr, nullptr, vp, aAllowWrapping);
   }
@@ -1659,7 +1664,7 @@ public:
   static nsresult WrapNative(JSContext *cx, JS::Handle<JSObject*> scope,
                              nsISupports *native, nsWrapperCache *cache,
                              JS::MutableHandle<JS::Value> vp,
-                             bool aAllowWrapping = false)
+                             bool aAllowWrapping = true)
   {
     return WrapNative(cx, scope, native, cache, nullptr, vp, aAllowWrapping);
   }
@@ -2150,7 +2155,7 @@ private:
 
   static nsIParserService *sParserService;
 
-  static nsINameSpaceManager *sNameSpaceManager;
+  static nsNameSpaceManager *sNameSpaceManager;
 
   static nsIIOService *sIOService;
 

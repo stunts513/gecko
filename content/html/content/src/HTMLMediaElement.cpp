@@ -617,7 +617,7 @@ void HTMLMediaElement::AbortExistingLoads()
   if (mNetworkState == nsIDOMHTMLMediaElement::NETWORK_LOADING ||
       mNetworkState == nsIDOMHTMLMediaElement::NETWORK_IDLE)
   {
-    DispatchEvent(NS_LITERAL_STRING("abort"));
+    DispatchAsyncEvent(NS_LITERAL_STRING("abort"));
   }
 
   mError = nullptr;
@@ -648,7 +648,7 @@ void HTMLMediaElement::AbortExistingLoads()
       // change will be reflected in the controls.
       FireTimeUpdate(false);
     }
-    DispatchEvent(NS_LITERAL_STRING("emptied"));
+    DispatchAsyncEvent(NS_LITERAL_STRING("emptied"));
   }
 
   // We may have changed mPaused, mAutoplaying, mNetworkState and other
@@ -3359,7 +3359,8 @@ void HTMLMediaElement::NotifyDecoderPrincipalChanged()
 
   bool subsumes;
   mDecoder->UpdateSameOriginStatus(
-    NS_SUCCEEDED(NodePrincipal()->Subsumes(principal, &subsumes)) && subsumes);
+    !principal ||
+    (NS_SUCCEEDED(NodePrincipal()->Subsumes(principal, &subsumes)) && subsumes));
 
   for (uint32_t i = 0; i < mOutputStreams.Length(); ++i) {
     OutputMediaStream* ms = &mOutputStreams[i];

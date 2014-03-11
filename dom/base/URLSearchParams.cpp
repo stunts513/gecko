@@ -190,7 +190,6 @@ void
 URLSearchParams::RemoveObserver(URLSearchParamsObserver* aObserver)
 {
   MOZ_ASSERT(aObserver);
-  MOZ_ASSERT(mObservers.Contains(aObserver));
   mObservers.RemoveElement(aObserver);
 }
 

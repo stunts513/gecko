@@ -16,6 +16,8 @@
 namespace mozilla {
 namespace a11y {
 
+class TextRange;
+
 struct DOMPoint {
   DOMPoint() : node(nullptr), idx(0) { }
   DOMPoint(nsINode* aNode, int32_t aIdx) : node(aNode), idx(aIdx) { }
@@ -119,6 +121,12 @@ public:
    */
   int32_t DOMPointToOffset(nsINode* aNode, int32_t aNodeOffset,
                            bool aIsEndOffset = false) const;
+
+  /**
+   * Transform the given a11y point into the offset relative this hypertext.
+   */
+  int32_t TransformOffset(Accessible* aDescendant, int32_t aOffset,
+                          bool aIsEndOffset) const;
 
   /**
    * Convert start and end hypertext offsets into DOM range.
@@ -355,6 +363,34 @@ public:
                               uint32_t aCoordinateType,
                               int32_t aX, int32_t aY);
 
+  /**
+   * Return a range that encloses the text control or the document this
+   * accessible belongs to.
+   */
+  void EnclosingRange(TextRange& aRange) const;
+
+  /**
+   * Return an array of disjoint ranges for selected text within the text control
+   * or the document this accessible belongs to.
+   */
+  void SelectionRanges(nsTArray<TextRange>* aRanges) const;
+
+  /**
+   * Return an array of disjoint ranges of visible text within the text control
+   * or the document this accessible belongs to.
+   */
+  void VisibleRanges(nsTArray<TextRange>* aRanges) const;
+
+  /**
+   * Return a range containing the given accessible.
+   */
+  void RangeByChild(Accessible* aChild, TextRange& aRange) const;
+
+  /**
+   * Return a range containing an accessible at the given point.
+   */
+  void RangeAtPoint(int32_t aX, int32_t aY, TextRange& aRange) const;
+
   //////////////////////////////////////////////////////////////////////////////
   // EditableTextAccessible
 
@@ -435,9 +471,9 @@ protected:
    * Return an offset corresponding to the given direction and selection amount
    * relative the given offset. A helper used to find word or line boundaries.
    */
-  virtual int32_t FindOffset(int32_t aOffset, nsDirection aDirection,
-                             nsSelectionAmount aAmount,
-                             EWordMovementType aWordMovementType = eDefaultBehavior);
+  int32_t FindOffset(int32_t aOffset, nsDirection aDirection,
+                     nsSelectionAmount aAmount,
+                     EWordMovementType aWordMovementType = eDefaultBehavior);
 
   /**
    * Return the boundaries of the substring in case of textual frame or
@@ -452,7 +488,7 @@ protected:
   /**
    * Return frame/DOM selection object for the accessible.
    */
-  virtual already_AddRefed<nsFrameSelection> FrameSelection() const;
+  already_AddRefed<nsFrameSelection> FrameSelection() const;
   Selection* DOMSelection() const;
 
   /**
@@ -466,25 +502,6 @@ protected:
   nsresult GetDOMPointByFrameOffset(nsIFrame* aFrame, int32_t aOffset,
                                     Accessible* aAccessible,
                                     mozilla::a11y::DOMPoint* aPoint);
-
-
-  /**
-   * Return hyper text offset for the specified bound of the given DOM range.
-   * If the bound is outside of the hyper text then offset value is either
-   * 0 or number of characters of hyper text, it depends on type of requested
-   * offset. The method is a wrapper for DOMPointToOffset.
-   *
-   * @param aRange          [in] the given range
-   * @param aIsStartBound   [in] specifies whether the required range bound is
-   *                        start bound
-   * @param aIsStartOffset  [in] the offset type, used when the range bound is
-   *                        outside of hyper text
-   * @param aHTOffset       [out] the result offset
-   */
-  nsresult RangeBoundToHypertextOffset(nsRange *aRange,
-                                       bool aIsStartBound,
-                                       bool aIsStartOffset,
-                                       int32_t *aHTOffset);
 
   /**
    * Set 'misspelled' text attribute and return range offsets where the

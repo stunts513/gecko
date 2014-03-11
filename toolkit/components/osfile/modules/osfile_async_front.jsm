@@ -50,6 +50,7 @@ Cu.import("resource://gre/modules/osfile/ospath.jsm", Path);
 
 // The library of promises.
 Cu.import("resource://gre/modules/Promise.jsm", this);
+Cu.import("resource://gre/modules/Task.jsm", this);
 
 // The implementation of communications
 Cu.import("resource://gre/modules/osfile/_PromiseWorker.jsm", this);
@@ -83,6 +84,9 @@ const EXCEPTION_CONSTRUCTORS = {
   },
   URIError: function(error) {
     return new URIError(error.message, error.fileName, error.lineNumber);
+  },
+  OSError: function(error) {
+    return OS.File.Error.fromMsg(error);
   }
 };
 
@@ -103,7 +107,7 @@ function lazyPathGetter(constProp, dirKey) {
     }
 
     return path;
-  }
+  };
 }
 
 for (let [constProp, dirKey] of [
@@ -145,9 +149,26 @@ let Scheduler = {
   shutdown: false,
 
   /**
-   * The latest promise returned.
+   * A promise resolved once all operations are complete.
+   *
+   * This promise is never rejected and the result is always undefined.
    */
-  latestPromise: Promise.resolve("OS.File scheduler hasn't been launched yet"),
+  queue: Promise.resolve(),
+
+  /**
+   * The latest message sent and still waiting for a reply. In DEBUG
+   * builds, the entire message is stored, which may be memory-consuming.
+   * In non-DEBUG builds, only the method name is stored.
+   */
+  latestSent: undefined,
+
+  /**
+   * The latest reply received, or null if we are waiting for a reply.
+   * In DEBUG builds, the entire response is stored, which may be
+   * memory-consuming.  In non-DEBUG builds, only exceptions and
+   * method names are stored.
+   */
+  latestReceived: undefined,
 
   /**
    * A timer used to automatically shut down the worker after some time.
@@ -169,6 +190,38 @@ let Scheduler = {
     this.resetTimer = setTimeout(File.resetWorker, delay);
   },
 
+  /**
+   * Push a task at the end of the queue.
+   *
+   * @param {function} code A function returning a Promise.
+   * This function will be executed once all the previously
+   * pushed tasks have completed.
+   * @return {Promise} A promise with the same behavior as
+   * the promise returned by |code|.
+   */
+  push: function(code) {
+    let promise = this.queue.then(function() {
+      if (this.shutdown) {
+        LOG("OS.File is not available anymore. Request has been rejected.");
+        throw new Error("OS.File has been shut down.");
+      }
+      return code();
+    }.bind(this));
+    // By definition, |this.queue| can never reject.
+    this.queue = promise.then(null, () => undefined);
+    // Fork |promise| to ensure that uncaught errors are reported
+    return promise.then(null, null);
+  },
+
+  /**
+   * Post a message to the worker thread.
+   *
+   * @param {string} method The name of the method to call.
+   * @param {...} args The arguments to pass to the method. These arguments
+   * must be clonable.
+   * @return {Promise} A promise conveying the result/error caused by
+   * calling |method| with arguments |args|.
+   */
   post: function post(method, ...args) {
     if (this.shutdown) {
       LOG("OS.File is not available anymore. The following request has been rejected.",
@@ -194,77 +247,80 @@ let Scheduler = {
     if (methodArgs) {
       options = methodArgs[methodArgs.length - 1];
     }
-    let promise = worker.post(method,...args);
-    return this.latestPromise = promise.then(
-      function onSuccess(data) {
-        if (firstLaunch) {
-          Scheduler._updateTelemetry();
-        }
-
-        // Don't restart the timer when reseting the worker, since that will
-        // lead to an endless "resetWorker()" loop.
-        if (method != "Meta_reset") {
-          Scheduler.restartTimer();
-        }
-
-        // Check for duration and return result.
-        if (!options) {
-          return data.ok;
-        }
-        // Check for options.outExecutionDuration.
-        if (typeof options !== "object" ||
-          !("outExecutionDuration" in options)) {
-          return data.ok;
-        }
-        // If data.durationMs is not present, return data.ok (there was an
-        // exception applying the method).
-        if (!("durationMs" in data)) {
-          return data.ok;
-        }
-        // Bug 874425 demonstrates that two successive calls to Date.now()
-        // can actually produce an interval with negative duration.
-        // We assume that this is due to an operation that is so short
-        // that Date.now() is not monotonic, so we round this up to 0.
-        let durationMs = Math.max(0, data.durationMs);
-        // Accumulate (or initialize) outExecutionDuration
-        if (typeof options.outExecutionDuration == "number") {
-          options.outExecutionDuration += durationMs;
-        } else {
-          options.outExecutionDuration = durationMs;
-        }
-        return data.ok;
-      },
-      function onError(error) {
-        if (firstLaunch) {
-          Scheduler._updateTelemetry();
-        }
-
-        // Don't restart the timer when reseting the worker, since that will
-        // lead to an endless "resetWorker()" loop.
-        if (method != "Meta_reset") {
-          Scheduler.restartTimer();
-        }
-        // Check and throw EvalError | InternalError | RangeError
-        // | ReferenceError | SyntaxError | TypeError | URIError
-        if (error.data && error.data.exn in EXCEPTION_CONSTRUCTORS) {
-          throw EXCEPTION_CONSTRUCTORS[error.data.exn](error.data);
-        }
-        // Decode any serialized error
-        if (error instanceof PromiseWorker.WorkerError) {
-          throw OS.File.Error.fromMsg(error.data);
-        }
-        // Extract something meaningful from ErrorEvent
-        if (error instanceof ErrorEvent) {
-          let message = error.message;
-          if (message == "uncaught exception: [object StopIteration]") {
-            throw StopIteration;
-          }
-          throw new Error(message, error.filename, error.lineno);
-        }
-
-        throw error;
+    return this.push(() => Task.spawn(function*() {
+      Scheduler.latestReceived = null;
+      if (OS.Constants.Sys.DEBUG) {
+        // Update possibly memory-expensive debugging information
+        Scheduler.latestSent = [Date.now(), method, ...args];
+      } else {
+        Scheduler.latestSent = [Date.now(), method];
       }
-    );
+      let data;
+      let reply;
+      let isError = false;
+      try {
+        data = yield worker.post(method, ...args);
+        reply = data;
+      } catch (error if error instanceof PromiseWorker.WorkerError) {
+        reply = error;
+        isError = true;
+        throw EXCEPTION_CONSTRUCTORS[error.data.exn || "OSError"](error.data);
+      } catch (error if error instanceof ErrorEvent) {
+        reply = error;
+        let message = error.message;
+        if (message == "uncaught exception: [object StopIteration]") {
+          throw StopIteration;
+        }
+        isError = true;
+        throw new Error(message, error.filename, error.lineno);
+      } finally {
+        Scheduler.latestSent = Scheduler.latestSent.slice(0, 2);
+        if (OS.Constants.Sys.DEBUG) {
+          // Update possibly memory-expensive debugging information
+          Scheduler.latestReceived = [Date.now(), reply];
+        } else if (isError) {
+          Scheduler.latestReceived = [Date.now(), reply.message, reply.fileName, reply.lineNumber];
+        } else {
+          Scheduler.latestReceived = [Date.now()];
+        }
+        if (firstLaunch) {
+          Scheduler._updateTelemetry();
+        }
+
+        // Don't restart the timer when reseting the worker, since that will
+        // lead to an endless "resetWorker()" loop.
+        if (method != "Meta_reset") {
+          Scheduler.restartTimer();
+        }
+      }
+
+      // Check for duration and return result.
+      if (!options) {
+        return data.ok;
+      }
+      // Check for options.outExecutionDuration.
+      if (typeof options !== "object" ||
+        !("outExecutionDuration" in options)) {
+        return data.ok;
+      }
+      // If data.durationMs is not present, return data.ok (there was an
+      // exception applying the method).
+      if (!("durationMs" in data)) {
+        return data.ok;
+      }
+      // Bug 874425 demonstrates that two successive calls to Date.now()
+      // can actually produce an interval with negative duration.
+      // We assume that this is due to an operation that is so short
+      // that Date.now() is not monotonic, so we round this up to 0.
+      let durationMs = Math.max(0, data.durationMs);
+      // Accumulate (or initialize) outExecutionDuration
+      if (typeof options.outExecutionDuration == "number") {
+        options.outExecutionDuration += durationMs;
+      } else {
+        options.outExecutionDuration = durationMs;
+      }
+      return data.ok;
+    }));
   },
 
   /**
@@ -358,14 +414,13 @@ function warnAboutUnclosedFiles(shutdown = true) {
     // Don't launch the scheduler on our behalf. If no message has been
     // sent to the worker, we can't have any leaking file/directory
     // descriptor.
+    Scheduler.shutdown = Scheduler.shutdown || shutdown;
     return null;
   }
   let promise = Scheduler.post("Meta_getUnclosedResources");
 
   // Configure the worker to reject any further message.
-  if (shutdown) {
-    Scheduler.shutdown = true;
-  }
+  Scheduler.shutdown = Scheduler.shutdown || shutdown;
 
   return promise.then(function onSuccess(opened) {
     let msg = "";
@@ -785,6 +840,21 @@ File.move = function move(sourcePath, destPath, options) {
 };
 
 /**
+ * Gets the number of bytes available on disk to the current user.
+ *
+ * @param {string} Platform-specific path to a directory on the disk to 
+ * query for free available bytes.
+ *
+ * @return {number} The number of bytes available for the current user.
+ * @throws {OS.File.Error} In case of any error.
+ */
+File.getAvailableFreeSpace = function getAvailableFreeSpace(sourcePath) {
+  return Scheduler.post("getAvailableFreeSpace",
+    [Type.path.toMsg(sourcePath)], sourcePath
+  ).then(Type.uint64_t.fromMsg);
+};
+
+/**
  * Remove an empty directory.
  *
  * @param {string} path The name of the directory to remove.
@@ -903,6 +973,11 @@ File.exists = function exists(path) {
  * if the system shuts down improperly (typically due to a kernel freeze
  * or a power failure) or if the device is disconnected before the buffer
  * is flushed, the file has more chances of not being corrupted.
+ * - {string} backupTo - If specified, backup the destination file as |backupTo|.
+ * Note that this function renames the destination file before overwriting it.
+ * If the process or the operating system freezes or crashes
+ * during the short window between these operations,
+ * the destination file will have been moved to its backup.
  *
  * @return {promise}
  * @resolves {number} The number of bytes actually written.
@@ -1238,8 +1313,36 @@ this.OS.Path = Path;
 // clients should register using AsyncShutdown.addBlocker.
 AsyncShutdown.profileBeforeChange.addBlocker(
   "OS.File: flush I/O queued before profile-before-change",
-  () =>
-    // Wait until the latest currently enqueued promise is satisfied/rejected
-    Scheduler.latestPromise.then(null,
-      function onError() { /* ignore error */})
+  // Wait until the latest currently enqueued promise is satisfied/rejected
+  function() {
+    let DEBUG = false;
+    try {
+      DEBUG = Services.prefs.getBoolPref("toolkit.osfile.debug.failshutdown");
+    } catch (ex) {
+      // Ignore
+    }
+    if (DEBUG) {
+      // Return a promise that will never be satisfied
+      return Promise.defer().promise;
+    } else {
+      return Scheduler.queue;
+    }
+  },
+  function getDetails() {
+    let result = {
+      launched: Scheduler.launched,
+      shutdown: Scheduler.shutdown,
+      worker: !!worker,
+      pendingReset: !!Scheduler.resetTimer,
+      latestSent: Scheduler.latestSent,
+      latestReceived: Scheduler.latestReceived
+    };
+    // Convert dates to strings for better readability
+    for (let key of ["latestSent", "latestReceived"]) {
+      if (result[key] && typeof result[key][0] == "number") {
+        result[key][0] = Date(result[key][0]);
+      }
+    }
+    return result;
+  }
 );

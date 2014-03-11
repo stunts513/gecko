@@ -9,6 +9,7 @@
 #include "prtime.h"
 #include "prinrval.h"
 #include "prsystem.h"
+#include "prprf.h"
 
 #include "nsString.h"
 #include "nsThreadUtils.h"
@@ -156,6 +157,7 @@ public:
 class LoadInfo : public mozilla::RefCounted<LoadInfo>
 {
 public:
+  MOZ_DECLARE_REFCOUNTED_TYPENAME(LoadInfo)
   double GetSystemLoad() { return mSystemLoad.GetLoad(); };
   double GetProcessLoad() { return mProcessLoad.GetLoad(); };
   nsresult UpdateSystemLoad();
@@ -213,9 +215,9 @@ nsresult LoadInfo::UpdateSystemLoad()
   uint64_t nice;
   uint64_t system;
   uint64_t idle;
-  if (sscanf(buffer.get(), "cpu %Lu %Lu %Lu %Lu",
-             &user, &nice,
-             &system, &idle) != 4) {
+  if (PR_sscanf(buffer.get(), "cpu %llu %llu %llu %llu",
+                &user, &nice,
+                &system, &idle) != 4) {
     LOG(("Error parsing /proc/stat"));
     return NS_ERROR_FAILURE;
   }

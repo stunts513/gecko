@@ -393,7 +393,7 @@ js::str_resolve(JSContext *cx, HandleObject obj, HandleId id, unsigned flags,
 
     int32_t slot = JSID_TO_INT(id);
     if ((size_t)slot < str->length()) {
-        JSString *str1 = cx->runtime()->staticStrings.getUnitStringForElement(cx, str, size_t(slot));
+        JSString *str1 = cx->staticStrings().getUnitStringForElement(cx, str, size_t(slot));
         if (!str1)
             return false;
         RootedValue value(cx, StringValue(str1));
@@ -864,7 +864,7 @@ js_str_charAt(JSContext *cx, unsigned argc, Value *vp)
         i = size_t(d);
     }
 
-    str = cx->runtime()->staticStrings.getUnitStringForElement(cx, str, i);
+    str = cx->staticStrings().getUnitStringForElement(cx, str, i);
     if (!str)
         return false;
     args.rval().setString(str);
@@ -1863,7 +1863,7 @@ DoMatchLocal(JSContext *cx, CallArgs args, RegExpStatics *res, Handle<JSLinearSt
     res->updateFromMatchPairs(cx, input, matches);
 
     RootedValue rval(cx);
-    if (!CreateRegExpMatchResult(cx, input, chars, charsLen, matches, &rval))
+    if (!CreateRegExpMatchResult(cx, input, matches, &rval))
         return false;
 
     args.rval().set(rval);
@@ -3209,7 +3209,7 @@ SplitHelper(JSContext *cx, Handle<JSLinearString*> str, uint32_t limit, const Ma
                         return nullptr;
                 } else {
                     /* Only string entries have been accounted for so far. */
-                    AddTypeProperty(cx, type, nullptr, UndefinedValue());
+                    AddTypePropertyId(cx, type, JSID_VOID, UndefinedValue());
                     if (!splits.append(UndefinedValue()))
                         return nullptr;
                 }
@@ -3241,7 +3241,7 @@ CharSplitHelper(JSContext *cx, Handle<JSLinearString*> str, uint32_t limit)
     if (strLength == 0)
         return NewDenseEmptyArray(cx);
 
-    js::StaticStrings &staticStrings = cx->runtime()->staticStrings;
+    js::StaticStrings &staticStrings = cx->staticStrings();
     uint32_t resultlen = (limit < strLength ? limit : strLength);
 
     AutoValueVector splits(cx);
@@ -3344,7 +3344,7 @@ js::str_split(JSContext *cx, unsigned argc, Value *vp)
     RootedTypeObject type(cx, GetTypeCallerInitObject(cx, JSProto_Array));
     if (!type)
         return false;
-    AddTypeProperty(cx, type, nullptr, Type::StringType());
+    AddTypePropertyId(cx, type, JSID_VOID, Type::StringType());
 
     /* Step 5: Use the second argument as the split limit, if given. */
     uint32_t limit;
@@ -3546,7 +3546,7 @@ str_slice(JSContext *cx, unsigned argc, Value *vp)
                 str = cx->runtime()->emptyString;
             } else {
                 str = (length == 1)
-                      ? cx->runtime()->staticStrings.getUnitStringForElement(cx, str, begin)
+                      ? cx->staticStrings().getUnitStringForElement(cx, str, begin)
                       : js_NewDependentString(cx, str, begin, length);
                 if (!str)
                     return false;
@@ -3864,7 +3864,7 @@ js::str_fromCharCode(JSContext *cx, unsigned argc, Value *vp)
         if (!ToUint16(cx, args[0], &code))
             return false;
         if (StaticStrings::hasUnit(code)) {
-            args.rval().setString(cx->runtime()->staticStrings.getUnit(code));
+            args.rval().setString(cx->staticStrings().getUnit(code));
             return true;
         }
         args[0].setInt32(code);
@@ -3956,6 +3956,16 @@ template <AllowGC allowGC>
 JSFlatString *
 js_NewString(ThreadSafeContext *cx, jschar *chars, size_t length)
 {
+    if (length == 1) {
+        jschar c = chars[0];
+        if (StaticStrings::hasUnit(c)) {
+            // Free |chars| because we're taking possession of it, but it's no
+            // longer needed because we use the static string instead.
+            js_free(chars);
+            return cx->staticStrings().getUnit(c);
+        }
+    }
+
     return JSFlatString::new_<allowGC>(cx, chars, length);
 }
 
@@ -3980,7 +3990,7 @@ js_NewDependentString(JSContext *cx, JSString *baseArg, size_t start, size_t len
 
     const jschar *chars = base->chars() + start;
 
-    if (JSLinearString *staticStr = cx->runtime()->staticStrings.lookup(chars, length))
+    if (JSLinearString *staticStr = cx->staticStrings().lookup(chars, length))
         return staticStr;
 
     return JSDependentString::new_(cx, base, chars, length);
@@ -4244,8 +4254,6 @@ js::CompareStrings(JSContext *cx, JSString *str1, JSString *str2, int32_t *resul
 int32_t
 js::CompareAtoms(JSAtom *atom1, JSAtom *atom2)
 {
-    AutoThreadSafeAccess ts0(atom1);
-    AutoThreadSafeAccess ts1(atom2);
     return CompareChars(atom1->chars(), atom1->length(), atom2->chars(), atom2->length());
 }
 

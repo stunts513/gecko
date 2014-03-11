@@ -35,6 +35,20 @@ static const char16_t kRLE              = 0x202B;
 static const char16_t kLRO              = 0x202D;
 static const char16_t kRLO              = 0x202E;
 static const char16_t kPDF              = 0x202C;
+static const char16_t kSeparators[] = {
+  // All characters with Bidi type Segment Separator or Block Separator
+  char16_t('\t'),
+  char16_t('\r'),
+  char16_t('\n'),
+  char16_t(0xb),
+  char16_t(0x1c),
+  char16_t(0x1d),
+  char16_t(0x1e),
+  char16_t(0x1f),
+  char16_t(0x85),
+  char16_t(0x2029),
+  char16_t(0)
+};
 
 #define NS_BIDI_CONTROL_FRAME ((nsIFrame*)0xfffb1d1)
 
@@ -435,7 +449,7 @@ SplitInlineAncestors(nsIFrame* aParent,
 
       // Reparent views as necessary
       nsresult rv;
-      rv = nsContainerFrame::ReparentFrameViewList(presContext, tail, parent, newParent);
+      rv = nsContainerFrame::ReparentFrameViewList(tail, parent, newParent);
       if (NS_FAILED(rv)) {
         return rv;
       }
@@ -631,7 +645,7 @@ nsBidiPresUtils::ResolveParagraph(nsBlockFrame* aBlockFrame,
   if (aBpd->BufferLength() < 1) {
     return NS_OK;
   }
-  aBpd->mBuffer.ReplaceChar("\t\r\n", kSpace);
+  aBpd->mBuffer.ReplaceChar(kSeparators, kSpace);
 
   int32_t runCount;
 
@@ -1334,7 +1348,7 @@ nsBidiPresUtils::IsLeftOrRightMost(nsIFrame*              aFrame,
                         : !firstFrameState->mHasContOnPrevLines);
 
   if ((aIsLeftMost || aIsRightMost) &&
-      (aFrame->GetStateBits() & NS_FRAME_IS_SPECIAL)) {
+      (aFrame->GetStateBits() & NS_FRAME_PART_OF_IBSPLIT)) {
     // For ib splits, don't treat anything except the last part as
     // endmost or anything except the first part as startmost.
     // As an optimization, only get the first continuation once.
@@ -2031,20 +2045,20 @@ public:
 
   virtual void SetText(const char16_t* aText,
                        int32_t          aLength,
-                       nsBidiDirection  aDirection)
+                       nsBidiDirection  aDirection) MOZ_OVERRIDE
   {
     mTextRunConstructionContext->SetTextRunRTL(aDirection==NSBIDI_RTL);
     mText = aText;
     mLength = aLength;
   }
 
-  virtual nscoord GetWidth()
+  virtual nscoord GetWidth() MOZ_OVERRIDE
   {
     return mTextRunConstructionContext->GetWidth(mText, mLength);
   }
 
   virtual void DrawText(nscoord aXOffset,
-                        nscoord)
+                        nscoord) MOZ_OVERRIDE
   {
     mCtx->FontMetrics()->DrawString(mText, mLength, mPt.x + aXOffset, mPt.y,
                                     mCtx, mTextRunConstructionContext);

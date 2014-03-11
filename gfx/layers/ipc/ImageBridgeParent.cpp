@@ -58,6 +58,12 @@ ImageBridgeParent::~ImageBridgeParent()
   }
 }
 
+LayersBackend
+ImageBridgeParent::GetCompositorBackendType() const
+{
+  return Compositor::GetBackend();
+}
+
 void
 ImageBridgeParent::ActorDestroy(ActorDestroyReason aWhy)
 {
@@ -74,6 +80,9 @@ ImageBridgeParent::RecvUpdate(const EditArray& aEdits, EditReplyArray* aReply)
   if (Compositor::GetBackend() == LayersBackend::LAYERS_NONE) {
     return true;
   }
+
+  // Clear fence handles used in previsou transaction.
+  ClearPrevFenceHandles();
 
   EditReplyVector replyv;
   for (EditArray::index_type i = 0; i < aEdits.Length(); ++i) {
@@ -230,6 +239,11 @@ ImageBridgeParent::CloneToplevel(const InfallibleTArray<ProtocolFdMapping>& aFds
     }
   }
   return nullptr;
+}
+
+bool ImageBridgeParent::IsSameProcess() const
+{
+  return OtherProcess() == ipc::kInvalidProcessHandle;
 }
 
 } // layers

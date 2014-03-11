@@ -12,7 +12,6 @@ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 
 loader.lazyGetter(this, "NetworkHelper", () => require("devtools/toolkit/webconsole/network-helper"));
 loader.lazyImporter(this, "Services", "resource://gre/modules/Services.jsm");
-loader.lazyImporter(this, "ConsoleAPIStorage", "resource://gre/modules/ConsoleAPIStorage.jsm");
 loader.lazyImporter(this, "NetUtil", "resource://gre/modules/NetUtil.jsm");
 loader.lazyImporter(this, "PrivateBrowsingUtils", "resource://gre/modules/PrivateBrowsingUtils.jsm");
 loader.lazyImporter(this, "LayoutHelpers", "resource://gre/modules/devtools/LayoutHelpers.jsm");
@@ -839,7 +838,14 @@ function JSPropertyProvider(aDbgObject, anEnvironment, aInputValue, aCursor)
       return null;
     }
 
-    obj = DevToolsUtils.getProperty(obj, prop);
+    if (/\[\d+\]$/.test(prop)) {
+      // The property to autocomplete is a member of array. For example
+      // list[i][j]..[n]. Traverse the array to get the actual element.
+      obj = getArrayMemberProperty(obj, prop);
+    }
+    else {
+      obj = DevToolsUtils.getProperty(obj, prop);
+    }
 
     if (!isObjectUsable(obj)) {
       return null;
@@ -852,6 +858,50 @@ function JSPropertyProvider(aDbgObject, anEnvironment, aInputValue, aCursor)
   }
 
   return getMatchedPropsInDbgObject(obj, matchProp);
+}
+
+/**
+ * Get the array member of aObj for the given aProp. For example, given
+ * aProp='list[0][1]' the element at [0][1] of aObj.list is returned.
+ *
+ * @param object aObj
+ *        The object to operate on.
+ * @param string aProp
+ *        The property to return.
+ * @return null or Object
+ *         Returns null if the property couldn't be located. Otherwise the array
+ *         member identified by aProp.
+ */
+function getArrayMemberProperty(aObj, aProp)
+{
+  // First get the array.
+  let obj = aObj;
+  let propWithoutIndices = aProp.substr(0, aProp.indexOf("["));
+  obj = DevToolsUtils.getProperty(obj, propWithoutIndices);
+  if (!isObjectUsable(obj)) {
+    return null;
+  }
+
+  // Then traverse the list of indices to get the actual element.
+  let result;
+  let arrayIndicesRegex = /\[[^\]]*\]/g;
+  while ((result = arrayIndicesRegex.exec(aProp)) !== null) {
+    let indexWithBrackets = result[0];
+    let indexAsText = indexWithBrackets.substr(1, indexWithBrackets.length - 2);
+    let index = parseInt(indexAsText);
+
+    if (isNaN(index)) {
+      return null;
+    }
+
+    obj = DevToolsUtils.getProperty(obj, index);
+
+    if (!isObjectUsable(obj)) {
+      return null;
+    }
+  }
+
+  return obj;
 }
 
 /**
@@ -1043,7 +1093,12 @@ let DebuggerEnvironmentSupport = {
   getProperty: function(aObj, aName)
   {
     // TODO: we should use getVariableDescriptor() here - bug 725815.
-    let result = aObj.getVariable(aName);
+    let result = undefined;
+    try {
+      result = aObj.getVariable(aName);
+    } catch (ex) {
+      // getVariable() throws for invalid identifiers.
+    }
     return result === undefined ? null : { value: result };
   },
 };
@@ -1322,6 +1377,8 @@ ConsoleAPIListener.prototype =
   getCachedMessages: function CAL_getCachedMessages(aIncludePrivate = false)
   {
     let messages = [];
+    let ConsoleAPIStorage = Cc["@mozilla.org/consoleAPI-storage;1"]
+                              .getService(Ci.nsIConsoleAPIStorage);
 
     // if !this.window, we're in a browser console. Retrieve all events
     // for filtering based on privacy.
@@ -1505,6 +1562,40 @@ function JSTermHelpers(aOwner)
   aOwner.sandbox.help = function JSTH_help()
   {
     aOwner.helperResult = { type: "help" };
+  };
+
+  /**
+   * Change the JS evaluation scope.
+   *
+   * @param DOMElement|string|window aWindow
+   *        The window object to use for eval scope. This can be a string that
+   *        is used to perform document.querySelector(), to find the iframe that
+   *        you want to cd() to. A DOMElement can be given as well, the
+   *        .contentWindow property is used. Lastly, you can directly pass
+   *        a window object. If you call cd() with no arguments, the current
+   *        eval scope is cleared back to its default (the top window).
+   */
+  aOwner.sandbox.cd = function JSTH_cd(aWindow)
+  {
+    if (!aWindow) {
+      aOwner.consoleActor.evalWindow = null;
+      aOwner.helperResult = { type: "cd" };
+      return;
+    }
+
+    if (typeof aWindow == "string") {
+      aWindow = aOwner.window.document.querySelector(aWindow);
+    }
+    if (aWindow instanceof Ci.nsIDOMElement && aWindow.contentWindow) {
+      aWindow = aWindow.contentWindow;
+    }
+    if (!(aWindow instanceof Ci.nsIDOMWindow)) {
+      aOwner.helperResult = { type: "error", message: "cdFunctionInvalidArgument" };
+      return;
+    }
+
+    aOwner.consoleActor.evalWindow = aWindow;
+    aOwner.helperResult = { type: "cd" };
   };
 
   /**

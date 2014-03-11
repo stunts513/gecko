@@ -823,17 +823,16 @@ nsNSSCertificate::GetChain(nsIArray** _rvChain)
   PR_LOG(gPIPNSSLog, PR_LOG_DEBUG, ("Getting chain for \"%s\"\n", mCert->nickname));
 
   ::insanity::pkix::ScopedCERTCertList nssChain;
-  SECStatus srv;
   RefPtr<SharedCertVerifier> certVerifier(GetDefaultCertVerifier());
   NS_ENSURE_TRUE(certVerifier, NS_ERROR_UNEXPECTED);
 
   // We want to test all usages, but we start with server because most of the
   // time Firefox users care about server certs.
-  srv = certVerifier->VerifyCert(mCert.get(), nullptr,
-                                 certificateUsageSSLServer, PR_Now(),
-                                 nullptr, /*XXX fixme*/
-                                 CertVerifier::FLAG_LOCAL_ONLY,
-                                 &nssChain);
+  certVerifier->VerifyCert(mCert.get(), nullptr,
+                           certificateUsageSSLServer, PR_Now(),
+                           nullptr, /*XXX fixme*/
+                           CertVerifier::FLAG_LOCAL_ONLY,
+                           &nssChain);
   // This is the whitelist of all non-SSLServer usages that are supported by
   // verifycert.
   const int otherUsagesToTest = certificateUsageSSLClient |
@@ -851,11 +850,11 @@ nsNSSCertificate::GetChain(nsIArray** _rvChain)
     PR_LOG(gPIPNSSLog, PR_LOG_DEBUG,
            ("pipnss: PKIX attempting chain(%d) for '%s'\n",
             usage, mCert->nickname));
-    srv = certVerifier->VerifyCert(mCert.get(), nullptr,
-                                   usage, PR_Now(),
-                                   nullptr, /*XXX fixme*/
-                                   CertVerifier::FLAG_LOCAL_ONLY,
-                                   &nssChain);
+    certVerifier->VerifyCert(mCert.get(), nullptr,
+                             usage, PR_Now(),
+                             nullptr, /*XXX fixme*/
+                             CertVerifier::FLAG_LOCAL_ONLY,
+                             &nssChain);
   }
 
   if (!nssChain) {
@@ -1422,7 +1421,7 @@ nsNSSCertificate::SaveSMimeProfile()
     return NS_OK;
 }
 
-#ifndef NSS_NO_LIBPKIX
+#ifndef MOZ_NO_EV_CERTS
 
 nsresult
 nsNSSCertificate::hasValidEVOidTag(SECOidTag& resultOidTag, bool& validEV)
@@ -1477,12 +1476,12 @@ nsNSSCertificate::getValidEVOidTag(SECOidTag& resultOidTag, bool& validEV)
   return rv;
 }
 
-#endif // NSS_NO_LIBPKIX
+#endif // MOZ_NO_EV_CERTS
 
 NS_IMETHODIMP
 nsNSSCertificate::GetIsExtendedValidation(bool* aIsEV)
 {
-#ifdef NSS_NO_LIBPKIX
+#ifdef MOZ_NO_EV_CERTS
   *aIsEV = false;
   return NS_OK;
 #else
@@ -1509,7 +1508,7 @@ nsNSSCertificate::GetValidEVPolicyOid(nsACString& outDottedOid)
 {
   outDottedOid.Truncate();
 
-#ifndef NSS_NO_LIBPKIX
+#ifndef MOZ_NO_EV_CERTS
   nsNSSShutDownPreventionLock locker;
   if (isAlreadyShutDown()) {
     return NS_ERROR_NOT_AVAILABLE;

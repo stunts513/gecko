@@ -640,7 +640,10 @@ Link::CreateSearchParamsIfNeeded()
 void
 Link::Unlink()
 {
-  mSearchParams = nullptr;
+  if (mSearchParams) {
+    mSearchParams->RemoveObserver(this);
+    mSearchParams = nullptr;
+  }
 }
 
 void

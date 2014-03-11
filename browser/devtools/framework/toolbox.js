@@ -11,7 +11,7 @@ const MAX_ZOOM = 2;
 
 let {Cc, Ci, Cu} = require("chrome");
 let promise = require("sdk/core/promise");
-let EventEmitter = require("devtools/shared/event-emitter");
+let EventEmitter = require("devtools/toolkit/event-emitter");
 let Telemetry = require("devtools/shared/telemetry");
 let HUDService = require("devtools/webconsole/hudservice");
 
@@ -20,6 +20,7 @@ Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource:///modules/devtools/gDevTools.jsm");
 Cu.import("resource:///modules/devtools/scratchpad-manager.jsm");
 Cu.import("resource:///modules/devtools/DOMHelpers.jsm");
+Cu.import("resource://gre/modules/Task.jsm");
 
 loader.lazyGetter(this, "Hosts", () => require("devtools/framework/toolbox-hosts").Hosts);
 
@@ -41,8 +42,6 @@ loader.lazyGetter(this, "toolboxStrings", () => {
 });
 
 loader.lazyGetter(this, "Requisition", () => {
-  let {require} = Cu.import("resource://gre/modules/devtools/Require.jsm", {});
-  Cu.import("resource://gre/modules/devtools/gcli.jsm", {});
   return require("gcli/cli").Requisition;
 });
 
@@ -466,8 +465,10 @@ Toolbox.prototype = {
   fireCustomKey: function(toolId) {
     let toolDefinition = gDevTools.getToolDefinition(toolId);
 
-    if (toolDefinition.onkey && this.currentToolId === toolId) {
-      toolDefinition.onkey(this.getCurrentPanel());
+    if (toolDefinition.onkey && 
+        ((this.currentToolId === toolId) ||
+          (toolId == "webconsole" && this.splitConsole))) {
+      toolDefinition.onkey(this.getCurrentPanel(), this);
     }
   },
 
@@ -536,12 +537,13 @@ Toolbox.prototype = {
     }
 
     let spec = CommandUtils.getCommandbarSpec("devtools.toolbox.toolbarSpec");
-    let env = CommandUtils.createEnvironment(this.target.tab.ownerDocument,
-                                             this.target.window.document);
-    let req = new Requisition(env);
-    let buttons = CommandUtils.createButtons(spec, this._target, this.doc, req);
+    let environment = CommandUtils.createEnvironment(this, '_target');
+    this._requisition = new Requisition({ environment: environment });
+    let buttons = CommandUtils.createButtons(spec, this._target,
+                                             this.doc, this._requisition);
     let container = this.doc.getElementById("toolbox-buttons");
     buttons.forEach(container.appendChild.bind(container));
+    this.setToolboxButtonsVisibility();
   },
 
   /**
@@ -551,7 +553,7 @@ Toolbox.prototype = {
   _buildPickerButton: function() {
     this._pickerButton = this.doc.createElement("toolbarbutton");
     this._pickerButton.id = "command-button-pick";
-    this._pickerButton.className = "command-button";
+    this._pickerButton.className = "command-button command-button-invertable";
     this._pickerButton.setAttribute("tooltiptext", toolboxStrings("pickButton.tooltip"));
 
     let container = this.doc.querySelector("#toolbox-buttons");
@@ -559,6 +561,57 @@ Toolbox.prototype = {
 
     this._togglePicker = this.highlighterUtils.togglePicker.bind(this.highlighterUtils);
     this._pickerButton.addEventListener("command", this._togglePicker, false);
+  },
+
+  /**
+   * Return all toolbox buttons (command buttons, plus any others that were
+   * added manually).
+   */
+  get toolboxButtons() {
+    // White-list buttons that can be toggled to prevent adding prefs for
+    // addons that have manually inserted toolbarbuttons into DOM.
+    return [
+      "command-button-pick",
+      "command-button-splitconsole",
+      "command-button-responsive",
+      "command-button-paintflashing",
+      "command-button-tilt",
+      "command-button-scratchpad"
+    ].map(id => {
+      let button = this.doc.getElementById(id);
+      // Some buttons may not exist inside of Browser Toolbox
+      if (!button) {
+        return false;
+      }
+      return {
+        id: id,
+        button: button,
+        label: button.getAttribute("tooltiptext"),
+        visibilityswitch: "devtools." + id + ".enabled"
+      }
+    }).filter(button=>button);
+  },
+
+  /**
+   * Ensure the visibility of each toolbox button matches the
+   * preference value.  Simply hide buttons that are preffed off.
+   */
+  setToolboxButtonsVisibility: function() {
+    this.toolboxButtons.forEach(buttonSpec => {
+      let {visibilityswitch, id, button}=buttonSpec;
+      let on = true;
+      try {
+        on = Services.prefs.getBoolPref(visibilityswitch);
+      } catch (ex) { }
+
+      if (button) {
+        if (on) {
+          button.removeAttribute("hidden");
+        } else {
+          button.setAttribute("hidden", "true");
+        }
+      }
+    });
   },
 
   /**
@@ -585,11 +638,14 @@ Toolbox.prototype = {
     // The radio element is not being used in the conventional way, thus
     // the devtools-tab class replaces the radio XBL binding with its base
     // binding (the control-item binding).
-    radio.className = "toolbox-tab devtools-tab";
+    radio.className = "devtools-tab";
     radio.id = "toolbox-tab-" + id;
     radio.setAttribute("toolid", id);
     radio.setAttribute("ordinal", toolDefinition.ordinal);
     radio.setAttribute("tooltiptext", toolDefinition.tooltip);
+    if (toolDefinition.invertIconForLightTheme) {
+      radio.setAttribute("icon-invertable", "true");
+    }
 
     radio.addEventListener("command", () => {
       this.selectTool(id);
@@ -709,7 +765,7 @@ Toolbox.prototype = {
         this.emit(id + "-ready", panel);
         gDevTools.emit(id + "-ready", this, panel);
         deferred.resolve(panel);
-      });
+      }, console.error);
     };
 
     iframe.setAttribute("src", definition.url);
@@ -817,6 +873,14 @@ Toolbox.prototype = {
   },
 
   /**
+   * Focus split console's input line
+   */
+  focusConsoleInput: function() {
+    let hud = this.getPanel("webconsole").hud;
+    hud.jsterm.inputNode.focus();
+  },
+
+  /**
    * Toggles the split state of the webconsole.  If the webconsole panel
    * is already selected, then this command is ignored.
    */
@@ -831,7 +895,7 @@ Toolbox.prototype = {
 
       if (this._splitConsole) {
         this.loadTool("webconsole").then(() => {
-          this.focusTool("webconsole");
+          this.focusConsoleInput();
         });
       }
     }
@@ -1057,32 +1121,33 @@ Toolbox.prototype = {
    * Returns a promise that resolves when the fronts are destroyed
    */
   destroyInspector: function() {
-    let deferred = promise.defer();
-
-    if (this._inspector) {
-      this._selection.destroy();
-      this._selection = null;
-      this._walker.release().then(
-        () => {
-          this._inspector.destroy();
-          this._highlighter.destroy();
-        },
-        (e) => {
-          console.error("Walker.release() failed: " + e);
-          this._inspector.destroy();
-          return this._highlighter.destroy();
-        }
-      ).then(() => {
-        this._inspector = null;
-        this._highlighter = null;
-        this._walker = null;
-        deferred.resolve();
-      });
-    } else {
-      deferred.resolve();
+    if (!this._inspector) {
+      return promise.resolve();
     }
 
-    return deferred.promise;
+    let outstanding = () => {
+      return Task.spawn(function*() {
+        yield this.highlighterUtils.stopPicker();
+        yield this._inspector.destroy();
+        if (this._highlighter) {
+          yield this._highlighter.destroy();
+        }
+        if (this._selection) {
+          this._selection.destroy();
+        }
+
+        this._inspector = null;
+        this._highlighter = null;
+        this._selection = null;
+        this._walker = null;
+      }.bind(this));
+    };
+
+    // Releasing the walker (if it has been created)
+    // This can fail, but in any case, we want to continue destroying the
+    // inspector/highlighter/selection
+    let walker = this._walker ? this._walker.release() : promise.resolve();
+    return walker.then(outstanding, outstanding);
   },
 
   /**
@@ -1134,17 +1199,21 @@ Toolbox.prototype = {
 
     // Destroying the walker and inspector fronts
     outstanding.push(this.destroyInspector());
-
     // Removing buttons
-    this._pickerButton.removeEventListener("command", this._togglePicker, false);
-    this._pickerButton = null;
-    let container = this.doc.getElementById("toolbox-buttons");
-    while (container.firstChild) {
-      container.removeChild(container.firstChild);
-    }
-
+    outstanding.push(() => {
+      this._pickerButton.removeEventListener("command", this._togglePicker, false);
+      this._pickerButton = null;
+      let container = this.doc.getElementById("toolbox-buttons");
+      while (container.firstChild) {
+        container.removeChild(container.firstChild);
+      }
+    });
+    // Remove the host UI
     outstanding.push(this.destroyHost());
 
+    if (this.target.isLocalTab) {
+      this._requisition.destroy();
+    }
     this._telemetry.destroy();
 
     return this._destroyer = promise.all(outstanding).then(() => {
@@ -1215,9 +1284,14 @@ ToolboxHighlighterUtils.prototype = {
    * events on the target to highlight the hovered/picked element.
    * Depending on the server-side capabilities, this may fire events when nodes
    * are hovered.
-   * @return A promise that resolves when the picker has started
+   * @return A promise that resolves when the picker has started or immediately
+   * if it is already started
    */
   startPicker: function() {
+    if (this._isPicking) {
+      return promise.resolve();
+    }
+
     let deferred = promise.defer();
 
     let done = () => {
@@ -1252,9 +1326,14 @@ ToolboxHighlighterUtils.prototype = {
 
   /**
    * Stop the element picker
-   * @return A promise that resolves when the picker has stopped
+   * @return A promise that resolves when the picker has stopped or immediately
+   * if it is already stopped
    */
   stopPicker: function() {
+    if (!this._isPicking) {
+      return promise.resolve();
+    }
+
     let deferred = promise.defer();
 
     let done = () => {

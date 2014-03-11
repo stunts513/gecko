@@ -32,10 +32,15 @@ import java.util.ArrayList;
 
 public class UninstallListener extends BroadcastReceiver {
 
-    private static String LOGTAG = "GeckoWebAppUninstallListener";
+    private static String LOGTAG = "GeckoWebappUninstallListener";
 
     @Override
     public void onReceive(Context context, Intent intent) {
+        if (intent.getBooleanExtra(Intent.EXTRA_REPLACING, false)) {
+            Log.i(LOGTAG, "Package is being replaced; ignoring removal intent");
+            return;
+        }
+
         String packageName = intent.getData().getSchemeSpecificPart();
 
         if (TextUtils.isEmpty(packageName)) {
@@ -105,6 +110,8 @@ public class UninstallListener extends BroadcastReceiver {
 
         @Override
         public void run() {
+            ThreadUtils.assertOnBackgroundThread();
+
             // Perform webapp uninstalls as appropiate.
             if (AppConstants.MOZ_ANDROID_SYNTHAPKS) {
                 UninstallListener.initUninstallPackageScan(mApp.getApplicationContext());

@@ -29,7 +29,7 @@
 
 #include "nsMemoryImpl.h"
 #include "nsDebugImpl.h"
-#include "nsTraceRefcntImpl.h"
+#include "nsTraceRefcnt.h"
 #include "nsErrorService.h"
 
 #include "nsSupportsArray.h"
@@ -60,7 +60,7 @@
 
 #include "nsIFile.h"
 #include "nsLocalFile.h"
-#if defined(XP_UNIX) || defined(XP_OS2)
+#if defined(XP_UNIX)
 #include "nsNativeCharsetUtils.h"
 #endif
 #include "nsDirectoryService.h"
@@ -74,7 +74,7 @@ extern nsresult nsStringInputStreamConstructor(nsISupports *, REFNSIID, void **)
 
 #include "nsAtomService.h"
 #include "nsAtomTable.h"
-#include "nsTraceRefcnt.h"
+#include "nsISupportsImpl.h"
 
 #include "nsHashPropertyBag.h"
 
@@ -128,6 +128,8 @@ extern nsresult nsStringInputStreamConstructor(nsISupports *, REFNSIID, void **)
 #ifdef MOZ_VISUAL_EVENT_TRACER
 #include "mozilla/VisualEventTracer.h"
 #endif
+
+#include "ogg/ogg.h"
 
 #include "GeckoProfiler.h"
 
@@ -324,14 +326,6 @@ NS_GetDebug(nsIDebug** result)
 }
 
 EXPORT_XPCOM_API(nsresult)
-NS_GetTraceRefcnt(nsITraceRefcnt** result)
-{
-    return nsTraceRefcntImpl::Create(nullptr,
-                                     NS_GET_IID(nsITraceRefcnt),
-                                     (void**) result);
-}
-
-EXPORT_XPCOM_API(nsresult)
 NS_InitXPCOM(nsIServiceManager* *result,
                              nsIFile* binDirectory)
 {
@@ -403,6 +397,78 @@ NS_IMPL_ISUPPORTS1(ICUReporter, nsIMemoryReporter)
 
 /* static */ Atomic<size_t> ICUReporter::sAmount;
 
+class OggReporter MOZ_FINAL : public nsIMemoryReporter
+{
+public:
+    NS_DECL_ISUPPORTS
+
+    OggReporter()
+    {
+#ifdef DEBUG
+        // There must be only one instance of this class, due to |sAmount|
+        // being static.
+        static bool hasRun = false;
+        MOZ_ASSERT(!hasRun);
+        hasRun = true;
+#endif
+        sAmount = 0;
+    }
+
+    static void* Alloc(size_t size)
+    {
+        void* p = malloc(size);
+        sAmount += MallocSizeOfOnAlloc(p);
+        return p;
+    }
+
+    static void* Realloc(void* p, size_t size)
+    {
+        sAmount -= MallocSizeOfOnFree(p);
+        void *pnew = realloc(p, size);
+        if (pnew) {
+            sAmount += MallocSizeOfOnAlloc(pnew);
+        } else {
+            // realloc failed;  undo the decrement from above
+            sAmount += MallocSizeOfOnAlloc(p);
+        }
+        return pnew;
+    }
+
+    static void* Calloc(size_t nmemb, size_t size)
+    {
+        void* p = calloc(nmemb, size);
+        sAmount += MallocSizeOfOnAlloc(p);
+        return p;
+    }
+
+    static void Free(void* p)
+    {
+        sAmount -= MallocSizeOfOnFree(p);
+        free(p);
+    }
+
+private:
+    // |sAmount| can be (implicitly) accessed by multiple threads, so it
+    // must be thread-safe.
+    static Atomic<size_t> sAmount;
+
+    MOZ_DEFINE_MALLOC_SIZE_OF(MallocSizeOf)
+    MOZ_DEFINE_MALLOC_SIZE_OF_ON_ALLOC(MallocSizeOfOnAlloc)
+    MOZ_DEFINE_MALLOC_SIZE_OF_ON_FREE(MallocSizeOfOnFree)
+
+    NS_IMETHODIMP
+    CollectReports(nsIHandleReportCallback* aHandleReport, nsISupports* aData)
+    {
+        return MOZ_COLLECT_REPORT(
+            "explicit/media/libogg", KIND_HEAP, UNITS_BYTES, sAmount,
+            "Memory allocated through libogg for Ogg, Theora, and related media files.");
+    }
+};
+
+NS_IMPL_ISUPPORTS1(OggReporter, nsIMemoryReporter)
+
+/* static */ Atomic<size_t> OggReporter::sAmount;
+
 EXPORT_XPCOM_API(nsresult)
 NS_InitXPCOM2(nsIServiceManager* *result,
               nsIFile* binDirectory,
@@ -468,7 +534,7 @@ NS_InitXPCOM2(nsIServiceManager* *result,
         setlocale(LC_ALL, "");
 #endif
 
-#if defined(XP_UNIX) || defined(XP_OS2)
+#if defined(XP_UNIX)
     NS_StartupNativeCharsetUtils();
 #endif
 
@@ -554,10 +620,13 @@ NS_InitXPCOM2(nsIServiceManager* *result,
     // can't define the alloc/free functions in the JS engine, because it can't
     // depend on the XPCOM-based memory reporting goop.  So for now, we have
     // this oddness.
-    if (!JS_SetICUMemoryFunctions(ICUReporter::Alloc, ICUReporter::Realloc,
-                                  ICUReporter::Free)) {
-        NS_RUNTIMEABORT("JS_SetICUMemoryFunctions failed.");
-    }
+    mozilla::SetICUMemoryFunctions();
+
+    // Do the same for libogg.
+    ogg_set_mem_functions(OggReporter::Alloc,
+                          OggReporter::Calloc,
+                          OggReporter::Realloc,
+                          OggReporter::Free);
 
     // Initialize the JS engine.
     if (!JS_Init()) {
@@ -607,8 +676,9 @@ NS_InitXPCOM2(nsIServiceManager* *result,
     }
 
     // The memory reporter manager is up and running -- register a reporter for
-    // ICU's memory usage.
+    // ICU's and libogg's memory usage.
     RegisterStrongMemoryReporter(new ICUReporter());
+    RegisterStrongMemoryReporter(new OggReporter());
 
     mozilla::Telemetry::Init();
 
@@ -657,6 +727,19 @@ NS_ShutdownXPCOM(nsIServiceManager* servMgr)
 }
 
 namespace mozilla {
+
+void
+SetICUMemoryFunctions()
+{
+    static bool sICUReporterInitialized = false;
+    if (!sICUReporterInitialized) {
+        if (!JS_SetICUMemoryFunctions(ICUReporter::Alloc, ICUReporter::Realloc,
+                                      ICUReporter::Free)) {
+            NS_RUNTIMEABORT("JS_SetICUMemoryFunctions failed.");
+        }
+        sICUReporterInitialized = true;
+    }
+}
 
 nsresult
 ShutdownXPCOM(nsIServiceManager* servMgr)
@@ -821,6 +904,20 @@ ShutdownXPCOM(nsIServiceManager* servMgr)
     } else {
         NS_WARNING("Component Manager was never created ...");
     }
+
+#ifdef MOZ_ENABLE_PROFILER_SPS
+    // In optimized builds we don't do shutdown collections by default, so
+    // uncollected (garbage) objects may keep the nsXPConnect singleton alive,
+    // and its XPCJSRuntime along with it. However, we still destroy various
+    // bits of state in JS_ShutDown(), so we need to make sure the profiler
+    // can't access them when it shuts down. This call nulls out the
+    // JS pseudo-stack's internal reference to the main thread JSRuntime,
+    // duplicating the call in XPCJSRuntime::~XPCJSRuntime() in case that
+    // never fired.
+    if (PseudoStack *stack = mozilla_get_pseudo_stack()) {
+        stack->sampleRuntime(nullptr);
+    }
+#endif
 
     // Shut down the JS engine.
     JS_ShutDown();

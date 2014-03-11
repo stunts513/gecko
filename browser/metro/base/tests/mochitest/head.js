@@ -310,8 +310,14 @@ function addTab(aUrl) {
 function cleanUpOpenedTabs() {
   let tab;
   while(tab = gOpenedTabs.shift()) {
+    cleanupNotificationsForBrowser(tab.browser);
     Browser.closeTab(Browser.getTabFromChrome(tab.chromeTab), { forceClose: true })
   }
+}
+
+function cleanupNotificationsForBrowser(aBrowser) {
+  let notificationBox = Browser.getNotificationBox(aBrowser);
+  notificationBox && notificationBox.removeAllNotifications(true);
 }
 
 /**
@@ -1033,11 +1039,14 @@ function runTests() {
 function spyOnMethod(aObj, aMethod) {
   let origFunc = aObj[aMethod];
   let spy = function() {
-    spy.calledWith = Array.slice(arguments);
+    let callArguments = Array.slice(arguments);
     spy.callCount++;
+    spy.calledWith = callArguments;
+    spy.argsForCall.push(callArguments);
     return (spy.returnValue = origFunc.apply(aObj, arguments));
   };
   spy.callCount = 0;
+  spy.argsForCall = [];
   spy.restore = function() {
     return (aObj[aMethod] = origFunc);
   };

@@ -254,7 +254,7 @@ nsTableFrame::PageBreakAfter(nsIFrame* aSourceFrame,
 
 // XXX this needs to be cleaned up so that the frame constructor breaks out col group
 // frames into a separate child list, bug 343048.
-NS_IMETHODIMP
+nsresult
 nsTableFrame::SetInitialChildList(ChildListID     aListID,
                                   nsFrameList&    aChildList)
 {
@@ -1062,7 +1062,7 @@ public:
                                          const nsDisplayItemGeometry* aGeometry,
                                          nsRegion *aInvalidRegion) MOZ_OVERRIDE;
   virtual void Paint(nsDisplayListBuilder* aBuilder,
-                     nsRenderingContext* aCtx);
+                     nsRenderingContext* aCtx) MOZ_OVERRIDE;
   NS_DISPLAY_DECL_NAME("TableBorderBackground", TYPE_TABLE_BORDER_BACKGROUND)
 };
 
@@ -1681,7 +1681,7 @@ nsTableFrame::RequestSpecialHeightReflow(const nsHTMLReflowState& aReflowState)
  ******************************************************************************************/
 
 /* Layout the entire inner table. */
-NS_METHOD nsTableFrame::Reflow(nsPresContext*           aPresContext,
+nsresult nsTableFrame::Reflow(nsPresContext*           aPresContext,
                                nsHTMLReflowMetrics&     aDesiredSize,
                                const nsHTMLReflowState& aReflowState,
                                nsReflowStatus&          aStatus)
@@ -1705,7 +1705,7 @@ NS_METHOD nsTableFrame::Reflow(nsPresContext*           aPresContext,
   aDesiredSize.Width() = aReflowState.AvailableWidth();
 
   // Check for an overflow list, and append any row group frames being pushed
-  MoveOverflowToChildList(aPresContext);
+  MoveOverflowToChildList();
 
   bool haveDesiredHeight = false;
   SetHaveReflowedColGroups(false);
@@ -1949,13 +1949,13 @@ nsTableFrame::PushChildren(const RowGroupArray& aRowGroups,
     }
     // When pushing and pulling frames we need to check for whether any
     // views need to be reparented.
-    ReparentFrameViewList(PresContext(), frames, this, nextInFlow);
+    ReparentFrameViewList(frames, this, nextInFlow);
     nextInFlow->mFrames.InsertFrames(nextInFlow, prevSibling,
                                      frames);
   }
   else {
     // Add the frames to our overflow list.
-    SetOverflowFrames(PresContext(), frames);
+    SetOverflowFrames(frames);
   }
 }
 
@@ -2064,7 +2064,7 @@ nsTableFrame::DidSetStyleContext(nsStyleContext* aOldStyleContext)
 
 
 
-NS_IMETHODIMP
+nsresult
 nsTableFrame::AppendFrames(ChildListID     aListID,
                            nsFrameList&    aFrameList)
 {
@@ -2121,7 +2121,7 @@ struct ChildListInsertions {
   nsFrameList mList;
 };
 
-NS_IMETHODIMP
+nsresult
 nsTableFrame::InsertFrames(ChildListID     aListID,
                            nsIFrame*       aPrevFrame,
                            nsFrameList&    aFrameList)
@@ -2339,7 +2339,7 @@ nsTableFrame::DoRemoveFrame(ChildListID     aListID,
   }
 }
 
-NS_IMETHODIMP
+nsresult
 nsTableFrame::RemoveFrame(ChildListID     aListID,
                           nsIFrame*       aOldFrame)
 {
@@ -2684,7 +2684,7 @@ nsTableFrame::SetupHeaderFooterChild(const nsTableReflowState& aReflowState,
                                    -1, -1, nsHTMLReflowState::CALLER_WILL_INIT);
   InitChildReflowState(kidReflowState);
   kidReflowState.mFlags.mIsTopOfPage = true;
-  nsHTMLReflowMetrics desiredSize(aReflowState.reflowState.GetWritingMode());
+  nsHTMLReflowMetrics desiredSize(aReflowState.reflowState);
   desiredSize.Width() = desiredSize.Height() = 0;
   nsReflowStatus status;
   nsresult rv = ReflowChild(aFrame, presContext, desiredSize, kidReflowState,
@@ -2717,7 +2717,7 @@ nsTableFrame::PlaceRepeatedFooter(nsTableReflowState& aReflowState,
   nsRect origTfootVisualOverflow = aTfoot->GetVisualOverflowRect();
           
   nsReflowStatus footerStatus;
-  nsHTMLReflowMetrics desiredSize(aReflowState.reflowState.GetWritingMode());
+  nsHTMLReflowMetrics desiredSize(aReflowState.reflowState);
   desiredSize.Width() = desiredSize.Height() = 0;
   ReflowChild(aTfoot, presContext, desiredSize, footerReflowState,
               aReflowState.x, aReflowState.y, 0, footerStatus);
@@ -2823,7 +2823,7 @@ nsTableFrame::ReflowChildren(nsTableReflowState& aReflowState,
       nsRect oldKidRect = kidFrame->GetRect();
       nsRect oldKidVisualOverflow = kidFrame->GetVisualOverflowRect();
 
-      nsHTMLReflowMetrics desiredSize(aReflowState.reflowState.GetWritingMode());
+      nsHTMLReflowMetrics desiredSize(aReflowState.reflowState);
       desiredSize.Width() = desiredSize.Height() = 0;
 
       // Reflow the child into the available space
@@ -3483,7 +3483,7 @@ nsTableFrame::IsAutoLayout()
 }
 
 #ifdef DEBUG_FRAME_DUMP
-NS_IMETHODIMP
+nsresult
 nsTableFrame::GetFrameName(nsAString& aResult) const
 {
   return MakeFrameName(NS_LITERAL_STRING("Table"), aResult);
@@ -4523,7 +4523,7 @@ public:
   nsDelayedCalcBCBorders(nsIFrame* aFrame) :
     mFrame(aFrame) {}
 
-  NS_IMETHOD Run() {
+  NS_IMETHOD Run() MOZ_OVERRIDE {
     if (mFrame) {
       nsTableFrame* tableFrame = static_cast <nsTableFrame*>(mFrame.GetFrame());
       if (tableFrame->NeedToCalcBCBorders()) {

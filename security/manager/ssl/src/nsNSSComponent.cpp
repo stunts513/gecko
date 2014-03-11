@@ -73,7 +73,7 @@ using namespace mozilla;
 using namespace mozilla::dom;
 using namespace mozilla::psm;
 
-#ifdef MOZ_LOGGING
+#ifdef PR_LOGGING
 PRLogModuleInfo* gPIPNSSLog = nullptr;
 #endif
 
@@ -809,7 +809,7 @@ static const CipherPref sCipherPrefs[] = {
    TLS_DHE_RSA_WITH_CAMELLIA_256_CBC_SHA, true },
 
  { "security.ssl3.dhe_rsa_des_ede3_sha",
-   SSL_DHE_RSA_WITH_3DES_EDE_CBC_SHA, true }, // deprecated (3DES)
+   TLS_DHE_RSA_WITH_3DES_EDE_CBC_SHA, true }, // deprecated (3DES)
 
  { "security.ssl3.dhe_dss_aes_128_sha",
    TLS_DHE_DSS_WITH_AES_128_CBC_SHA, true }, // deprecated (DSS)
@@ -830,12 +830,12 @@ static const CipherPref sCipherPrefs[] = {
  { "security.ssl3.rsa_camellia_256_sha",
    TLS_RSA_WITH_CAMELLIA_256_CBC_SHA, true }, // deprecated (RSA key exchange)
  { "security.ssl3.rsa_des_ede3_sha",
-   SSL_RSA_WITH_3DES_EDE_CBC_SHA, true }, // deprecated (RSA key exchange, 3DES)
+   TLS_RSA_WITH_3DES_EDE_CBC_SHA, true }, // deprecated (RSA key exchange, 3DES)
 
  { "security.ssl3.rsa_rc4_128_sha",
-   SSL_RSA_WITH_RC4_128_SHA, true }, // deprecated (RSA key exchange, RC4)
+   TLS_RSA_WITH_RC4_128_SHA, true }, // deprecated (RSA key exchange, RC4)
  { "security.ssl3.rsa_rc4_128_md5",
-   SSL_RSA_WITH_RC4_128_MD5, true }, // deprecated (RSA key exchange, RC4, HMAC-MD5)
+   TLS_RSA_WITH_RC4_128_MD5, true }, // deprecated (RSA key exchange, RC4, HMAC-MD5)
 
  // All the rest are disabled by default
 
@@ -940,9 +940,6 @@ CipherSuiteChangeObserver::Observe(nsISupports* aSubject,
 void nsNSSComponent::setValidationOptions(bool isInitialSetting,
                                           const MutexAutoLock& lock)
 {
-  bool crlDownloading = Preferences::GetBool("security.CRL_download.enabled",
-                                             false);
-
   // This preference controls whether we do OCSP fetching and does not affect
   // OCSP stapling.
   // 0 = disabled, 1 = enabled
@@ -959,9 +956,13 @@ void nsNSSComponent::setValidationOptions(bool isInitialSetting,
     Telemetry::Accumulate(Telemetry::CERT_OCSP_REQUIRED, ocspRequired);
   }
 
-  bool aiaDownloadEnabled = Preferences::GetBool("security.missing_cert_download.enabled",
-                                                 false);
+#ifndef NSS_NO_LIBPKIX
+  bool crlDownloading = Preferences::GetBool("security.CRL_download.enabled",
+                                             false);
+  bool aiaDownloadEnabled =
+    Preferences::GetBool("security.missing_cert_download.enabled", false);
 
+#endif
   bool ocspStaplingEnabled = Preferences::GetBool("security.ssl.enable_ocsp_stapling",
                                                   true);
   PublicSSLState()->SetOCSPStaplingEnabled(ocspStaplingEnabled);
@@ -970,11 +971,16 @@ void nsNSSComponent::setValidationOptions(bool isInitialSetting,
   CertVerifier::implementation_config certVerifierImplementation
     = CertVerifier::classic;
 
+  // The insanity::pkix pref overrides the libpkix pref
+  if (Preferences::GetBool("security.use_insanity_verification", false)) {
+    certVerifierImplementation = CertVerifier::insanity;
+  } else {
 #ifndef NSS_NO_LIBPKIX
   if (Preferences::GetBool("security.use_libpkix_verification", false)) {
     certVerifierImplementation = CertVerifier::libpkix;
   }
 #endif
+  }
 
   CertVerifier::ocsp_download_config odc;
   CertVerifier::ocsp_strict_config osc;
@@ -983,11 +989,15 @@ void nsNSSComponent::setValidationOptions(bool isInitialSetting,
   SetClassicOCSPBehaviorFromPrefs(&odc, &osc, &ogc, lock);
   mDefaultCertVerifier = new SharedCertVerifier(
       certVerifierImplementation,
+#ifndef NSS_NO_LIBPKIX
       aiaDownloadEnabled ?
         CertVerifier::missing_cert_download_on : CertVerifier::missing_cert_download_off,
       crlDownloading ?
         CertVerifier::crl_download_allowed : CertVerifier::crl_local_only,
+#endif
       odc, osc, ogc);
+
+  CERT_ClearOCSPCache();
 }
 
 // Enable the TLS versions given in the prefs, defaulting to SSL 3.0 (min
@@ -1021,32 +1031,6 @@ nsNSSComponent::setEnabledTLSVersions()
       return NS_ERROR_UNEXPECTED;
     }
   }
-
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-nsNSSComponent::SkipOcsp()
-{
-  nsNSSShutDownPreventionLock locker;
-  CERTCertDBHandle* certdb = CERT_GetDefaultCertDB();
-
-  SECStatus rv = CERT_DisableOCSPChecking(certdb);
-  return (rv == SECSuccess) ? NS_OK : NS_ERROR_FAILURE;
-}
-
-NS_IMETHODIMP
-nsNSSComponent::SkipOcspOff()
-{
-  MutexAutoLock lock(mutex);
-  MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(mNSSInitialized);
-  NS_ENSURE_TRUE(mNSSInitialized, NS_ERROR_NOT_INITIALIZED);
-
-  CertVerifier::ocsp_download_config odc; // ignored
-  CertVerifier::ocsp_strict_config osc; // ignored
-  CertVerifier::ocsp_get_config ogc; // ignored
-  SetClassicOCSPBehaviorFromPrefs(&odc, &osc, &ogc, lock);
 
   return NS_OK;
 }
@@ -1258,7 +1242,7 @@ nsNSSComponent::ShutdownNSS()
 #endif
     SSL_ClearSessionCache();
     UnloadLoadableRoots();
-#ifndef NSS_NO_LIBPKIX
+#ifndef MOZ_NO_EV_CERTS
     CleanupIdentityInfo();
 #endif
     PR_LOG(gPIPNSSLog, PR_LOG_DEBUG, ("evaporating psm resources\n"));
@@ -1620,7 +1604,9 @@ nsNSSComponent::Observe(nsISupports* aSubject, const char* aTopic,
                || prefName.Equals("security.missing_cert_download.enabled")
                || prefName.Equals("security.OCSP.require")
                || prefName.Equals("security.OCSP.GET.enabled")
-               || prefName.Equals("security.ssl.enable_ocsp_stapling")) {
+               || prefName.Equals("security.ssl.enable_ocsp_stapling")
+               || prefName.Equals("security.use_insanity_verification")
+               || prefName.Equals("security.use_libpkix_verification")) {
       MutexAutoLock lock(mutex);
       setValidationOptions(false, lock);
     } else if (prefName.Equals("network.ntlm.send-lm-response")) {
@@ -1823,7 +1809,6 @@ nsNSSComponent::IsNSSInitialized(bool* initialized)
 
 SharedCertVerifier::~SharedCertVerifier() { }
 
-//#ifndef NSS_NO_LIBPKIX
 TemporaryRef<SharedCertVerifier>
 nsNSSComponent::GetDefaultCertVerifier()
 {

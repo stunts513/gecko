@@ -168,9 +168,6 @@ pref("layout.spellcheckDefault", 0);
 /* new html5 forms */
 pref("dom.experimental_forms", true);
 pref("dom.forms.number", true);
-// Don't enable <input type=color> yet as we don't have a color picker
-// implemented for Android (bug 875750)
-pref("dom.forms.color", true);
 
 /* extension manager and xpinstall */
 pref("xpinstall.whitelist.add", "addons.mozilla.org");
@@ -445,7 +442,7 @@ pref("browser.ui.touch.bottom", 16);
 pref("browser.ui.touch.weight.visited", 120); // percentage
 
 // The percentage of the screen that needs to be scrolled before margins are exposed.
-pref("browser.ui.show-margins-threshold", 20);
+pref("browser.ui.show-margins-threshold", 10);
 
 // Maximum distance from the point where the user pressed where we still
 // look for text to select
@@ -818,10 +815,28 @@ pref("browser.snippets.statsUrl", "https://snippets-stats.mozilla.org/mobile");
 
 // These prefs require a restart to take effect.
 pref("browser.snippets.enabled", true);
-pref("browser.snippets.syncPromo.enabled", false);
+pref("browser.snippets.syncPromo.enabled", true);
 
 #ifdef MOZ_ANDROID_SYNTHAPKS
 // The URL of the APK factory from which we obtain APKs for webapps.
 // This currently points to the development server.
 pref("browser.webapps.apkFactoryUrl", "http://dapk.net/application.apk");
+
+// How frequently to check for webapp updates, in seconds (86400 is daily).
+pref("browser.webapps.updateInterval", 86400);
+
+// The URL of the service that checks for updates.
+// This currently points to the development server.
+// To test updates, set this to http://apk-update-checker.paas.allizom.org,
+// which is a test server that always reports all apps as having updates.
+pref("browser.webapps.updateCheckUrl", "http://dapk.net/app_updates");
+
 #endif
+
+// The mode of home provider syncing.
+// 0: Sync always
+// 1: Sync only when on wifi
+pref("home.sync.updateMode", 0);
+
+// How frequently to check if we should sync home provider data.
+pref("home.sync.checkIntervalSecs", 3600);

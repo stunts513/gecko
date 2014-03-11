@@ -20,6 +20,7 @@ typedef nsContainerFrame nsFlexContainerFrameSuper;
 template <class T> class nsTArray;
 
 class nsFlexContainerFrame : public nsFlexContainerFrameSuper {
+public:
   NS_DECL_FRAMEARENA_HELPERS
   NS_DECL_QUERYFRAME_TARGET(nsFlexContainerFrame)
   NS_DECL_QUERYFRAME
@@ -28,7 +29,6 @@ class nsFlexContainerFrame : public nsFlexContainerFrameSuper {
   friend nsIFrame* NS_NewFlexContainerFrame(nsIPresShell* aPresShell,
                                             nsStyleContext* aContext);
 
-public:
   // Forward-decls of helper classes
   class FlexItem;
   class FlexLine;
@@ -40,10 +40,10 @@ public:
                                 const nsRect&           aDirtyRect,
                                 const nsDisplayListSet& aLists) MOZ_OVERRIDE;
 
-  NS_IMETHOD Reflow(nsPresContext*           aPresContext,
-                    nsHTMLReflowMetrics&     aDesiredSize,
-                    const nsHTMLReflowState& aReflowState,
-                    nsReflowStatus&          aStatus) MOZ_OVERRIDE;
+  virtual nsresult Reflow(nsPresContext*           aPresContext,
+                          nsHTMLReflowMetrics&     aDesiredSize,
+                          const nsHTMLReflowState& aReflowState,
+                          nsReflowStatus&          aStatus) MOZ_OVERRIDE;
 
   virtual nscoord
     GetMinWidth(nsRenderingContext* aRenderingContext) MOZ_OVERRIDE;
@@ -52,7 +52,7 @@ public:
 
   virtual nsIAtom* GetType() const MOZ_OVERRIDE;
 #ifdef DEBUG_FRAME_DUMP
-  NS_IMETHOD GetFrameName(nsAString& aResult) const MOZ_OVERRIDE;
+  virtual nsresult GetFrameName(nsAString& aResult) const MOZ_OVERRIDE;
 #endif
   // Flexbox-specific public methods
   bool IsHorizontal();
@@ -60,8 +60,7 @@ public:
 protected:
   // Protected constructor & destructor
   nsFlexContainerFrame(nsStyleContext* aContext) :
-    nsFlexContainerFrameSuper(aContext),
-    mChildrenHaveBeenReordered(false)
+    nsFlexContainerFrameSuper(aContext)
   {}
   virtual ~nsFlexContainerFrame();
 
@@ -131,7 +130,7 @@ protected:
 
   nscoord ComputeCrossSize(const nsHTMLReflowState& aReflowState,
                            const FlexboxAxisTracker& aAxisTracker,
-                           const nsTArray<FlexLine>& aLines,
+                           nscoord aSumLineCrossSizes,
                            nscoord aAvailableHeightForContent,
                            bool* aIsDefinite,
                            nsReflowStatus& aStatus);

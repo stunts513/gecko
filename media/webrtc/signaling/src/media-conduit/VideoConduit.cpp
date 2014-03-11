@@ -76,7 +76,6 @@ WebrtcVideoConduit::~WebrtcVideoConduit()
       if (mOtherDirection)
         mOtherDirection->mPtrExtCapture = nullptr;
     }
-    mPtrViECapture->Release();
   }
 
   //Deal with External Renderer
@@ -88,7 +87,6 @@ WebrtcVideoConduit::~WebrtcVideoConduit()
       }
       mPtrViERender->RemoveRenderer(mChannel);
     }
-    mPtrViERender->Release();
   }
 
   //Deal with the transport
@@ -97,12 +95,6 @@ WebrtcVideoConduit::~WebrtcVideoConduit()
     if (!mShutDown) {
       mPtrViENetwork->DeregisterSendTransport(mChannel);
     }
-    mPtrViENetwork->Release();
-  }
-
-  if(mPtrViECodec)
-  {
-    mPtrViECodec->Release();
   }
 
   if(mPtrViEBase)
@@ -113,12 +105,6 @@ WebrtcVideoConduit::~WebrtcVideoConduit()
       SyncTo(nullptr);
       mPtrViEBase->DeleteChannel(mChannel);
     }
-    mPtrViEBase->Release();
-  }
-
-  if (mPtrRTP)
-  {
-    mPtrRTP->Release();
   }
 
   if (mOtherDirection)
@@ -145,18 +131,18 @@ bool WebrtcVideoConduit::GetRemoteSSRC(unsigned int* ssrc) {
   return !mPtrRTP->GetRemoteSSRC(mChannel, *ssrc);
 }
 
-bool WebrtcVideoConduit::GetRTPJitter(unsigned int* jitterMs) {
+bool WebrtcVideoConduit::GetRTPStats(unsigned int* jitterMs,
+                                     unsigned int* cumulativeLost) {
   unsigned int ntpHigh, ntpLow;
   unsigned int packetsSent, bytesSent;
   unsigned short fractionLost;
-  unsigned int cumulativeLost;
   unsigned extendedMax;
   int rttMs;
   // GetReceivedRTCPStatistics is a poorly named GetRTPStatistics variant
   return !mPtrRTP->GetReceivedRTCPStatistics(mChannel, ntpHigh, ntpLow,
                                              packetsSent, bytesSent,
                                              fractionLost,
-                                             cumulativeLost,
+                                             *cumulativeLost,
                                              extendedMax,
                                              *jitterMs,
                                              rttMs);
@@ -165,25 +151,25 @@ bool WebrtcVideoConduit::GetRTPJitter(unsigned int* jitterMs) {
 bool WebrtcVideoConduit::GetRTCPReceiverReport(DOMHighResTimeStamp* timestamp,
                                                unsigned int* jitterMs,
                                                unsigned int* packetsReceived,
-                                               uint64_t* bytesReceived) {
+                                               uint64_t* bytesReceived,
+                                               unsigned int* cumulativeLost) {
   unsigned int ntpHigh, ntpLow;
   unsigned int packetsSent;
   unsigned int bytesSent32;
   unsigned short fractionLost;
-  unsigned int cumulativeLost;
   unsigned extendedMax;
   int rttMs;
   bool result = !mPtrRTP->GetSentRTCPStatistics(mChannel, ntpHigh, ntpLow,
                                                 bytesSent32, packetsSent,
                                                 fractionLost,
-                                                cumulativeLost,
+                                                *cumulativeLost,
                                                 extendedMax,
                                                 *jitterMs,
                                                 rttMs);
   if (result) {
     *timestamp = NTPtoDOMHighResTimeStamp(ntpHigh, ntpLow);
-    *packetsReceived = (packetsSent >= cumulativeLost) ?
-                       (packetsSent - cumulativeLost) : 0;
+    *packetsReceived = (packetsSent >= *cumulativeLost) ?
+                       (packetsSent - *cumulativeLost) : 0;
     *bytesReceived = (packetsSent ?
                       (bytesSent32 / packetsSent) : 0) * (*packetsReceived);
   }

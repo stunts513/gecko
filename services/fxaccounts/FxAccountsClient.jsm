@@ -10,44 +10,12 @@ Cu.import("resource://gre/modules/Log.jsm");
 Cu.import("resource://gre/modules/Promise.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://services-common/utils.js");
-Cu.import("resource://services-common/hawk.js");
+Cu.import("resource://services-common/hawkclient.js");
 Cu.import("resource://services-crypto/utils.js");
 Cu.import("resource://gre/modules/FxAccountsCommon.js");
+Cu.import("resource://gre/modules/Credentials.jsm");
 
-// Default can be changed by the preference 'identity.fxaccounts.auth.uri'
-let _host = "https://api-accounts.dev.lcip.org/v1";
-try {
-  _host = Services.prefs.getCharPref("identity.fxaccounts.auth.uri");
-} catch(keepDefault) {}
-
-const HOST = _host;
-const PROTOCOL_VERSION = "identity.mozilla.com/picl/v1/";
-
-function KW(context) {
-  // This is used as a salt.  It's specified by the protocol.  Note that the
-  // value of PROTOCOL_VERSION does not refer in any wy to the version of the
-  // Firefox Accounts API.  For this reason, it is not exposed as a pref.
-  //
-  // See:
-  // https://github.com/mozilla/fxa-auth-server/wiki/onepw-protocol#creating-the-account
-  return PROTOCOL_VERSION + context;
-}
-
-function stringToHex(str) {
-  let encoder = new TextEncoder("utf-8");
-  let bytes = encoder.encode(str);
-  return bytesToHex(bytes);
-}
-
-// XXX Sadly, CommonUtils.bytesAsHex doesn't handle typed arrays.
-function bytesToHex(bytes) {
-  let hex = [];
-  for (let i = 0; i < bytes.length; i++) {
-    hex.push((bytes[i] >>> 4).toString(16));
-    hex.push((bytes[i] & 0xF).toString(16));
-  }
-  return hex.join("");
-}
+const HOST = Services.prefs.getCharPref("identity.fxaccounts.auth.uri");
 
 this.FxAccountsClient = function(host = HOST) {
   this.host = host;
@@ -55,6 +23,10 @@ this.FxAccountsClient = function(host = HOST) {
   // The FxA auth server expects requests to certain endpoints to be authorized
   // using Hawk.
   this.hawk = new HawkClient(host);
+
+  // Manage server backoff state. C.f.
+  // https://github.com/mozilla/fxa-auth-server/blob/master/docs/api.md#backoff-protocol
+  this.backoffError = null;
 };
 
 this.FxAccountsClient.prototype = {
@@ -92,23 +64,18 @@ this.FxAccountsClient.prototype = {
    * @return Promise
    *        Returns a promise that resolves to an object:
    *        {
-   *          uid: the user's unique ID
-   *          sessionToken: a session token
+   *          uid: the user's unique ID (hex)
+   *          sessionToken: a session token (hex)
+   *          keyFetchToken: a key fetch token (hex)
    *        }
    */
-  signUp: function (email, password) {
-    let uid;
-    let hexEmail = stringToHex(email);
-    let uidPromise = this._request("/raw_password/account/create", "POST", null,
-                          {email: hexEmail, password: password});
-
-    return uidPromise.then((result) => {
-      uid = result.uid;
-      return this.signIn(email, password)
-        .then(function(result) {
-          result.uid = uid;
-          return result;
-        });
+  signUp: function(email, password) {
+    return Credentials.setup(email, password).then((creds) => {
+      let data = {
+        email: creds.emailUTF8,
+        authPW: CommonUtils.bytesAsHex(creds.authPW),
+      };
+      return this._request("/account/create", "POST", null, data);
     });
   },
 
@@ -122,15 +89,49 @@ this.FxAccountsClient.prototype = {
    * @return Promise
    *        Returns a promise that resolves to an object:
    *        {
-   *          uid: the user's unique ID
-   *          sessionToken: a session token
+   *          uid: the user's unique ID (hex)
+   *          sessionToken: a session token (hex)
+   *          keyFetchToken: a key fetch token (hex)
    *          verified: flag indicating verification status of the email
    *        }
    */
-  signIn: function signIn(email, password) {
-    let hexEmail = stringToHex(email);
-    return this._request("/raw_password/session/create", "POST", null,
-                         {email: hexEmail, password: password});
+  signIn: function signIn(email, password, retryOK=true) {
+    return Credentials.setup(email, password).then((creds) => {
+      let data = {
+        email: creds.emailUTF8,
+        authPW: CommonUtils.bytesAsHex(creds.authPW),
+      };
+      return this._request("/account/login", "POST", null, data).then(
+        // Include the canonical capitalization of the email in the response so
+        // the caller can set its signed-in user state accordingly.
+        result => {
+          result.email = data.email;
+          return result;
+        },
+        error => {
+          log.debug("signIn error: " + JSON.stringify(error));
+          // If the user entered an email with different capitalization from
+          // what's stored in the database (e.g., Greta.Garbo@gmail.COM as
+          // opposed to greta.garbo@gmail.com), the server will respond with a
+          // errno 120 (code 400) and the expected capitalization of the email.
+          // We retry with this email exactly once.  If successful, we use the
+          // server's version of the email as the signed-in-user's email. This
+          // is necessary because the email also serves as salt; so we must be
+          // in agreement with the server on capitalization.
+          //
+          // API reference:
+          // https://github.com/mozilla/fxa-auth-server/blob/master/docs/api.md
+          if (ERRNO_INCORRECT_EMAIL_CASE === error.errno && retryOK) {
+            if (!error.email) {
+              log.error("Server returned errno 120 but did not provide email");
+              throw error;
+            }
+            return this.signIn(error.email, password, false);
+          }
+          throw error;
+        }
+      );
+    });
   },
 
   /**
@@ -177,15 +178,16 @@ this.FxAccountsClient.prototype = {
    * @return Promise
    *        Returns a promise that resolves to an object:
    *        {
-   *          kA: an encryption key for recevorable data
-   *          wrapKB: an encryption key that requires knowledge of the user's password
+   *          kA: an encryption key for recevorable data (bytes)
+   *          wrapKB: an encryption key that requires knowledge of the
+   *                  user's password (bytes)
    *        }
    */
   accountKeys: function (keyFetchTokenHex) {
     let creds = this._deriveHawkCredentials(keyFetchTokenHex, "keyFetchToken");
     let keyRequestKey = creds.extra.slice(0, 32);
     let morecreds = CryptoUtils.hkdf(keyRequestKey, undefined,
-                                     KW("account/keys"), 3 * 32);
+                                     Credentials.keyWord("account/keys"), 3 * 32);
     let respHMACKey = morecreds.slice(0, 32);
     let respXORKey = morecreds.slice(32, 96);
 
@@ -251,22 +253,25 @@ this.FxAccountsClient.prototype = {
    *        if it doesn't. The promise is rejected on other errors.
    */
   accountExists: function (email) {
-    let hexEmail = stringToHex(email);
-    return this._request("/auth/start", "POST", null, { email: hexEmail })
-      .then(
-        // the account exists
-        (result) => true,
-        (err) => {
-          log.error("accountExists: error: " + JSON.stringify(err));
-          // the account doesn't exist
-          if (err.errno === 102) {
-            log.debug("returning false for errno 102");
+    return this.signIn(email, "").then(
+      (cantHappen) => {
+        throw new Error("How did I sign in with an empty password?");
+      },
+      (expectedError) => {
+        switch (expectedError.errno) {
+          case ERRNO_ACCOUNT_DOES_NOT_EXIST:
             return false;
-          }
-          // propogate other request errors
-          throw err;
+            break;
+          case ERRNO_INCORRECT_PASSWORD:
+            return true;
+            break;
+          default:
+            // not so expected, any more ...
+            throw expectedError;
+            break;
         }
-      );
+      }
+    );
   },
 
   /**
@@ -291,7 +296,7 @@ this.FxAccountsClient.prototype = {
    */
   _deriveHawkCredentials: function (tokenHex, context, size) {
     let token = CommonUtils.hexToBytes(tokenHex);
-    let out = CryptoUtils.hkdf(token, undefined, KW(context), size || 3 * 32);
+    let out = CryptoUtils.hkdf(token, undefined, Credentials.keyWord(context), size || 3 * 32);
 
     return {
       algorithm: "sha256",
@@ -299,6 +304,10 @@ this.FxAccountsClient.prototype = {
       extra: out.slice(64),
       id: CommonUtils.bytesAsHex(out.slice(0, 32))
     };
+  },
+
+  _clearBackoff: function() {
+      this.backoffError = null;
   },
 
   /**
@@ -327,17 +336,37 @@ this.FxAccountsClient.prototype = {
   _request: function hawkRequest(path, method, credentials, jsonPayload) {
     let deferred = Promise.defer();
 
+    // We were asked to back off.
+    if (this.backoffError) {
+      log.debug("Received new request during backoff, re-rejecting.");
+      deferred.reject(this.backoffError);
+      return deferred.promise;
+    }
+
     this.hawk.request(path, method, credentials, jsonPayload).then(
       (responseText) => {
         try {
           let response = JSON.parse(responseText);
           deferred.resolve(response);
         } catch (err) {
+          log.error("json parse error on response: " + responseText);
           deferred.reject({error: err});
         }
       },
 
       (error) => {
+        log.error("error " + method + "ing " + path + ": " + JSON.stringify(error));
+        if (error.retryAfter) {
+          log.debug("Received backoff response; caching error as flag.");
+          this.backoffError = error;
+          // Schedule clearing of cached-error-as-flag.
+          CommonUtils.namedTimer(
+            this._clearBackoff,
+            error.retryAfter * 1000,
+            this,
+            "fxaBackoffTimer"
+           );
+	}
         deferred.reject(error);
       }
     );

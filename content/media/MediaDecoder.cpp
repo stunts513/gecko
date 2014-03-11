@@ -1482,7 +1482,7 @@ void MediaDecoder::UpdatePlaybackOffset(int64_t aOffset)
 
 bool MediaDecoder::OnStateMachineThread() const
 {
-  return IsCurrentThread(MediaDecoderStateMachine::GetStateMachineThread());
+  return mDecoderStateMachine->OnStateMachineThread();
 }
 
 void MediaDecoder::NotifyAudioAvailableListener()
@@ -1735,7 +1735,6 @@ MediaDecoder::IsRawEnabled()
 }
 #endif
 
-#ifdef MOZ_OGG
 bool
 MediaDecoder::IsOpusEnabled()
 {
@@ -1751,7 +1750,6 @@ MediaDecoder::IsOggEnabled()
 {
   return Preferences::GetBool("media.ogg.enabled");
 }
-#endif
 
 #ifdef MOZ_WAVE
 bool

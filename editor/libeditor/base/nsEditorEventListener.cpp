@@ -4,7 +4,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "mozilla/Assertions.h"         // for MOZ_ASSERT, etc
+#include "mozilla/IMEStateManager.h"    // for IMEStateManager
 #include "mozilla/Preferences.h"        // for Preferences
+#include "mozilla/TextEvents.h"         // for WidgetCompositionEvent
 #include "mozilla/dom/Element.h"        // for Element
 #include "mozilla/dom/EventTarget.h"    // for EventTarget
 #include "nsAString.h"
@@ -19,8 +21,8 @@
 #include "nsIContent.h"                 // for nsIContent
 #include "nsIController.h"              // for nsIController
 #include "nsID.h"
-#include "nsIDOMDOMStringList.h"        // for nsIDOMDOMStringList
-#include "nsIDOMDataTransfer.h"         // for nsIDOMDataTransfer
+#include "mozilla/dom/DOMStringList.h"
+#include "mozilla/dom/DataTransfer.h"
 #include "nsIDOMDocument.h"             // for nsIDOMDocument
 #include "nsIDOMDragEvent.h"            // for nsIDOMDragEvent
 #include "nsIDOMElement.h"              // for nsIDOMElement
@@ -37,13 +39,10 @@
 #include "nsIFocusManager.h"            // for nsIFocusManager
 #include "nsIFormControl.h"             // for nsIFormControl, etc
 #include "nsIHTMLEditor.h"              // for nsIHTMLEditor
-#include "nsIMEStateManager.h"          // for nsIMEStateManager
 #include "nsINativeKeyBindings.h"       // for nsINativeKeyBindings
 #include "nsINode.h"                    // for nsINode, ::NODE_IS_EDITABLE, etc
 #include "nsIPlaintextEditor.h"         // for nsIPlaintextEditor, etc
 #include "nsIPresShell.h"               // for nsIPresShell
-#include "nsIPrivateTextEvent.h"        // for nsIPrivateTextEvent
-#include "nsIPrivateTextRange.h"        // for nsIPrivateTextRangeList
 #include "nsISelection.h"               // for nsISelection
 #include "nsISelectionController.h"     // for nsISelectionController, etc
 #include "nsISelectionPrivate.h"        // for nsISelectionPrivate
@@ -60,7 +59,7 @@
 class nsPresContext;
 
 using namespace mozilla;
-using mozilla::dom::EventTarget;
+using namespace mozilla::dom;
 
 static nsINativeKeyBindings *sNativeEditorBindings = nullptr;
 
@@ -232,6 +231,21 @@ nsEditorEventListener::Disconnect()
     return;
   }
   UninstallFromEditor();
+
+  nsIFocusManager* fm = nsFocusManager::GetFocusManager();
+  if (fm) {
+    nsCOMPtr<nsIDOMElement> domFocus;
+    fm->GetFocusedElement(getter_AddRefs(domFocus));
+    nsCOMPtr<nsINode> focusedElement = do_QueryInterface(domFocus);
+    mozilla::dom::Element* root = mEditor->GetRoot();
+    if (focusedElement && root &&
+        nsContentUtils::ContentIsDescendantOf(focusedElement, root)) {
+      // Reset the Selection ancestor limiter and SelectionController state
+      // that nsEditor::InitializeSelection set up.
+      mEditor->FinalizeSelection();
+    }
+  }
+
   mEditor = nullptr;
 }
 
@@ -556,7 +570,7 @@ nsEditorEventListener::MouseClick(nsIDOMEvent* aMouseEvent)
     nsPresContext* presContext =
       presShell ? presShell->GetPresContext() : nullptr;
     if (presContext && currentDoc) {
-      nsIMEStateManager::OnClickInEditor(presContext,
+      IMEStateManager::OnClickInEditor(presContext,
         currentDoc->HasFlag(NODE_IS_EDITABLE) ? nullptr : focusedContent,
         mouseEvent);
     }
@@ -573,7 +587,7 @@ nsEditorEventListener::MouseClick(nsIDOMEvent* aMouseEvent)
   // IME to commit before we change the cursor position
   mEditor->ForceCompositionEnd();
 
-  uint16_t button = (uint16_t)-1;
+  int16_t button = -1;
   mouseEvent->GetButton(&button);
   // middle-mouse click (paste);
   if (button == 1)
@@ -646,24 +660,12 @@ nsEditorEventListener::HandleText(nsIDOMEvent* aTextEvent)
     return NS_OK;
   }
 
-  nsCOMPtr<nsIPrivateTextEvent> textEvent = do_QueryInterface(aTextEvent);
-  if (!textEvent) {
-     //non-ui event passed in.  bad things.
-     return NS_OK;
-  }
-
-  nsAutoString                      composedText;
-  nsCOMPtr<nsIPrivateTextRangeList> textRangeList;
-
-  textEvent->GetText(composedText);
-  textRangeList = textEvent->GetInputRange();
-
   // if we are readonly or disabled, then do nothing.
   if (mEditor->IsReadonly() || mEditor->IsDisabled()) {
     return NS_OK;
   }
 
-  return mEditor->UpdateIMEComposition(composedText, textRangeList);
+  return mEditor->UpdateIMEComposition(aTextEvent);
 }
 
 /**
@@ -803,29 +805,22 @@ nsEditorEventListener::CanDrop(nsIDOMDragEvent* aEvent)
     return false;
   }
 
-  nsCOMPtr<nsIDOMDataTransfer> dataTransfer;
-  aEvent->GetDataTransfer(getter_AddRefs(dataTransfer));
+  nsCOMPtr<nsIDOMDataTransfer> domDataTransfer;
+  aEvent->GetDataTransfer(getter_AddRefs(domDataTransfer));
+  nsCOMPtr<DataTransfer> dataTransfer = do_QueryInterface(domDataTransfer);
   NS_ENSURE_TRUE(dataTransfer, false);
 
-  nsCOMPtr<nsIDOMDOMStringList> types;
-  dataTransfer->GetTypes(getter_AddRefs(types));
-  NS_ENSURE_TRUE(types, false);
+  nsRefPtr<DOMStringList> types = dataTransfer->Types();
 
   // Plaintext editors only support dropping text. Otherwise, HTML and files
   // can be dropped as well.
-  bool typeSupported;
-  types->Contains(NS_LITERAL_STRING(kTextMime), &typeSupported);
-  if (!typeSupported) {
-    types->Contains(NS_LITERAL_STRING(kMozTextInternal), &typeSupported);
-    if (!typeSupported && !mEditor->IsPlaintextEditor()) {
-      types->Contains(NS_LITERAL_STRING(kHTMLMime), &typeSupported);
-      if (!typeSupported) {
-        types->Contains(NS_LITERAL_STRING(kFileMime), &typeSupported);
-      }
-    }
+  if (!types->Contains(NS_LITERAL_STRING(kTextMime)) &&
+      !types->Contains(NS_LITERAL_STRING(kMozTextInternal)) &&
+      (mEditor->IsPlaintextEditor() ||
+       (!types->Contains(NS_LITERAL_STRING(kHTMLMime)) &&
+        !types->Contains(NS_LITERAL_STRING(kFileMime))))) {
+    return false;
   }
-
-  NS_ENSURE_TRUE(typeSupported, false);
 
   // If there is no source node, this is probably an external drag and the
   // drop is allowed. The later checks rely on checking if the drag target
@@ -890,7 +885,9 @@ nsEditorEventListener::HandleStartComposition(nsIDOMEvent* aCompositionEvent)
   if (!mEditor->IsAcceptableInputEvent(aCompositionEvent)) {
     return NS_OK;
   }
-  return mEditor->BeginIMEComposition();
+  WidgetCompositionEvent* compositionStart =
+    aCompositionEvent->GetInternalNSEvent()->AsCompositionEvent();
+  return mEditor->BeginIMEComposition(compositionStart);
 }
 
 void
@@ -957,7 +954,7 @@ nsEditorEventListener::Focus(nsIDOMEvent* aEvent)
   nsCOMPtr<nsIPresShell> ps = GetPresShell();
   NS_ENSURE_TRUE(ps, NS_OK);
   nsCOMPtr<nsIContent> focusedContent = mEditor->GetFocusedContentForIME();
-  nsIMEStateManager::OnFocusInEditor(ps->GetPresContext(), focusedContent);
+  IMEStateManager::OnFocusInEditor(ps->GetPresContext(), focusedContent);
 
   return NS_OK;
 }
@@ -1032,6 +1029,12 @@ nsEditorEventListener::ShouldHandleNativeKeyBindings(nsIDOMEvent* aKeyEvent)
     do_QueryInterface(static_cast<nsIEditor*>(mEditor));
   if (!htmlEditor) {
     return false;
+  }
+
+  nsCOMPtr<nsIDocument> doc = mEditor->GetDocument();
+  if (doc->HasFlag(NODE_IS_EDITABLE)) {
+    // Don't need to perform any checks in designMode documents.
+    return true;
   }
 
   nsIContent* editingHost = htmlEditor->GetActiveEditingHost();

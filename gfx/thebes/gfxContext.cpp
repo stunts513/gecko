@@ -98,7 +98,7 @@ gfxContext::gfxContext(gfxASurface *surface)
   }
 }
 
-gfxContext::gfxContext(DrawTarget *aTarget)
+gfxContext::gfxContext(DrawTarget *aTarget, const Point& aDeviceOffset)
   : mPathIsRect(false)
   , mTransformChanged(false)
   , mCairo(nullptr)
@@ -112,6 +112,7 @@ gfxContext::gfxContext(DrawTarget *aTarget)
 
   mStateStack.SetLength(1);
   CurrentState().drawTarget = mDT;
+  CurrentState().deviceOffset = aDeviceOffset;
   mDT->SetTransform(Matrix());
 }
 
@@ -1413,6 +1414,7 @@ void
 gfxContext::SetPattern(gfxPattern *pattern)
 {
   if (mCairo) {
+    MOZ_ASSERT(!pattern->IsAzure());
     cairo_set_source(mCairo, pattern->CairoPattern());
   } else {
     CurrentState().sourceSurfCairo = nullptr;
@@ -1457,6 +1459,7 @@ void
 gfxContext::Mask(gfxPattern *pattern)
 {
   if (mCairo) {
+    MOZ_ASSERT(!pattern->IsAzure());
     cairo_mask(mCairo, pattern->CairoPattern());
   } else {
     if (pattern->Extend() == gfxPattern::EXTEND_NONE) {

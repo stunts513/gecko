@@ -24,6 +24,7 @@
 #include "builtin/RegExp.h"
 #include "builtin/SIMD.h"
 #include "builtin/TypedObject.h"
+#include "vm/PIC.h"
 #include "vm/RegExpStatics.h"
 #include "vm/StopIterationObject.h"
 #include "vm/WeakMapObject.h"
@@ -247,11 +248,12 @@ GlobalObject::initFunctionAndObjectClasses(JSContext *cx)
         if (!source)
             return nullptr;
         ScriptSource *ss =
-            cx->new_<ScriptSource>(/* originPrincipals = */ (JSPrincipals*)nullptr);
+            cx->new_<ScriptSource>();
         if (!ss) {
             js_free(source);
             return nullptr;
         }
+        ScriptSourceHolder ssHolder(ss);
         ss->setSource(source, sourceLen);
         CompileOptions options(cx);
         options.setNoScriptRval(true)
@@ -354,9 +356,8 @@ GlobalObject::initFunctionAndObjectClasses(JSContext *cx)
                                           self, NullPtr()));
     if (!setter)
         return nullptr;
-    RootedValue undefinedValue(cx, UndefinedValue());
     if (!JSObject::defineProperty(cx, objectProto,
-                                  cx->names().proto, undefinedValue,
+                                  cx->names().proto, UndefinedHandleValue,
                                   JS_DATA_TO_FUNC_PTR(PropertyOp, getter.get()),
                                   JS_DATA_TO_FUNC_PTR(StrictPropertyOp, setter.get()),
                                   JSPROP_GETTER | JSPROP_SETTER | JSPROP_SHARED))
@@ -442,19 +443,18 @@ GlobalObject::initFunctionAndObjectClasses(JSContext *cx)
     return functionProto;
 }
 
-bool
-GlobalObject::ensureConstructor(JSContext *cx, JSProtoKey key)
+/* static */ bool
+GlobalObject::ensureConstructor(JSContext *cx, Handle<GlobalObject*> global, JSProtoKey key)
 {
-    if (getConstructor(key).isObject())
+    if (global->getConstructor(key).isObject())
         return true;
-    return initConstructor(cx, key);
+    return initConstructor(cx, global, key);
 }
 
-bool
-GlobalObject::initConstructor(JSContext *cx, JSProtoKey key)
+/* static*/ bool
+GlobalObject::initConstructor(JSContext *cx, Handle<GlobalObject*> global, JSProtoKey key)
 {
-    MOZ_ASSERT(getConstructor(key).isUndefined());
-    Rooted<GlobalObject*> self(cx, this);
+    MOZ_ASSERT(global->getConstructor(key).isUndefined());
 
     // There are two different kinds of initialization hooks. One of them is
     // the class js_InitFoo hook, defined in a JSProtoKey-keyed table at the
@@ -479,7 +479,7 @@ GlobalObject::initConstructor(JSContext *cx, JSProtoKey key)
     // See if there's an old-style initialization hook.
     if (init) {
         MOZ_ASSERT(!haveSpec);
-        return init(cx, self);
+        return init(cx, global);
     }
 
     //
@@ -519,7 +519,7 @@ GlobalObject::initConstructor(JSContext *cx, JSProtoKey key)
         return false;
 
     // Stash things in the right slots and define the constructor on the global.
-    return DefineConstructorAndPrototype(cx, self, key, ctor, proto);
+    return DefineConstructorAndPrototype(cx, global, key, ctor, proto);
 }
 
 GlobalObject *
@@ -555,14 +555,14 @@ GlobalObject::getOrCreateEval(JSContext *cx, Handle<GlobalObject*> global,
 {
     if (!global->getOrCreateObjectPrototype(cx))
         return false;
-    eval.set(&global->getSlotForCompilation(EVAL).toObject());
+    eval.set(&global->getSlot(EVAL).toObject());
     return true;
 }
 
 bool
 GlobalObject::valueIsEval(Value val)
 {
-    Value eval = getSlotForCompilation(EVAL);
+    Value eval = getSlot(EVAL);
     return eval.isObject() && eval == val;
 }
 
@@ -570,15 +570,14 @@ GlobalObject::valueIsEval(Value val)
 GlobalObject::initStandardClasses(JSContext *cx, Handle<GlobalObject*> global)
 {
     /* Define a top-level property 'undefined' with the undefined value. */
-    RootedValue undefinedValue(cx, UndefinedValue());
-    if (!JSObject::defineProperty(cx, global, cx->names().undefined, undefinedValue,
+    if (!JSObject::defineProperty(cx, global, cx->names().undefined, UndefinedHandleValue,
                                   JS_PropertyStub, JS_StrictPropertyStub, JSPROP_PERMANENT | JSPROP_READONLY))
     {
         return false;
     }
 
     for (size_t k = 0; k < JSProto_LIMIT; ++k) {
-        if (!global->ensureConstructor(cx, static_cast<JSProtoKey>(k)))
+        if (!ensureConstructor(cx, global, static_cast<JSProtoKey>(k)))
             return false;
     }
     return true;
@@ -744,6 +743,21 @@ GlobalObject::addDebugger(JSContext *cx, Handle<GlobalObject*> global, Debugger 
     return true;
 }
 
+/* static */ JSObject *
+GlobalObject::getOrCreateForOfPICObject(JSContext *cx, Handle<GlobalObject *> global)
+{
+    assertSameCompartment(cx, global);
+    JSObject *forOfPIC = global->getForOfPICObject();
+    if (forOfPIC)
+        return forOfPIC;
+
+    forOfPIC = ForOfPIC::createForOfPICObject(cx, global);
+    if (!forOfPIC)
+        return nullptr;
+    global->setReservedSlot(FOR_OF_PIC_CHAIN, ObjectValue(*forOfPIC));
+    return forOfPIC;
+}
+
 bool
 GlobalObject::getSelfHostedFunction(JSContext *cx, HandleAtom selfHostedName, HandleAtom name,
                                     unsigned nargs, MutableHandleValue funVal)
@@ -752,11 +766,6 @@ GlobalObject::getSelfHostedFunction(JSContext *cx, HandleAtom selfHostedName, Ha
     RootedObject holder(cx, cx->global()->intrinsicsHolder());
 
     if (cx->global()->maybeGetIntrinsicValue(shId, funVal.address()))
-        return true;
-
-    if (!cx->runtime()->maybeWrappedSelfHostedFunction(cx, shId, funVal))
-        return false;
-    if (!funVal.isUndefined())
         return true;
 
     JSFunction *fun = NewFunction(cx, NullPtr(), nullptr, nargs, JSFunction::INTERPRETED_LAZY,
@@ -775,20 +784,15 @@ GlobalObject::addIntrinsicValue(JSContext *cx, HandleId id, HandleValue value)
 {
     RootedObject holder(cx, intrinsicsHolder());
 
-    // Work directly with the shape machinery underlying the object, so that we
-    // don't take the compilation lock until we are ready to update the object
-    // without triggering a GC.
-
     uint32_t slot = holder->slotSpan();
     RootedShape last(cx, holder->lastProperty());
     Rooted<UnownedBaseShape*> base(cx, last->base()->unowned());
 
-    StackShape child(base, id, slot, 0, 0, 0);
+    StackShape child(base, id, slot, 0, 0);
     RootedShape shape(cx, cx->compartment()->propertyTree.getChild(cx, last, child));
     if (!shape)
         return false;
 
-    AutoLockForCompilation lock(cx);
     if (!JSObject::setLastProperty(cx, holder, shape))
         return false;
 

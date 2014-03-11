@@ -34,15 +34,15 @@ CompileRuntime::addressOfIonTop()
 }
 
 const void *
-CompileRuntime::addressOfIonStackLimit()
+CompileRuntime::addressOfJitStackLimit()
 {
-    return &runtime()->mainThread.ionStackLimit;
+    return &runtime()->mainThread.jitStackLimit;
 }
 
 const void *
 CompileRuntime::addressOfJSContext()
 {
-    return &runtime()->mainThread.ionJSContext;
+    return &runtime()->mainThread.jitJSContext;
 }
 
 const void *
@@ -69,6 +69,20 @@ const void *
 CompileRuntime::addressOfInterrupt()
 {
     return &runtime()->interrupt;
+}
+
+#ifdef JS_THREADSAFE
+const void *
+CompileRuntime::addressOfInterruptPar()
+{
+    return &runtime()->interruptPar;
+}
+#endif
+
+const void *
+CompileRuntime::addressOfThreadPool()
+{
+    return &runtime()->threadPool;
 }
 
 const JitRuntime *
@@ -104,13 +118,13 @@ CompileRuntime::hadOutOfMemory()
 const JSAtomState &
 CompileRuntime::names()
 {
-    return runtime()->atomState;
+    return *runtime()->commonNames;
 }
 
 const StaticStrings &
 CompileRuntime::staticStrings()
 {
-    return runtime()->staticStrings;
+    return *runtime()->staticStrings;
 }
 
 const Value &
@@ -243,15 +257,6 @@ CompileCompartment::setSingletonsAsValues()
 {
     return JS::CompartmentOptionsRef(compartment()).setSingletonsAsValues();
 }
-
-#ifdef JS_THREADSAFE
-AutoLockForCompilation::AutoLockForCompilation(CompileCompartment *compartment
-                                               MOZ_GUARD_OBJECT_NOTIFIER_PARAM_IN_IMPL)
-{
-    MOZ_GUARD_OBJECT_NOTIFIER_INIT;
-    init(compartment->compartment()->runtimeFromAnyThread());
-}
-#endif
 
 JitCompileOptions::JitCompileOptions()
   : cloneSingletons_(false),

@@ -8,7 +8,6 @@ package org.mozilla.gecko.home;
 import org.mozilla.gecko.R;
 import org.mozilla.gecko.db.BrowserDB.URLColumns;
 
-import android.app.Activity;
 import android.content.Context;
 import android.database.Cursor;
 import android.os.Bundle;
@@ -173,6 +172,15 @@ class PinSiteDialog extends DialogFragment {
 
         // Always start with an empty filter
         filter("");
+    }
+
+    @Override
+    public void onDestroyView() {
+        super.onDestroyView();
+
+        // Discard any additional site selection as the dialog
+        // is getting destroyed (see bug 935542).
+        setOnSiteSelectedListener(null);
     }
 
     public void setSearchTerm(String searchTerm) {

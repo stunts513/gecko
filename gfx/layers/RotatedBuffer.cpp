@@ -12,6 +12,7 @@
 #include "GeckoProfiler.h"              // for PROFILER_LABEL
 #include "Layers.h"                     // for ThebesLayer, Layer, etc
 #include "gfxPlatform.h"                // for gfxPlatform
+#include "gfxPrefs.h"                   // for gfxPrefs
 #include "gfxUtils.h"                   // for gfxUtils
 #include "mozilla/ArrayUtils.h"         // for ArrayLength
 #include "mozilla/gfx/BasePoint.h"      // for BasePoint
@@ -124,9 +125,17 @@ RotatedBuffer::DrawBufferQuadrant(gfx::DrawTarget* aTarget,
   }
 
   if (aMask) {
+    Matrix oldTransform = aTarget->GetTransform();
+
     // Transform from user -> buffer space.
     Matrix transform;
     transform.Translate(quadrantTranslation.x, quadrantTranslation.y);
+
+    Matrix inverseMask = *aMaskTransform;
+    inverseMask.Invert();
+
+    transform *= oldTransform;
+    transform *= inverseMask;
 
 #ifdef MOZ_GFX_OPTIMIZE_MOBILE
     SurfacePattern source(snapshot, ExtendMode::CLAMP, transform, Filter::POINT);
@@ -134,7 +143,6 @@ RotatedBuffer::DrawBufferQuadrant(gfx::DrawTarget* aTarget,
     SurfacePattern source(snapshot, ExtendMode::CLAMP, transform);
 #endif
 
-    Matrix oldTransform = aTarget->GetTransform();
     aTarget->SetTransform(*aMaskTransform);
     aTarget->MaskSurface(source, aMask, Point(0, 0), DrawOptions(aOpacity, aOperator));
     aTarget->SetTransform(oldTransform);
@@ -452,7 +460,7 @@ RotatedContentBuffer::BeginPaint(ThebesLayer* aLayer,
           !aLayer->Manager()->IsCompositingCheap() ||
           !aLayer->AsShadowableLayer() ||
           !aLayer->AsShadowableLayer()->HasShadow() ||
-          !gfxPlatform::ComponentAlphaEnabled()) {
+          !gfxPrefs::ComponentAlphaEnabled()) {
         mode = SurfaceMode::SURFACE_SINGLE_CHANNEL_ALPHA;
       } else {
         result.mContentType = gfxContentType::COLOR;

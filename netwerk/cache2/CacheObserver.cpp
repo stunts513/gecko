@@ -26,6 +26,11 @@ uint32_t CacheObserver::sMemoryLimit = kDefaultMemoryLimit;
 static uint32_t const kDefaultUseNewCache = 0; // Don't use the new cache by default
 uint32_t CacheObserver::sUseNewCache = kDefaultUseNewCache;
 
+static bool sUseNewCacheTemp = false; // Temp trigger to not lose early adopters
+
+static int32_t const kAutoDeleteCacheVersion = -1; // Auto-delete off by default
+static int32_t sAutoDeleteCacheVersion = kAutoDeleteCacheVersion;
+
 static int32_t const kDefaultHalfLifeExperiment = -1; // Disabled
 int32_t CacheObserver::sHalfLifeExperiment = kDefaultHalfLifeExperiment;
 
@@ -71,6 +76,7 @@ CacheObserver::Init()
 
   obs->AddObserver(sSelf, "prefservice:after-app-defaults", true);
   obs->AddObserver(sSelf, "profile-do-change", true);
+  obs->AddObserver(sSelf, "sessionstore-windows-restored", true);
   obs->AddObserver(sSelf, "profile-before-change", true);
   obs->AddObserver(sSelf, "xpcom-shutdown", true);
   obs->AddObserver(sSelf, "last-pb-context-exited", true);
@@ -94,8 +100,13 @@ CacheObserver::Shutdown()
 void
 CacheObserver::AttachToPreferences()
 {
+  sAutoDeleteCacheVersion = mozilla::Preferences::GetInt(
+    "browser.cache.auto_delete_cache_version", kAutoDeleteCacheVersion);
+
   mozilla::Preferences::AddUintVarCache(
     &sUseNewCache, "browser.cache.use_new_backend", kDefaultUseNewCache);
+  mozilla::Preferences::AddBoolVarCache(
+    &sUseNewCacheTemp, "browser.cache.use_new_backend_temp", false);
 
   mozilla::Preferences::AddBoolVarCache(
     &sUseDiskCache, "browser.cache.disk.enable", kDefaultUseDiskCache);
@@ -153,10 +164,30 @@ CacheObserver::AttachToPreferences()
   }
 }
 
+void CacheObserver::SchduleAutoDelete()
+{
+  // Auto-delete not set
+  if (sAutoDeleteCacheVersion == -1)
+    return;
+
+  // Don't autodelete the same version of the cache user has setup
+  // to use.
+  int32_t activeVersion = UseNewCache() ? 1 : 0;
+  if (sAutoDeleteCacheVersion == activeVersion)
+    return;
+
+  CacheStorageService::WipeCacheDirectory(sAutoDeleteCacheVersion);
+}
+
 // static
 bool const CacheObserver::UseNewCache()
 {
-  switch (sUseNewCache) {
+  uint32_t useNewCache = sUseNewCache;
+
+  if (sUseNewCacheTemp)
+    useNewCache = 1;
+
+  switch (useNewCache) {
     case 0: // use the old cache backend
       return false;
 
@@ -284,6 +315,11 @@ CacheObserver::Observe(nsISupports* aSubject,
     return NS_OK;
   }
 
+  if (!strcmp(aTopic, "sessionstore-windows-restored")) {
+    SchduleAutoDelete();
+    return NS_OK;
+  }
+
   if (!strcmp(aTopic, "profile-before-change")) {
     nsRefPtr<CacheStorageService> service = CacheStorageService::Self();
     if (service)
@@ -332,6 +368,7 @@ CacheObserver::Observe(nsISupports* aSubject,
     return NS_OK;
   }
 
+  MOZ_ASSERT(false, "Missing observer handler");
   return NS_OK;
 }
 

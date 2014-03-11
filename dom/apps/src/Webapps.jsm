@@ -55,7 +55,7 @@ XPCOMUtils.defineLazyGetter(this, "libcutils", function() {
 #endif
 
 function debug(aMsg) {
-#ifdef MOZ_DEBUG
+#ifdef DEBUG
   dump("-*- Webapps.jsm : " + aMsg + "\n");
 #endif
 }
@@ -546,43 +546,9 @@ this.DOMApplicationRegistry = {
     }.bind(this)).then(null, Cu.reportError);
   },
 
-#ifdef MOZ_WIDGET_GONK
-  fixIndexedDb: function() {
-    debug("Fixing indexedDb folder names");
-    let idbDir = FileUtils.getDir("indexedDBPDir", ["indexedDB"]);
-
-    if (!idbDir.exists() || !idbDir.isDirectory()) {
-      return;
-    }
-
-    let re = /^(\d+)\+(.*)\+(f|t)$/;
-
-    let entries = idbDir.directoryEntries;
-    while (entries.hasMoreElements()) {
-      let entry = entries.getNext().QueryInterface(Ci.nsIFile);
-      if (!entry.isDirectory()) {
-        continue;
-      }
-
-      let newName = entry.leafName.replace(re, "$1+$3+$2");
-      if (newName != entry.leafName) {
-        try {
-          entry.moveTo(idbDir, newName);
-        } catch(e) { }
-      }
-    }
-  },
-#endif
-
   loadAndUpdateApps: function() {
     return Task.spawn(function() {
       let runUpdate = AppsUtils.isFirstRun(Services.prefs);
-
-#ifdef MOZ_WIDGET_GONK
-      if (runUpdate) {
-        this.fixIndexedDb();
-      }
-#endif
 
       yield this.loadCurrentRegistry();
 
@@ -2439,16 +2405,16 @@ onInstallSuccessAck: function onInstallSuccessAck(aManifestURL,
         // respond Webapps:Install:Return:Ack, which calls onInstallSuccessAck.
         this.broadcastMessage("Webapps:Install:Return:OK", aData);
       }
+      if (!aData.isPackage) {
+        this.updateAppHandlers(null, app.manifest, app);
+        if (aInstallSuccessCallback) {
+          aInstallSuccessCallback(app.manifest);
+        }
+      }
       Services.obs.notifyObservers(null, "webapps-installed",
         JSON.stringify({ manifestURL: app.manifestURL }));
     });
 
-    if (!aData.isPackage) {
-      this.updateAppHandlers(null, app.manifest, app);
-      if (aInstallSuccessCallback) {
-        aInstallSuccessCallback(app.manifest);
-      }
-    }
     let dontNeedNetwork = false;
     if (manifest.package_path) {
       // If it is a local app then it must been installed from a local file
@@ -3086,8 +3052,8 @@ onInstallSuccessAck: function onInstallSuccessAck(aManifestURL,
   _openSignedPackage: function(aZipFile, aCertDb) {
     let deferred = Promise.defer();
 
-    aCertDb.openSignedJARFileAsync(
-       aZipFile,
+    aCertDb.openSignedAppFileAsync(
+       Ci.nsIX509CertDB.AppMarketplaceProdPublicRoot, aZipFile,
        function(aRv, aZipReader) {
          deferred.resolve([aRv, aZipReader]);
        }

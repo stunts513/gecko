@@ -26,8 +26,10 @@
 #include "nsSize.h"                     // for nsIntSize
 #include "nsTArray.h"                   // for nsTArray
 #include "mozilla/Atomics.h"
+#include "mozilla/WeakPtr.h"
 #include "nsThreadUtils.h"
 #include "mozilla/gfx/2D.h"
+#include "nsDataHashtable.h"
 
 #ifndef XPCOM_GLUE_AVOID_NSPR
 /**
@@ -146,6 +148,8 @@ class ImageClient;
 class SharedPlanarYCbCrImage;
 class DeprecatedSharedPlanarYCbCrImage;
 class TextureClient;
+class CompositableClient;
+class CompositableForwarder;
 class SurfaceDescriptor;
 
 struct ImageBackendData
@@ -165,7 +169,7 @@ public:
      * For use with the CompositableClient only (so that the later can
      * synchronize the TextureClient with the TextureHost).
      */
-    virtual TextureClient* GetTextureClient() = 0;
+    virtual TextureClient* GetTextureClient(CompositableClient* aClient) = 0;
 };
 
 /**
@@ -210,7 +214,7 @@ public:
   void MarkSent() { mSent = true; }
   bool IsSentToCompositor() { return mSent; }
 
-  virtual TemporaryRef<gfx::SourceSurface> GetAsSourceSurface();
+  virtual TemporaryRef<gfx::SourceSurface> GetAsSourceSurface() = 0;
 
 protected:
   Image(void* aImplData, ImageFormat aFormat) :
@@ -377,9 +381,10 @@ struct RemoteImageData {
  * updates the shared state to point to the new image and the old image
  * is immediately released (not true in Normal or Asynchronous modes).
  */
-class ImageContainer {
+class ImageContainer : public SupportsWeakPtr<ImageContainer> {
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(ImageContainer)
 public:
+  MOZ_DECLARE_REFCOUNTED_TYPENAME(ImageContainer)
 
   enum { DISABLE_ASYNC = 0x0, ENABLE_ASYNC = 0x01 };
 
@@ -710,8 +715,8 @@ class AutoLockImage
 {
 public:
   AutoLockImage(ImageContainer *aContainer) : mContainer(aContainer) { mImage = mContainer->LockCurrentImage(); }
-  AutoLockImage(ImageContainer *aContainer, gfxASurface **aSurface) : mContainer(aContainer) {
-    *aSurface = mContainer->DeprecatedLockCurrentAsSurface(&mSize, getter_AddRefs(mImage)).get();
+  AutoLockImage(ImageContainer *aContainer, RefPtr<gfx::SourceSurface> *aSurface) : mContainer(aContainer) {
+    *aSurface = mContainer->LockCurrentAsSourceSurface(&mSize, getter_AddRefs(mImage));
   }
   ~AutoLockImage() { if (mContainer) { mContainer->UnlockCurrentImage(); } }
 
@@ -905,7 +910,8 @@ protected:
  * device output color space. This class is very simple as all backends
  * have to know about how to deal with drawing a cairo image.
  */
-class CairoImage : public Image {
+class CairoImage : public Image,
+                   public ISharedImage {
 public:
   struct Data {
     gfxASurface* mDeprecatedSurface;
@@ -939,9 +945,14 @@ public:
     return surface.forget();
   }
 
+  virtual ISharedImage* AsSharedImage() { return this; }
+  virtual uint8_t* GetBuffer() { return nullptr; }
+  virtual TextureClient* GetTextureClient(CompositableClient* aClient);
+
   gfx::IntSize GetSize() { return mSize; }
 
-  CairoImage() : Image(nullptr, ImageFormat::CAIRO_SURFACE) {}
+  CairoImage();
+  ~CairoImage();
 
   nsCountedRef<nsMainThreadSurfaceRef> mDeprecatedSurface;
   gfx::IntSize mSize;
@@ -949,6 +960,7 @@ public:
   // mSourceSurface wraps mDeprrecatedSurface's data, therefore it should not
   // outlive mDeprecatedSurface
   nsCountedRef<nsMainThreadSourceSurfaceRef> mSourceSurface;
+  nsDataHashtable<nsUint32HashKey, RefPtr<TextureClient> >  mTextureClients;
 };
 
 class RemoteBitmapImage : public Image {
