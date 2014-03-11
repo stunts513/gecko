@@ -425,16 +425,16 @@ ISurfaceAllocator::PlatformAllocSurfaceDescriptor(const gfx::IntSize& aSize,
 
   // Check for devices that have problems with gralloc. We only check for
   // this on ICS or earlier, in hopes that JB will work.
-
+#if ANDROID_VERSION <= 15
   static bool checkedDevice = false;
   static bool disableGralloc = false;
 
   if (!checkedDevice) {
     char propValue[PROPERTY_VALUE_MAX];
-    property_get("ro.product.manufacturer", propValue, "None");
+    property_get("ro.product.device", propValue, "None");
 
-    if (strcmp("amazon",propValue) == 0) {
-      NS_WARNING("SGX540 has issues with gralloc, falling back to shmem");
+    if (strcmp("crespo",propValue) == 0) {
+      NS_WARNING("Nexus S has issues with gralloc, falling back to shmem");
       disableGralloc = true;
     }
 
@@ -444,7 +444,7 @@ ISurfaceAllocator::PlatformAllocSurfaceDescriptor(const gfx::IntSize& aSize,
   if (disableGralloc) {
     return false;
   }
-
+#endif
 
   // Some GL implementations fail to render gralloc textures with
   // width < 64.  There's not much point in gralloc'ing buffers that
