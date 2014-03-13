@@ -228,6 +228,10 @@ pref("media.apple.mp3.enabled", true);
 pref("media.navigator.enabled", true);
 pref("media.navigator.video.enabled", true);
 pref("media.navigator.load_adapt", false);
+pref("media.navigator.load_adapt.measure_interval",1000);
+pref("media.navigator.load_adapt.avg_seconds",3);
+pref("media.navigator.load_adapt.high_load","0.90");
+pref("media.navigator.load_adapt.low_load","0.40");
 pref("media.navigator.video.default_fps",30);
 pref("media.navigator.video.default_minfps",10);
 #ifdef MOZ_WIDGET_GONK
@@ -1249,10 +1253,15 @@ pref("network.dns.ipv4OnlyDomains", "");
 // This preference can be used to turn off IPv6 name lookups. See bug 68796.
 pref("network.dns.disableIPv6", false);
 
+// This is the number of dns cache entries allowed
+pref("network.dnsCacheEntries", 400);
+
+// In the absence of OS TTLs, the DNS cache TTL value
+pref("network.dnsCacheExpiration", 60);
+
 // The grace period allows the DNS cache to use expired entries, while kicking off
-// a revalidation in the background. In seconds, but rounded to minutes in gecko.
-// Default to 30 days. (basically forever)
-pref("network.dnsCacheExpirationGracePeriod", 2592000);
+// a revalidation in the background.
+pref("network.dnsCacheExpirationGracePeriod", 60);
 
 // This preference can be used to turn off DNS prefetch.
 pref("network.dns.disablePrefetch", false);
@@ -4159,7 +4168,6 @@ pref("memory.dump_reports_on_oom", false);
 // Number of stack frames to capture in createObjectURL for about:memory.
 pref("memory.blob_report.stack_frames", 0);
 
-pref("social.enabled", false);
 // comma separated list of domain origins (e.g. https://domain.com) for
 // providers that can install from their own website without user warnings.
 // entries are

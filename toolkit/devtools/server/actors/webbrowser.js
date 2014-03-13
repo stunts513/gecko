@@ -7,7 +7,6 @@
 "use strict";
 
 let promise = Cu.import("resource://gre/modules/commonjs/sdk/core/promise.js", {}).Promise;
-XPCOMUtils.defineLazyModuleGetter(this, "Services", "resource://gre/modules/Services.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "AddonManager", "resource://gre/modules/AddonManager.jsm");
 
 /**
@@ -494,12 +493,16 @@ function TabActor(aConnection, aChromeEventHandler)
   this._extraActors = {};
 
   this._onWindowCreated = this.onWindowCreated.bind(this);
+
+  this.traits = { reconfigure: true };
 }
 
 // XXX (bug 710213): TabActor attach/detach/exit/disconnect is a
 // *complete* mess, needs to be rethought asap.
 
 TabActor.prototype = {
+  traits: null,
+
   get exited() { return !this._chromeEventHandler; },
   get attached() { return !!this._attached; },
 
@@ -735,7 +738,8 @@ TabActor.prototype = {
       type: "tabAttached",
       threadActor: this.threadActor.actorID,
       cacheEnabled: this._getCacheEnabled(),
-      javascriptEnabled: this._getJavascriptEnabled()
+      javascriptEnabled: this._getJavascriptEnabled(),
+      traits: this.traits,
     };
   },
 
