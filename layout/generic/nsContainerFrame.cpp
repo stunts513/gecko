@@ -361,21 +361,21 @@ nsContainerFrame::IsLeaf() const
   return false;
 }
 
-bool
+nsIFrame::FrameSearchResult
 nsContainerFrame::PeekOffsetNoAmount(bool aForward, int32_t* aOffset)
 {
   NS_ASSERTION (aOffset && *aOffset <= 1, "aOffset out of range");
   // Don't allow the caret to stay in an empty (leaf) container frame.
-  return false;
+  return CONTINUE_EMPTY;
 }
 
-bool
+nsIFrame::FrameSearchResult
 nsContainerFrame::PeekOffsetCharacter(bool aForward, int32_t* aOffset,
                                       bool aRespectClusters)
 {
   NS_ASSERTION (aOffset && *aOffset <= 1, "aOffset out of range");
   // Don't allow the caret to stay in an empty (leaf) container frame.
-  return false;
+  return CONTINUE_EMPTY;
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -639,8 +639,7 @@ GetPresContextContainerWidget(nsPresContext* aPresContext)
 static bool
 IsTopLevelWidget(nsIWidget* aWidget)
 {
-  nsWindowType windowType;
-  aWidget->GetWindowType(windowType);
+  nsWindowType windowType = aWidget->WindowType();
   return windowType == eWindowType_toplevel ||
          windowType == eWindowType_dialog ||
          windowType == eWindowType_sheet;

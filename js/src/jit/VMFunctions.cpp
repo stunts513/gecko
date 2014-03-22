@@ -951,7 +951,8 @@ LeaveWith(JSContext *cx, BaselineFrame *frame)
 }
 
 bool
-InitBaselineFrameForOsr(BaselineFrame *frame, StackFrame *interpFrame, uint32_t numStackValues)
+InitBaselineFrameForOsr(BaselineFrame *frame, InterpreterFrame *interpFrame,
+                        uint32_t numStackValues)
 {
     return frame->initForOsr(interpFrame, numStackValues);
 }

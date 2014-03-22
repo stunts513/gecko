@@ -414,14 +414,15 @@ js::intrinsic_UnsafePutElements(JSContext *cx, unsigned argc, Value *vp)
         uint32_t elemi = base+2;
 
         JS_ASSERT(args[arri].isObject());
-        JS_ASSERT(args[arri].toObject().isNative());
+        JS_ASSERT(args[arri].toObject().isNative() || IsTypedObjectArray(args[arri].toObject()));
         JS_ASSERT(args[idxi].isInt32());
 
         RootedObject arrobj(cx, &args[arri].toObject());
         uint32_t idx = args[idxi].toInt32();
 
-        if (arrobj->is<TypedArrayObject>()) {
-            JS_ASSERT(idx < arrobj->as<TypedArrayObject>().length());
+        if (arrobj->is<TypedArrayObject>() || arrobj->is<TypedObject>()) {
+            JS_ASSERT(!arrobj->is<TypedArrayObject>() || idx < arrobj->as<TypedArrayObject>().length());
+            JS_ASSERT(!arrobj->is<TypedObject>() || idx < arrobj->as<TypedObject>().length());
             RootedValue tmp(cx, args[elemi]);
             // XXX: Always non-strict.
             if (!JSObject::setElement(cx, arrobj, arrobj, idx, &tmp, false))
@@ -623,6 +624,12 @@ JS_JITINFO_NATIVE_PARALLEL(intrinsic_InParallelSection_jitInfo,
  * directly because they take a ThreadSafeContext* argument.
  */
 bool
+js::intrinsic_ObjectIsTypedObject(JSContext *cx, unsigned argc, Value *vp)
+{
+    return js::ObjectIsTypedObject(cx, argc, vp);
+}
+
+bool
 js::intrinsic_ObjectIsTransparentTypedObject(JSContext *cx, unsigned argc, Value *vp)
 {
     return js::ObjectIsTransparentTypedObject(cx, argc, vp);
@@ -638,6 +645,30 @@ bool
 js::intrinsic_ObjectIsTypeDescr(JSContext *cx, unsigned argc, Value *vp)
 {
     return js::ObjectIsTypeDescr(cx, argc, vp);
+}
+
+bool
+js::intrinsic_TypeDescrIsSimpleType(JSContext *cx, unsigned argc, Value *vp)
+{
+    return js::TypeDescrIsSimpleType(cx, argc, vp);
+}
+
+bool
+js::intrinsic_TypeDescrIsArrayType(JSContext *cx, unsigned argc, Value *vp)
+{
+    return js::TypeDescrIsArrayType(cx, argc, vp);
+}
+
+bool
+js::intrinsic_TypeDescrIsUnsizedArrayType(JSContext *cx, unsigned argc, Value *vp)
+{
+    return js::TypeDescrIsUnsizedArrayType(cx, argc, vp);
+}
+
+bool
+js::intrinsic_TypeDescrIsSizedArrayType(JSContext *cx, unsigned argc, Value *vp)
+{
+    return js::TypeDescrIsSizedArrayType(cx, argc, vp);
 }
 
 /**
@@ -693,6 +724,9 @@ static const JSFunctionSpec intrinsic_functions[] = {
     JS_FN("NewDenseArray",           intrinsic_NewDenseArray,           1,0),
     JS_FN("ShouldForceSequential",   intrinsic_ShouldForceSequential,   0,0),
     JS_FN("ParallelTestsShouldPass", intrinsic_ParallelTestsShouldPass, 0,0),
+    JS_FNINFO("ClearThreadLocalArenas",
+              intrinsic_ClearThreadLocalArenas,
+              &intrinsic_ClearThreadLocalArenasInfo, 0,0),
     JS_FNINFO("SetForkJoinTargetRegion",
               intrinsic_SetForkJoinTargetRegion,
               &intrinsic_SetForkJoinTargetRegionInfo, 2, 0),
@@ -712,22 +746,37 @@ static const JSFunctionSpec intrinsic_functions[] = {
           3, 0),
     JS_FNINFO("AttachTypedObject",
               JSNativeThreadSafeWrapper<js::AttachTypedObject>,
-              &js::AttachTypedObjectJitInfo, 5, 0),
+              &js::AttachTypedObjectJitInfo, 3, 0),
     JS_FNINFO("SetTypedObjectOffset",
               JSNativeThreadSafeWrapper<js::SetTypedObjectOffset>,
               &js::SetTypedObjectOffsetJitInfo, 2, 0),
     JS_FNINFO("ObjectIsTypeDescr",
               intrinsic_ObjectIsTypeDescr,
-              &js::ObjectIsTypeDescrJitInfo, 5, 0),
+              &js::ObjectIsTypeDescrJitInfo, 1, 0),
+    JS_FNINFO("ObjectIsTypedObject",
+              intrinsic_ObjectIsTypedObject,
+              &js::ObjectIsTypedObjectJitInfo, 1, 0),
     JS_FNINFO("ObjectIsTransparentTypedObject",
               intrinsic_ObjectIsTransparentTypedObject,
-              &js::ObjectIsTransparentTypedObjectJitInfo, 5, 0),
+              &js::ObjectIsTransparentTypedObjectJitInfo, 1, 0),
     JS_FNINFO("TypedObjectIsAttached",
               JSNativeThreadSafeWrapper<js::TypedObjectIsAttached>,
               &js::TypedObjectIsAttachedJitInfo, 1, 0),
     JS_FNINFO("ObjectIsOpaqueTypedObject",
               intrinsic_ObjectIsOpaqueTypedObject,
-              &js::ObjectIsOpaqueTypedObjectJitInfo, 5, 0),
+              &js::ObjectIsOpaqueTypedObjectJitInfo, 1, 0),
+    JS_FNINFO("TypeDescrIsArrayType",
+              intrinsic_TypeDescrIsArrayType,
+              &js::TypeDescrIsArrayTypeJitInfo, 1, 0),
+    JS_FNINFO("TypeDescrIsUnsizedArrayType",
+              intrinsic_TypeDescrIsUnsizedArrayType,
+              &js::TypeDescrIsUnsizedArrayTypeJitInfo, 1, 0),
+    JS_FNINFO("TypeDescrIsSizedArrayType",
+              intrinsic_TypeDescrIsSizedArrayType,
+              &js::TypeDescrIsSizedArrayTypeJitInfo, 1, 0),
+    JS_FNINFO("TypeDescrIsSimpleType",
+              intrinsic_TypeDescrIsSimpleType,
+              &js::TypeDescrIsSimpleTypeJitInfo, 1, 0),
     JS_FNINFO("ClampToUint8",
               JSNativeThreadSafeWrapper<js::ClampToUint8>,
               &js::ClampToUint8JitInfo, 1, 0),

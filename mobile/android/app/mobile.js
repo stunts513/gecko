@@ -170,6 +170,8 @@ pref("dom.experimental_forms", true);
 pref("dom.forms.number", true);
 
 /* extension manager and xpinstall */
+pref("xpinstall.whitelist.directRequest", false);
+pref("xpinstall.whitelist.fileRequest", false);
 pref("xpinstall.whitelist.add", "addons.mozilla.org");
 pref("xpinstall.whitelist.add.180", "marketplace.firefox.com");
 
@@ -674,7 +676,7 @@ pref("ui.scrolling.axis_lock_mode", "standard");
 pref("ui.scrolling.negate_wheel_scrollY", true);
 // Determine the dead zone for gamepad joysticks. Higher values result in larger dead zones; use a negative value to
 // auto-detect based on reported hardware values
-pref("ui.scrolling.gamepad_dead_zone", 10);
+pref("ui.scrolling.gamepad_dead_zone", 115);
 
 
 // Enable accessibility mode if platform accessibility is enabled.
@@ -846,7 +848,3 @@ pref("home.sync.updateMode", 0);
 
 // How frequently to check if we should sync home provider data.
 pref("home.sync.checkIntervalSecs", 3600);
-
-#ifdef NIGHTLY_BUILD
-pref("devtools.debugger.remote-enabled", true);
-#endif

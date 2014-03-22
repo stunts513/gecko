@@ -66,7 +66,6 @@ enum StructuredDataType {
     SCTAG_ARRAY_OBJECT,
     SCTAG_OBJECT_OBJECT,
     SCTAG_ARRAY_BUFFER_OBJECT,
-    SCTAG_MAPPED_ARRAY_BUFFER_OBJECT,
     SCTAG_BOOLEAN_OBJECT,
     SCTAG_STRING_OBJECT,
     SCTAG_NUMBER_OBJECT,
@@ -213,7 +212,6 @@ struct JSStructuredCloneReader {
     JSString *readString(uint32_t nchars);
     bool readTypedArray(uint32_t arrayType, uint32_t nelems, js::Value *vp, bool v1Read = false);
     bool readArrayBuffer(uint32_t nbytes, js::Value *vp);
-    bool readMappedArrayBuffer(Value *vp, uint32_t fd, uint32_t offset, uint32_t length);
     bool readV1ArrayBuffer(uint32_t arrayType, uint32_t nelems, js::Value *vp);
     bool readId(jsid *idp);
     bool startRead(js::Value *vp);
@@ -232,7 +230,7 @@ struct JSStructuredCloneReader {
     // Any value passed to JS_ReadStructuredClone.
     void *closure;
 
-    friend bool JS_ReadTypedArray(JSStructuredCloneReader *r, JS::Value *vp);
+    friend bool JS_ReadTypedArray(JSStructuredCloneReader *r, JS::MutableHandleValue vp);
 };
 
 struct JSStructuredCloneWriter {
@@ -833,12 +831,6 @@ bool
 JSStructuredCloneWriter::writeArrayBuffer(HandleObject obj)
 {
     ArrayBufferObject &buffer = obj->as<ArrayBufferObject>();
-
-    if (buffer.isMappedArrayBuffer()) {
-        return out.writePair(SCTAG_MAPPED_ARRAY_BUFFER_OBJECT, buffer.byteLength()) &&
-               out.writePair(buffer.getMappingFD(), buffer.getMappingOffset());
-    }
-
     return out.writePair(SCTAG_ARRAY_BUFFER_OBJECT, buffer.byteLength()) &&
            out.writeBytes(buffer.dataPointer(), buffer.byteLength());
 }
@@ -985,6 +977,8 @@ JSStructuredCloneWriter::writeTransferMap()
             return false;
         if (!out.writePtr(nullptr)) // Pointer to ArrayBuffer contents or to SharedArrayRawBuffer.
             return false;
+        if (!out.write(0)) // |byteLength| for an ArrayBuffer, 0 for SharedArrayBuffer
+            return false;
         if (!out.write(0)) // |userdata|, intended to be passed to callbacks.
             return false;
     }
@@ -1014,14 +1008,15 @@ JSStructuredCloneWriter::transferOwnership()
         MOZ_ASSERT(uint32_t(LittleEndian::readUint64(point)) == SCTAG_TM_UNFILLED);
 
         if (obj->is<ArrayBufferObject>()) {
-            void *content;
-            uint8_t *data;
-            if (!JS_StealArrayBufferContents(context(), obj, &content, &data))
+            size_t nbytes = obj->as<ArrayBufferObject>().byteLength();
+            void *contents = JS_StealArrayBufferContents(context(), obj);
+            if (!contents)
                 return false; // Destructor will clean up the already-transferred data
 
             uint64_t entryTag = PairToUInt64(SCTAG_TRANSFER_MAP_ENTRY, SCTAG_TM_ALLOC_DATA);
             LittleEndian::writeUint64(point++, entryTag);
-            LittleEndian::writeUint64(point++, reinterpret_cast<uint64_t>(content));
+            LittleEndian::writeUint64(point++, reinterpret_cast<uint64_t>(contents));
+            LittleEndian::writeUint64(point++, nbytes);
             LittleEndian::writeUint64(point++, 0);
         } else {
             SharedArrayRawBuffer *rawbuf = obj->as<SharedArrayBufferObject>().rawBufferObject();
@@ -1033,6 +1028,7 @@ JSStructuredCloneWriter::transferOwnership()
             uint64_t entryTag = PairToUInt64(SCTAG_TRANSFER_MAP_ENTRY, SCTAG_TM_SHARED_BUFFER);
             LittleEndian::writeUint64(point++, entryTag);
             LittleEndian::writeUint64(point++, reinterpret_cast<uint64_t>(rawbuf));
+            LittleEndian::writeUint64(point++, 0);
             LittleEndian::writeUint64(point++, 0);
         }
     }
@@ -1236,26 +1232,6 @@ JSStructuredCloneReader::readArrayBuffer(uint32_t nbytes, Value *vp)
     return in.readArray(buffer.dataPointer(), nbytes);
 }
 
-bool
-JSStructuredCloneReader::readMappedArrayBuffer(Value *vp, uint32_t fd,
-                                               uint32_t offset, uint32_t length)
-{
-    void *ptr;
-    int new_fd;
-    if(!JS_CreateMappedArrayBufferContents(fd, &new_fd, offset, length, &ptr)) {
-        JS_ReportError(context(), "Failed to create mapped array buffer contents");
-        return false;
-    }
-    JSObject *obj = JS_NewArrayBufferWithContents(context(), ptr);
-    if (!obj) {
-        JS_ReleaseMappedArrayBufferContents(new_fd, ptr, length);
-        return false;
-    }
-    vp->setObject(*obj);
-
-    return true;
-}
-
 static size_t
 bytesPerTypedArrayElement(uint32_t arrayType)
 {
@@ -1440,14 +1416,6 @@ JSStructuredCloneReader::startRead(Value *vp)
             return false;
         break;
 
-      case SCTAG_MAPPED_ARRAY_BUFFER_OBJECT:
-        uint32_t fd, offset;
-        if (!in.readPair(&fd, &offset))
-            return false;
-        if (!readMappedArrayBuffer(vp, fd, offset, data))
-            return false;
-        break;
-
       case SCTAG_TYPED_ARRAY_OBJECT:
         // readTypedArray adds the array to allObjs
         uint64_t arrayType;
@@ -1548,6 +1516,10 @@ JSStructuredCloneReader::readTransferMap()
         if (!in.readPtr(&content))
             return false;
 
+        uint64_t nbytes;
+        if (!in.read(&nbytes))
+            return false;
+
         uint64_t userdata;
         if (!in.read(&userdata))
             return false;
@@ -1555,7 +1527,7 @@ JSStructuredCloneReader::readTransferMap()
         RootedObject obj(context());
 
         if (data == SCTAG_TM_ALLOC_DATA)
-            obj = JS_NewArrayBufferWithContents(context(), content);
+            obj = JS_NewArrayBufferWithContents(context(), nbytes, content);
         else if (data == SCTAG_TM_SHARED_BUFFER)
             obj = SharedArrayBufferObject::New(context(), (SharedArrayRawBuffer *)content);
 
@@ -1836,18 +1808,18 @@ JS_ReadBytes(JSStructuredCloneReader *r, void *p, size_t len)
 }
 
 JS_PUBLIC_API(bool)
-JS_ReadTypedArray(JSStructuredCloneReader *r, JS::Value *vp)
+JS_ReadTypedArray(JSStructuredCloneReader *r, JS::MutableHandleValue vp)
 {
     uint32_t tag, nelems;
     if (!r->input().readPair(&tag, &nelems))
         return false;
     if (tag >= SCTAG_TYPED_ARRAY_V1_MIN && tag <= SCTAG_TYPED_ARRAY_V1_MAX) {
-        return r->readTypedArray(TagToV1ArrayType(tag), nelems, vp, true);
+        return r->readTypedArray(TagToV1ArrayType(tag), nelems, vp.address(), true);
     } else if (tag == SCTAG_TYPED_ARRAY_OBJECT) {
         uint64_t arrayType;
         if (!r->input().read(&arrayType))
             return false;
-        return r->readTypedArray(arrayType, nelems, vp);
+        return r->readTypedArray(arrayType, nelems, vp.address());
     } else {
         JS_ReportErrorNumber(r->context(), js_GetErrorMessage, nullptr,
                              JSMSG_SC_BAD_SERIALIZED_DATA, "expected type array");

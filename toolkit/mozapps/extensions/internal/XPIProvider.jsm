@@ -67,6 +67,8 @@ const PREF_EM_AUTO_DISABLED_SCOPES    = "extensions.autoDisableScopes";
 const PREF_EM_SHOW_MISMATCH_UI        = "extensions.showMismatchUI";
 const PREF_XPI_ENABLED                = "xpinstall.enabled";
 const PREF_XPI_WHITELIST_REQUIRED     = "xpinstall.whitelist.required";
+const PREF_XPI_DIRECT_WHITELISTED     = "xpinstall.whitelist.directRequest";
+const PREF_XPI_FILE_WHITELISTED       = "xpinstall.whitelist.fileRequest";
 const PREF_XPI_PERMISSIONS_BRANCH     = "xpinstall.";
 const PREF_XPI_UNPACK                 = "extensions.alwaysUnpack";
 const PREF_INSTALL_REQUIREBUILTINCERTS = "extensions.install.requireBuiltInCerts";
@@ -1319,7 +1321,7 @@ function recursiveLastModifiedTime(aFile) {
  *         Directory to look at
  * @param  aSortEntries
  *         True to sort entries by filename
- * @return An array of nsIFile, or null if aDir is not a readable directory
+ * @return An array of nsIFile, or an empty array if aDir is not a readable directory
  */
 function getDirectoryEntries(aDir, aSortEntries) {
   let dirEnum;
@@ -1338,10 +1340,13 @@ function getDirectoryEntries(aDir, aSortEntries) {
     return entries
   }
   catch (e) {
-    return null;
+    logger.warn("Can't iterate directory " + aDir.path, e);
+    return [];
   }
   finally {
-    dirEnum.close();
+    if (dirEnum) {
+      dirEnum.close();
+    }
   }
 }
 
@@ -3446,6 +3451,28 @@ var XPIProvider = {
   },
 
   /**
+   * Called to test whether installing XPI add-ons by direct URL requests is
+   * whitelisted.
+   *
+   * @return true if installing by direct requests is whitelisted
+   */
+  isDirectRequestWhitelisted: function XPI_isDirectRequestWhitelisted() {
+    // Default to whitelisted if the preference does not exist.
+    return Prefs.getBoolPref(PREF_XPI_DIRECT_WHITELISTED, true);
+  },
+
+  /**
+   * Called to test whether installing XPI add-ons from file referrers is
+   * whitelisted.
+   *
+   * @return true if installing from file referrers is whitelisted
+   */
+  isFileRequestWhitelisted: function XPI_isFileRequestWhitelisted() {
+    // Default to whitelisted if the preference does not exist.
+    return Prefs.getBoolPref(PREF_XPI_FILE_WHITELISTED, true);
+  },
+
+  /**
    * Called to test whether installing XPI add-ons from a URI is allowed.
    *
    * @param  aUri
@@ -3456,11 +3483,13 @@ var XPIProvider = {
     if (!this.isInstallEnabled())
       return false;
 
+    // Direct requests without a referrer are either whitelisted or blocked.
     if (!aUri)
-      return true;
+      return this.isDirectRequestWhitelisted();
 
-    // file: and chrome: don't need whitelisted hosts
-    if (aUri.schemeIs("chrome") || aUri.schemeIs("file"))
+    // Local referrers can be whitelisted.
+    if (this.isFileRequestWhitelisted() &&
+        (aUri.schemeIs("chrome") || aUri.schemeIs("file")))
       return true;
 
     this.importPermissions();
@@ -3725,6 +3754,7 @@ var XPIProvider = {
     let self = this;
     XPIDatabase.getVisibleAddons(null, function UARD_getVisibleAddonsCallback(aAddons) {
       let pending = aAddons.length;
+      logger.debug("updateAddonRepositoryData found " + pending + " visible add-ons");
       if (pending == 0) {
         aCallback();
         return;
@@ -3735,18 +3765,19 @@ var XPIProvider = {
           aCallback();
       }
 
-      aAddons.forEach(function UARD_forEachCallback(aAddon) {
-        AddonRepository.getCachedAddonByID(aAddon.id,
+      for (let addon of aAddons) {
+        AddonRepository.getCachedAddonByID(addon.id,
                                            function UARD_getCachedAddonCallback(aRepoAddon) {
           if (aRepoAddon) {
-            aAddon._repositoryAddon = aRepoAddon;
-            aAddon.compatibilityOverrides = aRepoAddon.compatibilityOverrides;
-            self.updateAddonDisabledState(aAddon);
+            logger.debug("updateAddonRepositoryData got info for " + addon.id);
+            addon._repositoryAddon = aRepoAddon;
+            addon.compatibilityOverrides = aRepoAddon.compatibilityOverrides;
+            self.updateAddonDisabledState(addon);
           }
 
           notifyComplete();
         });
-      });
+      };
     });
   },
 
@@ -4795,9 +4826,10 @@ AddonInstall.prototype = {
    *         be closed before this method returns.
    * @param  aCallback
    *         A function to call when all of the add-on manifests have been
-   *         loaded.
+   *         loaded. Because this loadMultipackageManifests is an internal API
+   *         we don't exception-wrap this callback
    */
-  loadMultipackageManifests: function AI_loadMultipackageManifests(aZipReader,
+  _loadMultipackageManifests: function AI_loadMultipackageManifests(aZipReader,
                                                                    aCallback) {
     let files = [];
     let entries = aZipReader.findEntries("(*.[Xx][Pp][Ii]|*.[Jj][Aa][Rr])");
@@ -4842,7 +4874,7 @@ AddonInstall.prototype = {
 
     if (!addon) {
       // No valid add-on was found
-      makeSafe(aCallback)();
+      aCallback();
       return;
     }
 
@@ -4891,7 +4923,7 @@ AddonInstall.prototype = {
       }, this);
     }
     else {
-      makeSafe(aCallback)();
+      aCallback();
     }
   },
 
@@ -4971,7 +5003,7 @@ AddonInstall.prototype = {
     }
 
     if (this.addon.type == "multipackage") {
-      this.loadMultipackageManifests(zipreader, function loadManifest_loadMultipackageManifests() {
+      this._loadMultipackageManifests(zipreader, function loadManifest_loadMultipackageManifests() {
         addRepositoryData(self.addon);
       });
       return;
@@ -5251,7 +5283,7 @@ AddonInstall.prototype = {
    *         The error code to pass to the listeners
    */
   downloadFailed: function AI_downloadFailed(aReason, aError) {
-    logger.warn("Download failed", aError);
+    logger.warn("Download of " + this.sourceURI.spec + " failed", aError);
     this.state = AddonManager.STATE_DOWNLOAD_FAILED;
     this.error = aReason;
     XPIProvider.removeActiveInstall(this);
@@ -5327,18 +5359,20 @@ AddonInstall.prototype = {
 
     // Find and cancel any pending installs for the same add-on in the same
     // install location
-    XPIProvider.installs.forEach(function(aInstall) {
+    for (let aInstall of XPIProvider.installs) {
       if (aInstall.state == AddonManager.STATE_INSTALLED &&
           aInstall.installLocation == this.installLocation &&
-          aInstall.addon.id == this.addon.id)
+          aInstall.addon.id == this.addon.id) {
+        logger.debug("Cancelling previous pending install of " + aInstall.addon.id);
         aInstall.cancel();
-    }, this);
+      }
+    }
 
     let isUpgrade = this.existingAddon &&
                     this.existingAddon._installLocation == this.installLocation;
     let requiresRestart = XPIProvider.installRequiresRestart(this.addon);
 
-    logger.debug("Starting install of " + this.sourceURI.spec);
+    logger.debug("Starting install of " + this.addon.id + " from " + this.sourceURI.spec);
     AddonManagerPrivate.callAddonListeners("onInstalling",
                                            createWrapper(this.addon),
                                            requiresRestart);
@@ -5394,7 +5428,7 @@ AddonInstall.prototype = {
           stream.close();
         }
 
-        logger.debug("Staged install of " + this.sourceURI.spec + " ready; waiting for restart.");
+        logger.debug("Staged install of " + this.addon.id + " from " + this.sourceURI.spec + " ready; waiting for restart.");
         this.state = AddonManager.STATE_INSTALLED;
         if (isUpgrade) {
           delete this.existingAddon.pendingUpgrade;
@@ -5856,8 +5890,10 @@ UpdateChecker.prototype = {
         // If the existing install has not yet started downloading then send an
         // available update notification. If it is already downloading then
         // don't send any available update notification
-        if (currentInstall.state == AddonManager.STATE_AVAILABLE)
+        if (currentInstall.state == AddonManager.STATE_AVAILABLE) {
+          logger.debug("Found an existing AddonInstall for " + this.addon.id);
           sendUpdateAvailableMessages(this, currentInstall);
+        }
         else
           sendUpdateAvailableMessages(this, null);
         return;

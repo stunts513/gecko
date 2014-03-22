@@ -84,6 +84,10 @@ browser.jar:
 * skin/classic/browser/customizableui/panelUIOverlay.css (customizableui/panelUIOverlay.css)
   skin/classic/browser/customizableui/subView-arrow-back-inverted.png  (../shared/customizableui/subView-arrow-back-inverted.png)
   skin/classic/browser/customizableui/subView-arrow-back-inverted-rtl.png  (../shared/customizableui/subView-arrow-back-inverted-rtl.png)
+  skin/classic/browser/customizableui/whimsy.png  (../shared/customizableui/whimsy.png)
+  skin/classic/browser/customizableui/whimsy@2x.png  (../shared/customizableui/whimsy@2x.png)
+  skin/classic/browser/customizableui/whimsy-bw.png  (../shared/customizableui/whimsy-bw.png)
+  skin/classic/browser/customizableui/whimsy-bw@2x.png  (../shared/customizableui/whimsy-bw@2x.png)
   skin/classic/browser/downloads/allDownloadsViewOverlay.css   (downloads/allDownloadsViewOverlay.css)
   skin/classic/browser/downloads/buttons.png          (downloads/buttons.png)
   skin/classic/browser/downloads/contentAreaDownloadsView.css  (downloads/contentAreaDownloadsView.css)
@@ -216,8 +220,7 @@ browser.jar:
   skin/classic/browser/devtools/background-noise-toolbar.png (devtools/background-noise-toolbar.png)
   skin/classic/browser/devtools/noise.png             (devtools/noise.png)
   skin/classic/browser/devtools/dropmarker.png        (devtools/dropmarker.png)
-  skin/classic/browser/devtools/layout-background-grid.png (devtools/layout-background-grid.png)
-  skin/classic/browser/devtools/layoutview.css        (devtools/layoutview.css)
+  skin/classic/browser/devtools/layoutview.css         (../shared/devtools/layoutview.css)
   skin/classic/browser/devtools/debugger-collapse.png  (../shared/devtools/images/debugger-collapse.png)
   skin/classic/browser/devtools/debugger-expand.png    (../shared/devtools/images/debugger-expand.png)
   skin/classic/browser/devtools/debugger-pause.png     (../shared/devtools/images/debugger-pause.png)
@@ -289,6 +292,7 @@ browser.jar:
   skin/classic/browser/sync-notification-24.png
   skin/classic/browser/syncProgress-menuPanel.png
   skin/classic/browser/syncProgress-toolbar.png
+  skin/classic/browser/syncProgress-toolbar-inverted.png
   skin/classic/browser/syncSetup.css
   skin/classic/browser/syncCommon.css
   skin/classic/browser/syncQuota.css

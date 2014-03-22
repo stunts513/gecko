@@ -53,7 +53,7 @@ NotifyPaintEvent::GetRegion()
 NS_IMETHODIMP
 NotifyPaintEvent::GetBoundingClientRect(nsIDOMClientRect** aResult)
 {
-  *aResult = BoundingClientRect().get();
+  *aResult = BoundingClientRect().take();
   return NS_OK;
 }
 
@@ -72,7 +72,7 @@ NotifyPaintEvent::BoundingClientRect()
 NS_IMETHODIMP
 NotifyPaintEvent::GetClientRects(nsIDOMClientRectList** aResult)
 {
-  *aResult = ClientRects().get();
+  *aResult = ClientRects().take();
   return NS_OK;
 }
 
@@ -171,5 +171,7 @@ NS_NewDOMNotifyPaintEvent(nsIDOMEvent** aInstancePtrResult,
 {
   NotifyPaintEvent* it = new NotifyPaintEvent(aOwner, aPresContext, aEvent,
                                               aEventType, aInvalidateRequests);
-  return CallQueryInterface(it, aInstancePtrResult);
+  NS_ADDREF(it);
+  *aInstancePtrResult = static_cast<Event*>(it);
+  return NS_OK;
 }

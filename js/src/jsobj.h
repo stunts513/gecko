@@ -165,7 +165,6 @@ extern const Class IntlClass;
 extern const Class JSONClass;
 extern const Class MathClass;
 
-class ArrayBufferObject;
 class GlobalObject;
 class MapObject;
 class NewObjectCache;
@@ -298,7 +297,7 @@ class JSObject : public js::ObjectImpl
         return setFlag(cx, js::BaseShape::WATCHED, GENERATE_SHAPE);
     }
 
-    /* See StackFrame::varObj. */
+    /* See InterpreterFrame::varObj. */
     inline bool isVarObj();
     bool setVarObj(js::ExclusiveContext *cx) {
         return setFlag(cx, js::BaseShape::VAROBJ);

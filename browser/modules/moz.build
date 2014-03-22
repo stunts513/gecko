@@ -20,12 +20,13 @@ EXTRA_JS_MODULES += [
     'SitePermissions.jsm',
     'Social.jsm',
     'TabCrashReporter.jsm',
-    'webappsUI.jsm',
+    'WebappManager.jsm',
     'webrtcUI.jsm',
 ]
 
 if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'windows':
     EXTRA_JS_MODULES += [
+        'Windows8WindowFrameColor.jsm',
         'WindowsJumpLists.jsm',
         'WindowsPreviewPerTab.jsm',
     ]

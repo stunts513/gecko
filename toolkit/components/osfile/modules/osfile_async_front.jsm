@@ -58,6 +58,7 @@ Cu.import("resource://gre/modules/osfile/_PromiseWorker.jsm", this);
 Cu.import("resource://gre/modules/Services.jsm", this);
 Cu.import("resource://gre/modules/TelemetryStopwatch.jsm", this);
 Cu.import("resource://gre/modules/AsyncShutdown.jsm", this);
+let Native = Cu.import("resource://gre/modules/osfile/osfile_native.jsm", {});
 
 /**
  * Constructors for decoding standard exceptions
@@ -134,6 +135,47 @@ for (let [constProp, dirKey] of [
  */
 let clone = SharedAll.clone;
 
+/**
+ * Extract a shortened version of an object, fit for logging.
+ *
+ * This function returns a copy of the original object in which all
+ * long strings, Arrays, TypedArrays, ArrayBuffers are removed and
+ * replaced with placeholders. Use this function to sanitize objects
+ * if you wish to log them or to keep them in memory.
+ *
+ * @param {*} obj The obj to shorten.
+ * @return {*} array A shorter object, fit for logging.
+ */
+function summarizeObject(obj) {
+  if (!obj) {
+    return null;
+  }
+  if (typeof obj == "string") {
+    if (obj.length > 1024) {
+      return {"Long string": obj.length};
+    }
+    return obj;
+  }
+  if (typeof obj == "object") {
+    if (Array.isArray(obj)) {
+      if (obj.length > 32) {
+        return {"Long array": obj.length};
+      }
+      return [summarizeObject(k) for (k of obj)];
+    }
+    if ("byteLength" in obj) {
+      // Assume TypedArray or ArrayBuffer
+      return {"Binary Data": obj.byteLength};
+    }
+    let result = {};
+    for (let k of Object.keys(obj)) {
+      result[k] = summarizeObject(obj[k]);
+    }
+    return result;
+  }
+  return obj;
+}
+
 let worker = null;
 let Scheduler = {
   /**
@@ -156,19 +198,36 @@ let Scheduler = {
   queue: Promise.resolve(),
 
   /**
-   * The latest message sent and still waiting for a reply. In DEBUG
-   * builds, the entire message is stored, which may be memory-consuming.
-   * In non-DEBUG builds, only the method name is stored.
+   * Miscellaneous debugging information
    */
-  latestSent: undefined,
+  Debugging: {
+    /**
+     * The latest message sent and still waiting for a reply.
+     */
+    latestSent: undefined,
 
-  /**
-   * The latest reply received, or null if we are waiting for a reply.
-   * In DEBUG builds, the entire response is stored, which may be
-   * memory-consuming.  In non-DEBUG builds, only exceptions and
-   * method names are stored.
-   */
-  latestReceived: undefined,
+    /**
+     * The latest reply received, or null if we are waiting for a reply.
+     */
+    latestReceived: undefined,
+
+    /**
+     * Number of messages sent to the worker. This includes the
+     * initial SET_DEBUG, if applicable.
+     */
+    messagesSent: 0,
+
+    /**
+     * Total number of messages ever queued, including the messages
+     * sent.
+     */
+    messagesQueued: 0,
+
+    /**
+     * Number of messages received from the worker.
+     */
+    messagesReceived: 0,
+  },
 
   /**
    * A timer used to automatically shut down the worker after some time.
@@ -233,6 +292,7 @@ let Scheduler = {
     if (firstLaunch && SharedAll.Config.DEBUG) {
       // If we have delayed sending SET_DEBUG, do it now.
       worker.post("SET_DEBUG", [true]);
+      Scheduler.Debugging.messagesSent++;
     }
 
     // By convention, the last argument of any message may be an |options| object.
@@ -241,41 +301,43 @@ let Scheduler = {
     if (methodArgs) {
       options = methodArgs[methodArgs.length - 1];
     }
+    Scheduler.Debugging.messagesQueued++;
     return this.push(() => Task.spawn(function*() {
-      Scheduler.latestReceived = null;
-      if (OS.Constants.Sys.DEBUG) {
-        // Update possibly memory-expensive debugging information
-        Scheduler.latestSent = [Date.now(), method, ...args];
-      } else {
-        Scheduler.latestSent = [Date.now(), method];
-      }
+      // Update debugging information. As |args| may be quite
+      // expensive, we only keep a shortened version of it.
+      Scheduler.Debugging.latestReceived = null;
+      Scheduler.Debugging.latestSent = [Date.now(), method, summarizeObject(methodArgs)];
       let data;
       let reply;
       let isError = false;
       try {
-        data = yield worker.post(method, ...args);
-        reply = data;
-      } catch (error if error instanceof PromiseWorker.WorkerError) {
-        reply = error;
-        isError = true;
-        throw EXCEPTION_CONSTRUCTORS[error.data.exn || "OSError"](error.data);
-      } catch (error if error instanceof ErrorEvent) {
-        reply = error;
-        let message = error.message;
-        if (message == "uncaught exception: [object StopIteration]") {
-          throw StopIteration;
+        try {
+          data = yield worker.post(method, ...args);
+        } finally {
+          Scheduler.Debugging.messagesReceived++;
         }
+        reply = data;
+      } catch (error) {
+        reply = error;
         isError = true;
-        throw new Error(message, error.filename, error.lineno);
+        if (error instanceof PromiseWorker.WorkerError) {
+          throw EXCEPTION_CONSTRUCTORS[error.data.exn || "OSError"](error.data);
+        }
+        if (error instanceof ErrorEvent) {
+          let message = error.message;
+          if (message == "uncaught exception: [object StopIteration]") {
+            isError = false;
+            throw StopIteration;
+          }
+          throw new Error(message, error.filename, error.lineno);
+        }
+        throw error;
       } finally {
-        Scheduler.latestSent = Scheduler.latestSent.slice(0, 2);
-        if (OS.Constants.Sys.DEBUG) {
-          // Update possibly memory-expensive debugging information
-          Scheduler.latestReceived = [Date.now(), reply];
-        } else if (isError) {
-          Scheduler.latestReceived = [Date.now(), reply.message, reply.fileName, reply.lineNumber];
+        Scheduler.Debugging.latestSent = Scheduler.Debugging.latestSent.slice(0, 2);
+        if (isError) {
+          Scheduler.Debugging.latestReceived = [Date.now(), reply.message, reply.fileName, reply.lineNumber];
         } else {
-          Scheduler.latestReceived = [Date.now()];
+          Scheduler.Debugging.latestReceived = [Date.now(), summarizeObject(reply)];
         }
         if (firstLaunch) {
           Scheduler._updateTelemetry();
@@ -348,7 +410,7 @@ const PREF_OSFILE_LOG_REDIRECT = "toolkit.osfile.log.redirect";
  * @param bool oldPref
  *        An optional value that the DEBUG flag was set to previously.
  */
-let readDebugPref = function readDebugPref(prefName, oldPref = false) {
+function readDebugPref(prefName, oldPref = false) {
   let pref = oldPref;
   try {
     pref = Services.prefs.getBoolPref(prefName);
@@ -378,6 +440,19 @@ Services.prefs.addObserver(PREF_OSFILE_LOG_REDIRECT,
     SharedAll.Config.TEST = readDebugPref(PREF_OSFILE_LOG_REDIRECT, OS.Shared.TEST);
   }, false);
 SharedAll.Config.TEST = readDebugPref(PREF_OSFILE_LOG_REDIRECT, false);
+
+
+/**
+ * If |true|, use the native implementaiton of OS.File methods
+ * whenever possible. Otherwise, force the use of the JS version.
+ */
+let nativeWheneverAvailable = true;
+const PREF_OSFILE_NATIVE = "toolkit.osfile.native";
+Services.prefs.addObserver(PREF_OSFILE_NATIVE,
+  function prefObserver(aSubject, aTopic, aData) {
+    nativeWheneverAvailable = readDebugPref(PREF_OSFILE_NATIVE, nativeWheneverAvailable);
+  }, false);
+
 
 // Update worker's DEBUG flag if it's true.
 // Don't start the worker just for this, though.
@@ -725,9 +800,9 @@ File.openUnique = function openUnique(path, options) {
  * @resolves {OS.File.Info}
  * @rejects {OS.Error}
  */
-File.stat = function stat(path) {
+File.stat = function stat(path, options) {
   return Scheduler.post(
-    "stat", [Type.path.toMsg(path)],
+    "stat", [Type.path.toMsg(path), options],
     path).then(File.Info.fromMsg);
 };
 
@@ -835,6 +910,24 @@ File.move = function move(sourcePath, destPath, options) {
 };
 
 /**
+ * Create a symbolic link to a source.
+ *
+ * @param {string} sourcePath The platform-specific path to which
+ * the symbolic link should point.
+ * @param {string} destPath The platform-specific path at which the
+ * symbolic link should be created.
+ *
+ * @returns {Promise}
+ * @rejects {OS.File.Error} In case of any error.
+ */
+if (!SharedAll.Constants.Win) {
+  File.unixSymLink = function unixSymLink(sourcePath, destPath) {
+    return Scheduler.post("unixSymLink", [Type.path.toMsg(sourcePath),
+      Type.path.toMsg(destPath)], [sourcePath, destPath]);
+  };
+}
+
+/**
  * Gets the number of bytes available on disk to the current user.
  *
  * @param {string} Platform-specific path to a directory on the disk to 
@@ -913,12 +1006,32 @@ File.makeDir = function makeDir(path, options) {
  * read from the file.
  */
 File.read = function read(path, bytes, options = {}) {
-  let promise = Scheduler.post("read",
-    [Type.path.toMsg(path), bytes, options], path);
-  return promise.then(
-    function onSuccess(data) {
-      return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-    });
+  if (typeof bytes == "object") {
+    // Passing |bytes| as an argument is deprecated.
+    // We should now be passing it as a field of |options|.
+    options = bytes || {};
+  } else {
+    options = clone(options, ["outExecutionDuration"]);
+    if (typeof bytes != "undefined") {
+      options.bytes = bytes;
+    }
+  }
+
+  if (options.compression || !nativeWheneverAvailable) {
+    // We need to use the JS implementation.
+    let promise = Scheduler.post("read",
+      [Type.path.toMsg(path), bytes, options], path);
+    return promise.then(
+      function onSuccess(data) {
+        if (typeof data == "string") {
+          return data;
+        }
+        return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+      });
+  }
+
+  // Otherwise, use the native implementation.
+  return Scheduler.push(() => Native.read(path, options));
 };
 
 /**
@@ -1329,8 +1442,12 @@ AsyncShutdown.profileBeforeChange.addBlocker(
       shutdown: Scheduler.shutdown,
       worker: !!worker,
       pendingReset: !!Scheduler.resetTimer,
-      latestSent: Scheduler.latestSent,
-      latestReceived: Scheduler.latestReceived
+      latestSent: Scheduler.Debugging.latestSent,
+      latestReceived: Scheduler.Debugging.latestReceived,
+      messagesSent: Scheduler.Debugging.messagesSent,
+      messagesReceived: Scheduler.Debugging.messagesReceived,
+      messagesQueued: Scheduler.Debugging.messagesQueued,
+      DEBUG: SharedAll.Config.DEBUG
     };
     // Convert dates to strings for better readability
     for (let key of ["latestSent", "latestReceived"]) {

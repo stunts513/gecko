@@ -257,7 +257,7 @@ NS_IMETHODIMP
 MouseEvent::GetRelatedTarget(nsIDOMEventTarget** aRelatedTarget)
 {
   NS_ENSURE_ARG_POINTER(aRelatedTarget);
-  *aRelatedTarget = GetRelatedTarget().get();
+  *aRelatedTarget = GetRelatedTarget().take();
   return NS_OK;
 }
 
@@ -479,5 +479,7 @@ NS_NewDOMMouseEvent(nsIDOMEvent** aInstancePtrResult,
                     WidgetMouseEvent* aEvent)
 {
   MouseEvent* it = new MouseEvent(aOwner, aPresContext, aEvent);
-  return CallQueryInterface(it, aInstancePtrResult);
+  NS_ADDREF(it);
+  *aInstancePtrResult = static_cast<Event*>(it);
+  return NS_OK;
 }

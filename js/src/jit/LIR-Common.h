@@ -3211,7 +3211,7 @@ class LStart : public LInstructionHelper<0, 0, 0>
     LIR_HEADER(Start)
 };
 
-// Passed the StackFrame address in the OsrFrameReg by SideCannon().
+// Passed the BaselineFrame address in the OsrFrameReg by SideCannon().
 // Forwards this object to the LOsrValues for Value materialization.
 class LOsrEntry : public LInstructionHelper<1, 0, 0>
 {
@@ -3689,8 +3689,7 @@ class LTypedObjectElements : public LInstructionHelper<1, 1, 0>
     }
 };
 
-// Check whether a typed object has a NULL data pointer
-// (i.e., has been neutered).
+// Check whether a typed object has a neutered owner buffer.
 class LNeuterCheck : public LInstructionHelper<0, 1, 1>
 {
   public:

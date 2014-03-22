@@ -3300,7 +3300,7 @@ nsPluginHost::CreateTempFileToPost(const char *aPostDataURL, nsIFile **aTmpFile)
     inStream->Close();
     outStream->Close();
     if (NS_SUCCEEDED(rv))
-      *aTmpFile = tempFile.forget().get();
+      tempFile.forget(aTmpFile);
   }
   return rv;
 }
@@ -3394,9 +3394,7 @@ CheckForDisabledWindows()
         nsIWidget* child = widget->GetFirstChild();
         bool enable = true;
         while (child)  {
-          nsWindowType aType;
-          if (NS_SUCCEEDED(child->GetWindowType(aType)) &&
-              aType == eWindowType_dialog) {
+          if (child->WindowType() == eWindowType_dialog) {
             enable = false;
             break;
           }

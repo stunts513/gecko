@@ -17,7 +17,7 @@ NS_IMPL_NS_NEW_HTML_ELEMENT(Title)
 namespace mozilla {
 namespace dom {
 
-HTMLTitleElement::HTMLTitleElement(already_AddRefed<nsINodeInfo> aNodeInfo)
+HTMLTitleElement::HTMLTitleElement(already_AddRefed<nsINodeInfo>& aNodeInfo)
   : nsGenericHTMLElement(aNodeInfo)
 {
   AddMutationObserver(this);
@@ -42,7 +42,9 @@ HTMLTitleElement::WrapNode(JSContext* cx, JS::Handle<JSObject*> scope)
 NS_IMETHODIMP 
 HTMLTitleElement::GetText(nsAString& aTitle)
 {
-  nsContentUtils::GetNodeTextContent(this, false, aTitle);
+  if (!nsContentUtils::GetNodeTextContent(this, false, aTitle)) {
+    return NS_ERROR_OUT_OF_MEMORY;
+  }
   return NS_OK;
 }
 

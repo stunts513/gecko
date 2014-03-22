@@ -20,6 +20,21 @@ class TextTrackList;
 class TextTrackCue;
 class TextTrackCueList;
 class TextTrackRegion;
+class HTMLTrackElement;
+
+enum TextTrackSource {
+  Track,
+  AddTextTrack,
+  MediaResourceSpecific
+};
+
+// Constants for numeric readyState property values.
+enum TextTrackReadyState {
+  NotLoaded = 0U,
+  Loading = 1U,
+  Loaded = 2U,
+  FailedToLoad = 3U
+};
 
 class TextTrack MOZ_FINAL : public nsDOMEventTargetHelper
 {
@@ -27,16 +42,21 @@ public:
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(TextTrack, nsDOMEventTargetHelper)
 
-  TextTrack(nsISupports* aParent);
   TextTrack(nsISupports* aParent,
             TextTrackKind aKind,
             const nsAString& aLabel,
-            const nsAString& aLanguage);
+            const nsAString& aLanguage,
+            TextTrackMode aMode,
+            TextTrackReadyState aReadyState,
+            TextTrackSource aTextTrackSource);
   TextTrack(nsISupports* aParent,
             TextTrackList* aTextTrackList,
             TextTrackKind aKind,
             const nsAString& aLabel,
-            const nsAString& aLanguage);
+            const nsAString& aLanguage,
+            TextTrackMode aMode,
+            TextTrackReadyState aReadyState,
+            TextTrackSource aTextTrackSource);
 
   void SetDefaultSettings();
 
@@ -84,14 +104,14 @@ public:
   }
 
   TextTrackCueList* GetActiveCues();
+  void UpdateActiveCueList();
   void GetActiveCueArray(nsTArray<nsRefPtr<TextTrackCue> >& aCues);
 
-  uint16_t ReadyState() const;
-  void SetReadyState(uint16_t aState);
+  TextTrackReadyState ReadyState() const;
+  void SetReadyState(TextTrackReadyState aState);
 
   void AddCue(TextTrackCue& aCue);
   void RemoveCue(TextTrackCue& aCue, ErrorResult& aRv);
-  void CueChanged(TextTrackCue& aCue);
   void SetDirty() { mDirty = true; }
 
   TextTrackList* GetTextTrackList();
@@ -99,9 +119,14 @@ public:
 
   IMPL_EVENT_HANDLER(cuechange)
 
-private:
-  void UpdateActiveCueList();
+  HTMLTrackElement* GetTrackElement();
+  void SetTrackElement(HTMLTrackElement* aTrackElement);
 
+  TextTrackSource GetTextTrackSource() {
+    return mTextTrackSource;
+  }
+
+private:
   nsCOMPtr<nsISupports> mParent;
   nsRefPtr<TextTrackList> mTextTrackList;
 
@@ -114,10 +139,14 @@ private:
 
   nsRefPtr<TextTrackCueList> mCueList;
   nsRefPtr<TextTrackCueList> mActiveCueList;
+  nsRefPtr<HTMLTrackElement> mTrackElement;
 
   uint32_t mCuePos;
-  uint16_t mReadyState;
+  TextTrackReadyState mReadyState;
   bool mDirty;
+
+  // An enum that represents where the track was sourced from.
+  TextTrackSource mTextTrackSource;
 };
 
 } // namespace dom

@@ -214,6 +214,13 @@ private:
                     JSObject* aScope,
                     JS::MutableHandle<JS::Value> aValue);
 
+  // Accept booleans.
+  bool
+  ArgumentToJSValue(bool aArgument,
+                    JSContext* aCx,
+                    JSObject* aScope,
+                    JS::MutableHandle<JS::Value> aValue);
+
   // Accept objects that inherit from nsWrapperCache and nsISupports (e.g. most
   // DOM objects).
   template <class T>
@@ -245,6 +252,22 @@ private:
     }
     aValue.setObject(*abv);
     return true;
+  }
+
+  // Accept objects that inherit from nsISupports but not nsWrapperCache (e.g.
+  // nsIDOMFile).
+  template <class T>
+  typename EnableIf<!IsBaseOf<nsWrapperCache, T>::value &&
+                    IsBaseOf<nsISupports, T>::value, bool>::Type
+  ArgumentToJSValue(T& aArgument,
+                    JSContext* aCx,
+                    JSObject* aScope,
+                    JS::MutableHandle<JS::Value> aValue)
+  {
+    JS::Rooted<JSObject*> scope(aCx, aScope);
+
+    nsresult rv = nsContentUtils::WrapNative(aCx, scope, &aArgument, aValue);
+    return NS_SUCCEEDED(rv);
   }
 
   template <template <typename> class SmartPtr, typename T>

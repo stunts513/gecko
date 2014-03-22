@@ -360,13 +360,15 @@ FxAccountsInternal.prototype = {
    *        The credentials object obtained by logging in or creating
    *        an account on the FxA server:
    *        {
-   *          email: The users email address
-   *          uid: The user's unique id
-   *          sessionToken: Session for the FxA server
-   *          keyFetchToken: an unused keyFetchToken
-   *          verified: true/false
    *          authAt: The time (seconds since epoch) that this record was
    *                  authenticated
+   *          email: The users email address
+   *          keyFetchToken: a keyFetchToken which has not yet been used
+   *          sessionToken: Session for the FxA server
+   *          uid: The user's unique id
+   *          unwrapBKey: used to unwrap kB, derived locally from the
+   *                      password (not revealed to the FxA server)
+   *          verified: true/false
    *        }
    * @return Promise
    *         The promise resolves to null when the data is saved
@@ -398,7 +400,7 @@ FxAccountsInternal.prototype = {
   getAssertion: function getAssertion(audience) {
     log.debug("enter getAssertion()");
     let currentState = this.currentAccountState;
-    let mustBeValidUntil = this.now() + ASSERTION_LIFETIME;
+    let mustBeValidUntil = this.now() + ASSERTION_USE_PERIOD;
     return currentState.getUserAccountData().then(data => {
       if (!data) {
         // No signed-in user
@@ -487,6 +489,12 @@ FxAccountsInternal.prototype = {
       if (!currentState.whenKeysReadyDeferred) {
         currentState.whenKeysReadyDeferred = Promise.defer();
         this.fetchAndUnwrapKeys(data.keyFetchToken).then(data => {
+          if (!data.kA || !data.kB) {
+            currentState.whenKeysReadyDeferred.reject(
+              new Error("user data missing kA or kB")
+            );
+            return;
+          }
           currentState.whenKeysReadyDeferred.resolve(data);
         });
       }
@@ -540,6 +548,7 @@ FxAccountsInternal.prototype = {
     let payload = {};
     let d = Promise.defer();
     let options = {
+      duration: ASSERTION_LIFETIME,
       localtimeOffsetMsec: this.localtimeOffsetMsec,
       now: this.now()
     };

@@ -275,7 +275,7 @@ this.WebappManager = {
 
       // Map APK names to APK versions.
       let apkNameToVersion = yield this._getAPKVersions(installedApps.map(app =>
-        app.packageName).filter(packageName => !!packageName)
+        app.apkPackageName).filter(apkPackageName => !!apkPackageName)
       );
 
       // Map manifest URLs to APK versions, which is what the service needs
@@ -286,7 +286,7 @@ this.WebappManager = {
       let manifestUrlToApkVersion = {};
       let manifestUrlToApp = {};
       for (let app of installedApps) {
-        manifestUrlToApkVersion[app.manifestURL] = apkNameToVersion[app.packageName] || 0;
+        manifestUrlToApkVersion[app.manifestURL] = apkNameToVersion[app.apkPackageName] || 0;
         manifestUrlToApp[app.manifestURL] = app;
       }
 
@@ -367,7 +367,9 @@ this.WebappManager = {
                                 Ci.nsIChannel.LOAD_BYPASS_CACHE |
                                 Ci.nsIChannel.INHIBIT_CACHING;
     request.onload = function() {
-      notification.cancel();
+      if (userInitiated) {
+        notification.cancel();
+      }
       deferred.resolve(JSON.parse(this.response).outdated);
     };
     request.onerror = function() {

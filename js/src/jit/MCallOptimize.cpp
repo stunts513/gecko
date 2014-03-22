@@ -158,12 +158,25 @@ IonBuilder::inlineNativeCall(CallInfo &callInfo, JSNative native)
         return inlineToObject(callInfo);
 
     // TypedObject intrinsics.
+    if (native == intrinsic_ObjectIsTypedObject)
+        return inlineHasClasses(callInfo,
+                                &TransparentTypedObject::class_, &OpaqueTypedObject::class_);
     if (native == intrinsic_ObjectIsTransparentTypedObject)
         return inlineHasClass(callInfo, &TransparentTypedObject::class_);
     if (native == intrinsic_ObjectIsOpaqueTypedObject)
         return inlineHasClass(callInfo, &OpaqueTypedObject::class_);
     if (native == intrinsic_ObjectIsTypeDescr)
         return inlineObjectIsTypeDescr(callInfo);
+    if (native == intrinsic_TypeDescrIsSimpleType)
+        return inlineHasClasses(callInfo,
+                                &ScalarTypeDescr::class_, &ReferenceTypeDescr::class_);
+    if (native == intrinsic_TypeDescrIsArrayType)
+        return inlineHasClasses(callInfo,
+                                &SizedArrayTypeDescr::class_, &UnsizedArrayTypeDescr::class_);
+    if (native == intrinsic_TypeDescrIsSizedArrayType)
+        return inlineHasClass(callInfo, &SizedArrayTypeDescr::class_);
+    if (native == intrinsic_TypeDescrIsUnsizedArrayType)
+        return inlineHasClass(callInfo, &UnsizedArrayTypeDescr::class_);
 
     // Testing Functions
     if (native == testingFunc_inParallelSection)
@@ -974,9 +987,9 @@ IonBuilder::inlineMathMinMax(CallInfo &callInfo, bool max)
         if (!IsNumberType(argType))
             return InliningStatus_NotInlined;
 
-        // We would need to inform TI if we happen to return a double.
+        // When one of the arguments is double, do a double MMinMax.
         if (returnType == MIRType_Int32 && IsFloatingPointType(argType))
-            return InliningStatus_NotInlined;
+            returnType = MIRType_Double;
     }
 
     callInfo.setImplicitlyUsedUnchecked();
@@ -1283,10 +1296,11 @@ IonBuilder::inlineUnsafePutElements(CallInfo &callInfo)
         }
 
         // We can only inline setelem on dense arrays that do not need type
-        // barriers and on typed arrays.
+        // barriers and on typed arrays and on typed object arrays.
         ScalarTypeDescr::Type arrayType;
         if ((!isDenseNative || writeNeedsBarrier) &&
-            !ElementAccessIsTypedArray(obj, id, &arrayType))
+            !ElementAccessIsTypedArray(obj, id, &arrayType) &&
+            !elementAccessIsTypedObjectArrayOfScalarType(obj, id, &arrayType))
         {
             return InliningStatus_NotInlined;
         }
@@ -1320,10 +1334,45 @@ IonBuilder::inlineUnsafePutElements(CallInfo &callInfo)
             continue;
         }
 
+        if (elementAccessIsTypedObjectArrayOfScalarType(obj, id, &arrayType)) {
+            if (!inlineUnsafeSetTypedObjectArrayElement(callInfo, base, arrayType))
+                return InliningStatus_Error;
+            continue;
+        }
+
         MOZ_ASSUME_UNREACHABLE("Element access not dense array nor typed array");
     }
 
     return InliningStatus_Inlined;
+}
+
+bool
+IonBuilder::elementAccessIsTypedObjectArrayOfScalarType(MDefinition* obj, MDefinition* id,
+                                                        ScalarTypeDescr::Type *arrayType)
+{
+    if (obj->type() != MIRType_Object) // lookupTypeDescrSet() tests for TypedObject
+        return false;
+
+    if (id->type() != MIRType_Int32 && id->type() != MIRType_Double)
+        return false;
+
+    TypeDescrSet objDescrs;
+    if (!lookupTypeDescrSet(obj, &objDescrs))
+        return false;
+
+    if (!objDescrs.allOfArrayKind())
+        return false;
+
+    TypeDescrSet elemDescrs;
+    if (!objDescrs.arrayElementType(*this, &elemDescrs))
+        return false;
+
+    if (elemDescrs.empty() || elemDescrs.kind() != TypeDescr::Scalar)
+        return false;
+
+    JS_ASSERT(TypeDescr::isSized(elemDescrs.kind()));
+
+    return elemDescrs.scalarType(arrayType);
 }
 
 bool
@@ -1362,6 +1411,26 @@ IonBuilder::inlineUnsafeSetTypedArrayElement(CallInfo &callInfo,
     MDefinition *elem = callInfo.getArg(base + 2);
 
     if (!jsop_setelem_typed(arrayType, SetElem_Unsafe, obj, id, elem))
+        return false;
+
+    return true;
+}
+
+bool
+IonBuilder::inlineUnsafeSetTypedObjectArrayElement(CallInfo &callInfo,
+                                                   uint32_t base,
+                                                   ScalarTypeDescr::Type arrayType)
+{
+    // Note: we do not check the conditions that are asserted as true
+    // in intrinsic_UnsafePutElements():
+    // - arr is a typed array
+    // - idx < length
+
+    MDefinition *obj = callInfo.getArg(base + 0);
+    MDefinition *id = callInfo.getArg(base + 1);
+    MDefinition *elem = callInfo.getArg(base + 2);
+
+    if (!jsop_setelem_typed_object(arrayType, SetElem_Unsafe, true, obj, id, elem))
         return false;
 
     return true;
@@ -1406,7 +1475,11 @@ IonBuilder::inlineForkJoinGetSlice(CallInfo &callInfo)
     // self-hosted function which must be used in a particular fashion.
     MOZ_ASSERT(callInfo.argc() == 1 && !callInfo.constructing());
     MOZ_ASSERT(callInfo.getArg(0)->type() == MIRType_Int32);
-    MOZ_ASSERT(getInlineReturnType() == MIRType_Int32);
+
+    // Test this, as we might have not executed the native despite knowing the
+    // target here.
+    if (getInlineReturnType() != MIRType_Int32)
+        return InliningStatus_NotInlined;
 
     callInfo.setImplicitlyUsedUnchecked();
 
@@ -1489,8 +1562,11 @@ IonBuilder::inlineNewDenseArrayForParallelExecution(CallInfo &callInfo)
 }
 
 IonBuilder::InliningStatus
-IonBuilder::inlineHasClass(CallInfo &callInfo, const Class *clasp)
+IonBuilder::inlineHasClasses(CallInfo &callInfo, const Class *clasp1, const Class *clasp2)
 {
+    // Thus far there has been no reason to complicate this beyond two classes,
+    // though it generalizes pretty well.
+    // clasp2 may be NULL.
     if (callInfo.constructing() || callInfo.argc() != 1)
         return InliningStatus_NotInlined;
 
@@ -1502,11 +1578,28 @@ IonBuilder::inlineHasClass(CallInfo &callInfo, const Class *clasp)
     types::TemporaryTypeSet *types = callInfo.getArg(0)->resultTypeSet();
     const Class *knownClass = types ? types->getKnownClass() : nullptr;
     if (knownClass) {
-        pushConstant(BooleanValue(knownClass == clasp));
+        pushConstant(BooleanValue(knownClass == clasp1 || knownClass == clasp2));
     } else {
-        MHasClass *hasClass = MHasClass::New(alloc(), callInfo.getArg(0), clasp);
-        current->add(hasClass);
-        current->push(hasClass);
+        MHasClass *hasClass1 = MHasClass::New(alloc(), callInfo.getArg(0), clasp1);
+        current->add(hasClass1);
+        if (clasp2 == nullptr) {
+            current->push(hasClass1);
+        } else {
+            // The following turns into branch-free, box-free code on x86, and should do so on ARM.
+            MHasClass *hasClass2 = MHasClass::New(alloc(), callInfo.getArg(0), clasp2);
+            current->add(hasClass2);
+            MBitOr *either = MBitOr::New(alloc(), hasClass1, hasClass2);
+            either->infer(inspector, pc);
+            current->add(either);
+            // Convert to bool with the '!!' idiom
+            MNot *resultInverted = MNot::New(alloc(), either);
+            resultInverted->infer();
+            current->add(resultInverted);
+            MNot *result = MNot::New(alloc(), resultInverted);
+            result->infer();
+            current->add(result);
+            current->push(result);
+        }
     }
 
     callInfo.setImplicitlyUsedUnchecked();
