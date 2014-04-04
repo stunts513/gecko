@@ -10,7 +10,7 @@ this.EXPORTED_SYMBOLS = [
 
 const {classes: Cc, interfaces: Ci, utils: Cu} = Components;
 
-Cu.import("resource://gre/modules/commonjs/sdk/core/promise.js");
+Cu.import("resource://gre/modules/Promise.jsm");
 Cu.import("resource://gre/modules/osfile.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
@@ -173,28 +173,8 @@ function openConnection(options) {
  *        `openConnection`.
  */
 function OpenedConnection(connection, basename, number, options) {
-  let log = Log.repository.getLogger("Sqlite.Connection." + basename);
-
-  // getLogger() returns a shared object. We can't modify the functions on this
-  // object since they would have effect on all instances and last write would
-  // win. So, we create a "proxy" object with our custom functions. Everything
-  // else is proxied back to the shared logger instance via prototype
-  // inheritance.
-  let logProxy = {__proto__: log};
-
-  // Automatically prefix all log messages with the identifier.
-  for (let level in Log.Level) {
-    if (level == "Desc") {
-      continue;
-    }
-
-    let lc = level.toLowerCase();
-    logProxy[lc] = function (msg) {
-      return log[lc].call(log, "Conn #" + number + ": " + msg);
-    };
-  }
-
-  this._log = logProxy;
+  this._log = Log.repository.getLoggerWithMessagePrefix("Sqlite.Connection." + basename,
+                                                        "Conn #" + number + ": ");
 
   this._log.info("Opened");
 

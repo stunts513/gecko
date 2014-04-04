@@ -37,7 +37,6 @@
 #include <stdio.h> // for FILE definition
 #include "nsChangeHint.h"
 #include "nsRefPtrHashtable.h"
-#include "nsEventStates.h"
 #include "nsPresArena.h"
 #include "nsIImageLoadingContent.h"
 #include "nsMargin.h"
@@ -95,6 +94,7 @@ struct nsArenaMemoryStats;
 typedef short SelectionType;
 
 namespace mozilla {
+class EventStates;
 class Selection;
 
 namespace dom {
@@ -168,17 +168,11 @@ enum nsRectVisibility {
  * frame.
  */
 
-// hack to make egcs / gcc 2.95.2 happy
-class nsIPresShell_base : public nsISupports
+class nsIPresShell : public nsISupports
 {
 public:
   NS_DECLARE_STATIC_IID_ACCESSOR(NS_IPRESSHELL_IID)
-};
 
-NS_DEFINE_STATIC_IID_ACCESSOR(nsIPresShell_base, NS_IPRESSHELL_IID)
-
-class nsIPresShell : public nsIPresShell_base
-{
 protected:
   typedef mozilla::layers::LayerManager LayerManager;
   typedef mozilla::gfx::SourceSurface SourceSurface;
@@ -903,7 +897,7 @@ public:
    */
   virtual void ContentStateChanged(nsIDocument* aDocument,
                                    nsIContent* aContent,
-                                   nsEventStates aStateMask) = 0;
+                                   mozilla::EventStates aStateMask) = 0;
 
   /**
    * See if reflow verification is enabled. To enable reflow verification add
@@ -1645,5 +1639,7 @@ protected:
   // presshell.
   bool mIsNeverPainting;
 };
+
+NS_DEFINE_STATIC_IID_ACCESSOR(nsIPresShell, NS_IPRESSHELL_IID)
 
 #endif /* nsIPresShell_h___ */

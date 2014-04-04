@@ -5,6 +5,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
+let B2G_ID = "{3c2e2abc-06d4-11e1-ac3b-374f68613e61}";
+
 let TYPED_ARRAY_CLASSES = ["Uint8Array", "Uint8ClampedArray", "Uint16Array",
       "Uint32Array", "Int8Array", "Int16Array", "Int32Array", "Float32Array",
       "Float64Array"];
@@ -12,6 +14,32 @@ let TYPED_ARRAY_CLASSES = ["Uint8Array", "Uint8ClampedArray", "Uint16Array",
 // Number of items to preview in objects, arrays, maps, sets, lists,
 // collections, etc.
 let OBJECT_PREVIEW_MAX_ITEMS = 10;
+
+let addonManager = null;
+
+/**
+ * This is a wrapper around amIAddonManager.mapURIToAddonID which always returns
+ * false on B2G to avoid loading the add-on manager there and reports any
+ * exceptions rather than throwing so that the caller doesn't have to worry
+ * about them.
+ */
+function mapURIToAddonID(uri, id) {
+  if (Services.appinfo.ID == B2G_ID)
+    return false;
+
+  if (!addonManager) {
+    addonManager = Cc["@mozilla.org/addons/integration;1"].
+                   getService(Ci.amIAddonManager);
+  }
+
+  try {
+    return addonManager.mapURIToAddonID(uri, id);
+  }
+  catch (e) {
+    DevtoolsUtils.reportException("mapURIToAddonID", e);
+    return false;
+  }
+}
 
 /**
  * BreakpointStore objects keep track of all breakpoints that get set so that we
@@ -38,7 +66,7 @@ function BreakpointStore() {
   //
   // is an object
   //
-  //   { url, line[, actor] }
+  //   { url, line, column[, actor] }
   //
   // where the `actor` property is optional.
   this._breakpoints = Object.create(null);
@@ -58,6 +86,7 @@ BreakpointStore.prototype = {
    *          - line
    *          - column (optional; omission implies that the breakpoint is for
    *            the whole line)
+   *          - condition (optional)
    *          - actor (optional)
    */
   addBreakpoint: function (aBreakpoint) {
@@ -447,10 +476,7 @@ function ThreadActor(aHooks, aGlobal)
   this._state = "detached";
   this._frameActors = [];
   this._hooks = aHooks;
-  this.global = this.globalSafe = aGlobal;
-  if (aGlobal && aGlobal.wrappedJSObject) {
-    this.global = aGlobal.wrappedJSObject;
-  }
+  this.global = aGlobal;
   // A map of actorID -> actor for breakpoints created and managed by the server.
   this._hiddenBreakpoints = new Map();
 
@@ -1374,7 +1400,8 @@ ThreadActor.prototype = {
       let response = this._createAndStoreBreakpoint({
         url: url,
         line: line,
-        column: column
+        column: column,
+        condition: aRequest.condition
       });
       // If the original location of our generated location is different from
       // the original location we attempted to set the breakpoint on, we will
@@ -1442,11 +1469,13 @@ ThreadActor.prototype = {
     let storedBp = this.breakpointStore.getBreakpoint(aLocation);
     if (storedBp.actor) {
       actor = storedBp.actor;
+      actor.condition = aLocation.condition;
     } else {
       storedBp.actor = actor = new BreakpointActor(this, {
         url: aLocation.url,
         line: aLocation.line,
-        column: aLocation.column
+        column: aLocation.column,
+        condition: aLocation.condition
       });
       this.threadLifetimePool.addActor(actor);
     }
@@ -1814,7 +1843,7 @@ ThreadActor.prototype = {
     // Clear DOM event breakpoints.
     // XPCShell tests don't use actual DOM windows for globals and cause
     // removeListenerForAllEvents to throw.
-    if (this.globalSafe && !this.globalSafe.toString().contains("Sandbox")) {
+    if (this.global && !this.global.toString().contains("Sandbox")) {
       let els = Cc["@mozilla.org/eventlistenerservice;1"]
                 .getService(Ci.nsIEventListenerService);
       els.removeListenerForAllEvents(this.global, this._allEventsListener, true);
@@ -2430,6 +2459,37 @@ PauseScopedActor.prototype = {
   }
 };
 
+/**
+ * Resolve a URI back to physical file.
+ *
+ * Of course, this works only for URIs pointing to local resources.
+ *
+ * @param  aURI
+ *         URI to resolve
+ * @return
+ *         resolved nsIURI
+ */
+function resolveURIToLocalPath(aURI) {
+  switch (aURI.scheme) {
+    case "jar":
+    case "file":
+      return aURI;
+
+    case "chrome":
+      let resolved = Cc["@mozilla.org/chrome/chrome-registry;1"].
+                     getService(Ci.nsIChromeRegistry).convertChromeURL(aURI);
+      return resolveURIToLocalPath(resolved);
+
+    case "resource":
+      resolved = Cc["@mozilla.org/network/protocol;1?name=resource"].
+                 getService(Ci.nsIResProtocolHandler).resolveURI(aURI);
+      aURI = Services.io.newURI(resolved, null, null);
+      return resolveURIToLocalPath(aURI);
+
+    default:
+      return null;
+  }
+}
 
 /**
  * A SourceActor provides information about the source of a script.
@@ -2462,6 +2522,8 @@ function SourceActor({ url, thread, sourceMap, generatedSource, text,
   this._saveMap = this._saveMap.bind(this);
   this._getSourceText = this._getSourceText.bind(this);
 
+  this._mapSourceToAddon();
+
   if (this.threadActor.sources.isPrettyPrinted(this.url)) {
     this._init = this.onPrettyPrint({
       indent: this.threadActor.sources.prettyPrintIndent(this.url)
@@ -2479,9 +2541,13 @@ SourceActor.prototype = {
 
   _oldSourceMap: null,
   _init: null,
+  _addonID: null,
+  _addonPath: null,
 
   get threadActor() this._threadActor,
   get url() this._url,
+  get addonID() this._addonID,
+  get addonPath() this._addonPath,
 
   get prettyPrintWorker() {
     return this.threadActor.prettyPrintWorker;
@@ -2491,6 +2557,8 @@ SourceActor.prototype = {
     return {
       actor: this.actorID,
       url: this._url,
+      addonID: this._addonID,
+      addonPath: this._addonPath,
       isBlackBoxed: this.threadActor.sources.isBlackBoxed(this.url),
       isPrettyPrinted: this.threadActor.sources.isPrettyPrinted(this.url)
       // TODO bug 637572: introductionScript
@@ -2500,6 +2568,52 @@ SourceActor.prototype = {
   disconnect: function () {
     if (this.registeredPool && this.registeredPool.sourceActors) {
       delete this.registeredPool.sourceActors[this.actorID];
+    }
+  },
+
+  _mapSourceToAddon: function() {
+    try {
+      var nsuri = Services.io.newURI(this._url.split(" -> ").pop(), null, null);
+    }
+    catch (e) {
+      // We can't do anything with an invalid URI
+      return;
+    }
+
+    let localURI = resolveURIToLocalPath(nsuri);
+
+    let id = {};
+    if (localURI && mapURIToAddonID(localURI, id)) {
+      this._addonID = id.value;
+
+      if (localURI instanceof Ci.nsIJARURI) {
+        // The path in the add-on is easy for jar: uris
+        this._addonPath = localURI.JAREntry;
+      }
+      else if (localURI instanceof Ci.nsIFileURL) {
+        // For file: uris walk up to find the last directory that is part of the
+        // add-on
+        let target = localURI.file;
+        let path = target.leafName;
+
+        // We can assume that the directory containing the source file is part
+        // of the add-on
+        let root = target.parent;
+        let file = root.parent;
+        while (file && mapURIToAddonID(Services.io.newFileURI(file), {})) {
+          path = root.leafName + "/" + path;
+          root = file;
+          file = file.parent;
+        }
+
+        if (!file) {
+          const error = new Error("Could not find the root of the add-on for " + this._url);
+          DevToolsUtils.reportException("SourceActor.prototype._mapSourceToAddon", error)
+          return;
+        }
+
+        this._addonPath = path;
+      }
     }
   },
 
@@ -2932,8 +3046,12 @@ ObjectActor.prototype = {
       let previewers = DebuggerServer.ObjectActorPreviewers[this.obj.class] ||
                        DebuggerServer.ObjectActorPreviewers.Object;
       for (let fn of previewers) {
-        if (fn(this, g, raw)) {
-          break;
+        try {
+          if (fn(this, g, raw)) {
+            break;
+          }
+        } catch (e) {
+          DevToolsUtils.reportException("ObjectActor.prototype.grip previewer function", e);
         }
       }
     }
@@ -3696,10 +3814,12 @@ DebuggerServer.ObjectActorPreviewers.Object = [
     }
 
     let url;
-    if (aRawObj instanceof Ci.nsIDOMWindow) {
+    if (aRawObj instanceof Ci.nsIDOMWindow && aRawObj.location) {
       url = aRawObj.location.href;
-    } else {
+    } else if (aRawObj.href) {
       url = aRawObj.href;
+    } else {
+      return false;
     }
 
     aGrip.preview = {
@@ -3782,7 +3902,7 @@ DebuggerServer.ObjectActorPreviewers.Object = [
       nodeName: aRawObj.nodeName,
     };
 
-    if (aRawObj instanceof Ci.nsIDOMDocument) {
+    if (aRawObj instanceof Ci.nsIDOMDocument && aRawObj.location) {
       preview.location = threadActor.createValueGrip(aRawObj.location.href);
     } else if (aRawObj instanceof Ci.nsIDOMDocumentFragment) {
       preview.childNodesLength = aRawObj.childNodes.length;
@@ -4221,15 +4341,17 @@ FrameActor.prototype.requestTypes = {
  * @param object aLocation
  *        The location of the breakpoint as specified in the protocol.
  */
-function BreakpointActor(aThreadActor, aLocation)
+function BreakpointActor(aThreadActor, { url, line, column, condition })
 {
   this.scripts = [];
   this.threadActor = aThreadActor;
-  this.location = aLocation;
+  this.location = { url: url, line: line, column: column };
+  this.condition = condition;
 }
 
 BreakpointActor.prototype = {
   actorPrefix: "breakpoint",
+  condition: null,
 
   /**
    * Called when this same breakpoint is added to another Debugger.Script
@@ -4255,6 +4377,14 @@ BreakpointActor.prototype = {
     this.scripts = [];
   },
 
+  isValidCondition: function(aFrame) {
+    if(!this.condition) {
+      return true;
+    }
+    var res = aFrame.eval(this.condition);
+    return res.return;
+  },
+
   /**
    * A function that the engine calls when a breakpoint has been hit.
    *
@@ -4271,7 +4401,9 @@ BreakpointActor.prototype = {
         column: this.location.column
       }));
 
-    if (this.threadActor.sources.isBlackBoxed(url) || aFrame.onStep) {
+    if (this.threadActor.sources.isBlackBoxed(url)
+        || aFrame.onStep
+        || !this.isValidCondition(aFrame)) {
       return undefined;
     }
 
@@ -4634,7 +4766,17 @@ update(AddonThreadActor.prototype, {
    * sure every script and source with a URL is stored when debugging
    * add-ons.
    */
-  _allowSource: (aSourceURL) => !!aSourceURL,
+  _allowSource: function(aSourceURL) {
+    // Hide eval scripts
+    if (!aSourceURL)
+      return false;
+
+    // XPIProvider.jsm evals some code in every add-on's bootstrap.js. Hide it
+    if (aSourceURL == "resource://gre/modules/addons/XPIProvider.jsm")
+      return false;
+
+    return true;
+  },
 
   /**
    * An object that will be used by ThreadActors to tailor their
@@ -4678,14 +4820,31 @@ update(AddonThreadActor.prototype, {
    * @param aGlobal Debugger.Object
    */
   _checkGlobal: function ADA_checkGlobal(aGlobal) {
-    let metadata;
     try {
       // This will fail for non-Sandbox objects, hence the try-catch block.
-      metadata = Cu.getSandboxMetadata(aGlobal.unsafeDereference());
+      let metadata = Cu.getSandboxMetadata(aGlobal.unsafeDereference());
+      if (metadata)
+        return metadata.addonID === this.addonID;
     } catch (e) {
     }
 
-    return metadata && metadata.addonID === this.addonID;
+    // Check the global for a __URI__ property and then try to map that to an
+    // add-on
+    let uridescriptor = aGlobal.getOwnPropertyDescriptor("__URI__");
+    if (uridescriptor && "value" in uridescriptor) {
+      try {
+        let uri = Services.io.newURI(uridescriptor.value, null, null);
+        let id = {};
+        if (mapURIToAddonID(uri, id)) {
+          return id.value === this.addonID;
+        }
+      }
+      catch (e) {
+        DevToolsUtils.reportException("AddonThreadActor.prototype._checkGlobal", e);
+      }
+    }
+
+    return false;
   }
 });
 

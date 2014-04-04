@@ -31,6 +31,7 @@
 #include "XrayWrapper.h"
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/indexedDB/IndexedDatabaseManager.h"
+#include "mozilla/dom/PromiseBinding.h"
 #include "mozilla/dom/TextDecoderBinding.h"
 #include "mozilla/dom/TextEncoderBinding.h"
 #include "mozilla/dom/URLBinding.h"
@@ -43,10 +44,16 @@ using namespace xpc;
 using mozilla::dom::DestroyProtoAndIfaceCache;
 using mozilla::dom::indexedDB::IndexedDatabaseManager;
 
-NS_IMPL_ISUPPORTS3(SandboxPrivate,
-                   nsIScriptObjectPrincipal,
-                   nsIGlobalObject,
-                   nsISupportsWeakReference)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_0(SandboxPrivate)
+NS_IMPL_CYCLE_COLLECTING_ADDREF(SandboxPrivate)
+NS_IMPL_CYCLE_COLLECTING_RELEASE(SandboxPrivate)
+NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(SandboxPrivate)
+  NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
+  NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, nsIScriptObjectPrincipal)
+  NS_INTERFACE_MAP_ENTRY(nsIScriptObjectPrincipal)
+  NS_INTERFACE_MAP_ENTRY(nsIGlobalObject)
+  NS_INTERFACE_MAP_ENTRY(nsISupportsWeakReference)
+NS_INTERFACE_MAP_END
 
 const char kScriptSecurityManagerContractID[] = NS_SCRIPTSECURITYMANAGER_CONTRACTID;
 
@@ -170,7 +177,7 @@ SandboxImport(JSContext *cx, unsigned argc, Value *vp)
     }
 
     RootedId id(cx);
-    if (!JS_ValueToId(cx, StringValue(funname), &id))
+    if (!JS_StringToId(cx, funname, &id))
         return false;
 
     // We need to resolve the this object, because this function is used
@@ -292,9 +299,7 @@ ExportFunction(JSContext *cx, HandleValue vfunction, HandleValue vscope, HandleV
             if (!funName)
                 funName = JS_InternString(cx, "");
 
-            RootedValue vname(cx);
-            vname.setString(funName);
-            if (!JS_ValueToId(cx, vname, &id))
+            if (!JS_StringToId(cx, funName, &id))
                 return false;
         }
         MOZ_ASSERT(JSID_IS_STRING(id));
@@ -529,7 +534,7 @@ EvalInWindow(JSContext *cx, const nsAString &source, HandleObject scope, Mutable
                                                 targetScope,
                                                 compileOptions,
                                                 evaluateOptions,
-                                                rval.address());
+                                                rval);
 
         if (NS_FAILED(rv)) {
             // If there was an exception we get it as a return value, if
@@ -622,6 +627,20 @@ CreateObjectIn(JSContext *cx, unsigned argc, jsval *vp)
 
     return xpc::CreateObjectIn(cx, args[0], options, args.rval());
 }
+
+static bool
+CloneInto(JSContext *cx, unsigned argc, jsval *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (args.length() < 2) {
+        JS_ReportError(cx, "Function requires at least 2 arguments");
+        return false;
+    }
+
+    RootedValue options(cx, args.length() > 2 ? args[2] : UndefinedValue());
+    return xpc::CloneInto(cx, args[0], args[1], options, args.rval());
+}
+
 } /* namespace xpc */
 
 static bool
@@ -954,6 +973,7 @@ xpc::GlobalProperties::Parse(JSContext *cx, JS::HandleObject obj)
     uint32_t length;
     bool ok = JS_GetArrayLength(cx, obj, &length);
     NS_ENSURE_TRUE(ok, false);
+    bool promise = Promise;
     for (uint32_t i = 0; i < length; i++) {
         RootedValue nameValue(cx);
         ok = JS_GetElement(cx, obj, i, &nameValue);
@@ -964,7 +984,9 @@ xpc::GlobalProperties::Parse(JSContext *cx, JS::HandleObject obj)
         }
         JSAutoByteString name(cx, nameValue.toString());
         NS_ENSURE_TRUE(name, false);
-        if (!strcmp(name.ptr(), "indexedDB")) {
+        if (promise && !strcmp(name.ptr(), "-Promise")) {
+            Promise = false;
+        } else if (!strcmp(name.ptr(), "indexedDB")) {
             indexedDB = true;
         } else if (!strcmp(name.ptr(), "XMLHttpRequest")) {
             XMLHttpRequest = true;
@@ -989,6 +1011,9 @@ xpc::GlobalProperties::Parse(JSContext *cx, JS::HandleObject obj)
 bool
 xpc::GlobalProperties::Define(JSContext *cx, JS::HandleObject obj)
 {
+    if (Promise && !dom::PromiseBinding::GetConstructorObject(cx, obj))
+        return false;
+
     if (indexedDB && AccessCheck::isChrome(obj) &&
         !IndexedDatabaseManager::DefineIndexedDB(cx, obj))
         return false;
@@ -1131,6 +1156,7 @@ xpc::CreateSandboxObject(JSContext *cx, MutableHandleValue vp, nsISupports *prin
             (!JS_DefineFunction(cx, sandbox, "exportFunction", ExportFunction, 3, 0) ||
              !JS_DefineFunction(cx, sandbox, "evalInWindow", EvalInWindow, 2, 0) ||
              !JS_DefineFunction(cx, sandbox, "createObjectIn", CreateObjectIn, 2, 0) ||
+             !JS_DefineFunction(cx, sandbox, "cloneInto", CloneInto, 3, 0) ||
              !JS_DefineFunction(cx, sandbox, "isProxy", IsProxy, 1, 0)))
             return NS_ERROR_XPC_UNEXPECTED;
 
@@ -1574,6 +1600,16 @@ nsXPCComponents_utils_Sandbox::CallOrConstruct(nsIXPConnectWrappedNative *wrappe
     if (NS_FAILED(AssembleSandboxMemoryReporterName(cx, options.sandboxName)))
         return ThrowAndFail(NS_ERROR_INVALID_ARG, cx, _retval);
 
+    if (options.metadata.isNullOrUndefined()) {
+        // If the caller is running in a sandbox, inherit.
+        RootedObject callerGlobal(cx, CurrentGlobalOrNull(cx));
+        if (IsSandbox(callerGlobal)) {
+            rv = GetSandboxMetadata(cx, callerGlobal, &options.metadata);
+            if (NS_WARN_IF(NS_FAILED(rv)))
+                return rv;
+        }
+    }
+
     rv = CreateSandboxObject(cx, args.rval(), prinOrSop, options);
 
     if (NS_FAILED(rv))
@@ -1683,8 +1719,7 @@ xpc::EvalInSandbox(JSContext *cx, HandleObject sandboxArg, const nsAString& sour
                options.setVersion(jsVersion);
         JS::RootedObject rootedSandbox(sandcx, sandbox);
         ok = JS::Evaluate(sandcx, rootedSandbox, options,
-                          PromiseFlatString(source).get(), source.Length(),
-                          v.address());
+                          PromiseFlatString(source).get(), source.Length(), &v);
         if (ok && returnStringOnly && !v.isUndefined()) {
             JSString *str = ToString(sandcx, v);
             ok = !!str;
@@ -1804,7 +1839,8 @@ xpc::NewFunctionForwarder(JSContext *cx, HandleObject callable, bool doclone,
                           MutableHandleValue vp)
 {
     RootedId emptyId(cx);
-    if (!JS_ValueToId(cx, JS_GetEmptyStringValue(cx), &emptyId))
+    RootedValue emptyStringValue(cx, JS_GetEmptyStringValue(cx));
+    if (!JS_ValueToId(cx, emptyStringValue, &emptyId))
         return false;
 
     return NewFunctionForwarder(cx, emptyId, callable, doclone, vp);

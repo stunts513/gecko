@@ -71,7 +71,6 @@ public:
     , mDisplayPort(0, 0, 0, 0)
     , mCriticalDisplayPort(0, 0, 0, 0)
     , mViewport(0, 0, 0, 0)
-    , mScrollId(NULL_SCROLL_ID)
     , mScrollableRect(0, 0, 0, 0)
     , mResolution(1)
     , mCumulativeResolution(1)
@@ -81,10 +80,14 @@ public:
     , mMayHaveTouchListeners(false)
     , mIsRoot(false)
     , mHasScrollgrab(false)
+    , mScrollId(NULL_SCROLL_ID)
     , mScrollOffset(0, 0)
     , mZoom(1)
     , mUpdateScrollOffset(false)
     , mScrollGeneration(0)
+    , mRootCompositionSize(0, 0)
+    , mDisplayPortMargins(0, 0, 0, 0)
+    , mUseDisplayPortMargins(false)
   {}
 
   // Default copy ctor and operator= are fine
@@ -94,10 +97,12 @@ public:
     // mContentDescription is not compared on purpose as it's only used
     // for debugging.
     return mCompositionBounds.IsEqualEdges(aOther.mCompositionBounds) &&
+           mRootCompositionSize == aOther.mRootCompositionSize &&
            mDisplayPort.IsEqualEdges(aOther.mDisplayPort) &&
+           mDisplayPortMargins == aOther.mDisplayPortMargins &&
+           mUseDisplayPortMargins == aOther.mUseDisplayPortMargins &&
            mCriticalDisplayPort.IsEqualEdges(aOther.mCriticalDisplayPort) &&
            mViewport.IsEqualEdges(aOther.mViewport) &&
-           mScrollId == aOther.mScrollId &&
            mScrollableRect.IsEqualEdges(aOther.mScrollableRect) &&
            mResolution == aOther.mResolution &&
            mCumulativeResolution == aOther.mCumulativeResolution &&
@@ -105,6 +110,7 @@ public:
            mMayHaveTouchListeners == aOther.mMayHaveTouchListeners &&
            mPresShellId == aOther.mPresShellId &&
            mIsRoot == aOther.mIsRoot &&
+           mScrollId == aOther.mScrollId &&
            mScrollOffset == aOther.mScrollOffset &&
            mHasScrollgrab == aOther.mHasScrollgrab &&
            mUpdateScrollOffset == aOther.mUpdateScrollOffset;
@@ -156,17 +162,17 @@ public:
   CSSRect GetExpandedScrollableRect() const
   {
     CSSRect scrollableRect = mScrollableRect;
-    CSSRect compBounds = CSSRect(CalculateCompositedRectInCssPixels());
-    if (scrollableRect.width < compBounds.width) {
+    CSSSize compSize = CalculateCompositedSizeInCssPixels();
+    if (scrollableRect.width < compSize.width) {
       scrollableRect.x = std::max(0.f,
-                                  scrollableRect.x - (compBounds.width - scrollableRect.width));
-      scrollableRect.width = compBounds.width;
+                                  scrollableRect.x - (compSize.width - scrollableRect.width));
+      scrollableRect.width = compSize.width;
     }
 
-    if (scrollableRect.height < compBounds.height) {
+    if (scrollableRect.height < compSize.height) {
       scrollableRect.y = std::max(0.f,
-                                  scrollableRect.y - (compBounds.height - scrollableRect.height));
-      scrollableRect.height = compBounds.height;
+                                  scrollableRect.y - (compSize.height - scrollableRect.height));
+      scrollableRect.height = compSize.height;
     }
 
     return scrollableRect;
@@ -189,9 +195,14 @@ public:
     return mZoom * mTransformScale;
   }
 
-  CSSIntRect CalculateCompositedRectInCssPixels() const
+  CSSSize CalculateCompositedSizeInCssPixels() const
   {
-    return gfx::RoundedIn(mCompositionBounds / GetZoomToParent());
+    return mCompositionBounds.Size() / GetZoomToParent();
+  }
+
+  CSSRect CalculateCompositedRectInCssPixels() const
+  {
+    return mCompositionBounds / GetZoomToParent();
   }
 
   void ScrollBy(const CSSPoint& aPoint)
@@ -202,6 +213,12 @@ public:
   void ZoomBy(float aFactor)
   {
     mZoom.scale *= aFactor;
+  }
+
+  void CopyScrollInfoFrom(const FrameMetrics& aOther)
+  {
+    mScrollOffset = aOther.mScrollOffset;
+    mScrollGeneration = aOther.mScrollGeneration;
   }
 
   // ---------------------------------------------------------------------------
@@ -264,9 +281,6 @@ public:
   // iframe. For layers that don't correspond to a document, this metric is
   // meaningless and invalid.
   CSSRect mViewport;
-
-  // A unique ID assigned to each scrollable frame.
-  ViewID mScrollId;
 
   // The scrollable bounds of a frame. This is determined by reflow.
   // Ordinarily the x and y will be 0 and the width and height will be the
@@ -370,9 +384,52 @@ public:
     mContentDescription = aContentDescription;
   }
 
+  ViewID GetScrollId() const
+  {
+    return mScrollId;
+  }
+  
+  void SetScrollId(ViewID scrollId) 
+  {
+    mScrollId = scrollId;
+  }
+
+  void SetRootCompositionSize(const CSSSize& aRootCompositionSize)
+  {
+    mRootCompositionSize = aRootCompositionSize;
+  }
+
+  const CSSSize& GetRootCompositionSize() const
+  {
+    return mRootCompositionSize;
+  }
+
+  void SetDisplayPortMargins(const LayerMargin& aDisplayPortMargins)
+  {
+    mDisplayPortMargins = aDisplayPortMargins;
+  }
+
+  const LayerMargin& GetDisplayPortMargins() const
+  {
+    return mDisplayPortMargins;
+  }
+
+  void SetUseDisplayPortMargins()
+  {
+    mUseDisplayPortMargins = true;
+  }
+
+  bool GetUseDisplayPortMargins() const
+  {
+    return mUseDisplayPortMargins;
+  }
+
 private:
   // New fields from now on should be made private and old fields should
   // be refactored to be private.
+
+  // A unique ID assigned to each scrollable frame.
+  ViewID mScrollId;
 
   // The position of the top-left of the CSS viewport, relative to the document
   // (or the document relative to the viewport, if that helps understand it).
@@ -406,6 +463,17 @@ private:
   // A description of the content element corresponding to this frame.
   // This is empty unless the apz.printtree pref is turned on.
   std::string mContentDescription;
+
+  // The size of the root scrollable's composition bounds, but in local CSS pixels.
+  CSSSize mRootCompositionSize;
+
+  // A display port expressed as layer margins that apply to the rect of what
+  // is drawn of the scrollable element.
+  LayerMargin mDisplayPortMargins;
+
+  // If this is true then we use the display port margins on this metrics,
+  // otherwise use the display port rect.
+  bool mUseDisplayPortMargins;
 };
 
 /**
@@ -441,7 +509,7 @@ struct ScrollableLayerGuid {
   ScrollableLayerGuid(uint64_t aLayersId, const FrameMetrics& aMetrics)
     : mLayersId(aLayersId)
     , mPresShellId(aMetrics.mPresShellId)
-    , mScrollId(aMetrics.mScrollId)
+    , mScrollId(aMetrics.GetScrollId())
   {
     MOZ_COUNT_CTOR(ScrollableLayerGuid);
   }

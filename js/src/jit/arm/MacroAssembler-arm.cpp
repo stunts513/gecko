@@ -891,7 +891,7 @@ MacroAssemblerARM::ma_check_mul(Register src1, Register src2, Register dest, Con
         as_smull(ScratchRegister, dest, src1, src2, SetCond);
         return cond;
     }
-    
+
     if (cond == Overflow) {
         as_smull(ScratchRegister, dest, src1, src2);
         as_cmp(ScratchRegister, asr(dest, 31));
@@ -909,7 +909,7 @@ MacroAssemblerARM::ma_check_mul(Register src1, Imm32 imm, Register dest, Conditi
         as_smull(ScratchRegister, dest, ScratchRegister, src1, SetCond);
         return cond;
     }
-    
+
     if (cond == Overflow) {
         as_smull(ScratchRegister, dest, ScratchRegister, src1);
         as_cmp(ScratchRegister, asr(dest, 31));
@@ -1186,7 +1186,6 @@ MacroAssemblerARM::ma_dataTransferN(LoadStore ls, int size, bool IsSigned,
         //
         // Note a neg_bottom of 0x1000 can not be encoded as an immediate negative offset in the
         // instruction and this occurs when bottom is zero, so this case is guarded against below.
-        // 
         if (off < 0) {
             Operand2 sub_off = Imm8(-(off-bottom)); // sub_off = bottom - off
             if (!sub_off.invalid) {
@@ -1227,7 +1226,6 @@ MacroAssemblerARM::ma_dataTransferN(LoadStore ls, int size, bool IsSigned,
         //
         // Note a neg_bottom of 0x100 can not be encoded as an immediate negative offset in the
         // instruction and this occurs when bottom is zero, so this case is guarded against below.
-        // 
         if (off < 0) {
             Operand2 sub_off = Imm8(-(off-bottom)); // sub_off = bottom - off
             if (!sub_off.invalid) {
@@ -1644,7 +1642,6 @@ MacroAssemblerARM::ma_vdtr(LoadStore ls, const Operand &addr, VFPRegister rt, Co
     //
     // Note a neg_bottom of 0x400 can not be encoded as an immediate negative offset in the
     // instruction and this occurs when bottom is zero, so this case is guarded against below.
-    // 
     if (off < 0) {
         Operand2 sub_off = Imm8(-(off-bottom)); // sub_off = bottom - off
         if (!sub_off.invalid) {
@@ -1713,7 +1710,7 @@ bool
 MacroAssemblerARMCompat::buildFakeExitFrame(const Register &scratch, uint32_t *offset)
 {
     DebugOnly<uint32_t> initialDepth = framePushed();
-    uint32_t descriptor = MakeFrameDescriptor(framePushed(), IonFrame_OptimizedJS);
+    uint32_t descriptor = MakeFrameDescriptor(framePushed(), JitFrame_IonJS);
 
     Push(Imm32(descriptor)); // descriptor_
 
@@ -1739,7 +1736,7 @@ bool
 MacroAssemblerARMCompat::buildOOLFakeExitFrame(void *fakeReturnAddr)
 {
     DebugOnly<uint32_t> initialDepth = framePushed();
-    uint32_t descriptor = MakeFrameDescriptor(framePushed(), IonFrame_OptimizedJS);
+    uint32_t descriptor = MakeFrameDescriptor(framePushed(), JitFrame_IonJS);
 
     Push(Imm32(descriptor)); // descriptor_
 
@@ -1753,7 +1750,7 @@ MacroAssemblerARMCompat::buildOOLFakeExitFrame(void *fakeReturnAddr)
 void
 MacroAssemblerARMCompat::callWithExitFrame(JitCode *target)
 {
-    uint32_t descriptor = MakeFrameDescriptor(framePushed(), IonFrame_OptimizedJS);
+    uint32_t descriptor = MakeFrameDescriptor(framePushed(), JitFrame_IonJS);
     Push(Imm32(descriptor)); // descriptor
 
     addPendingJump(m_buffer.nextOffset(), ImmPtr(target->raw()), Relocation::JITCODE);
@@ -1771,7 +1768,7 @@ void
 MacroAssemblerARMCompat::callWithExitFrame(JitCode *target, Register dynStack)
 {
     ma_add(Imm32(framePushed()), dynStack);
-    makeFrameDescriptor(dynStack, IonFrame_OptimizedJS);
+    makeFrameDescriptor(dynStack, JitFrame_IonJS);
     Push(dynStack); // descriptor
 
     addPendingJump(m_buffer.nextOffset(), ImmPtr(target->raw()), Relocation::JITCODE);
@@ -3932,18 +3929,6 @@ MacroAssemblerARMCompat::testStringTruthy(bool truthy, const ValueOperand &value
     ma_bic(Imm32(~mask), ScratchRegister, SetCond);
     return truthy ? Assembler::NonZero : Assembler::Zero;
 }
-
-void
-MacroAssemblerARMCompat::enterOsr(Register calleeToken, Register code)
-{
-    push(Imm32(0)); // num actual arguments.
-    push(calleeToken);
-    push(Imm32(MakeFrameDescriptor(0, IonFrame_Osr)));
-    ma_add(sp, Imm32(sizeof(uintptr_t)), sp);   // padding
-    ma_callIonHalfPush(code);
-    ma_sub(sp, Imm32(sizeof(uintptr_t) * 3), sp);
-}
-
 
 void
 MacroAssemblerARMCompat::floor(FloatRegister input, Register output, Label *bail)

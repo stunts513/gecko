@@ -123,7 +123,16 @@
  * text and icons to not appear fuzzy.
  */
 @media (-moz-windows-classic) {
-  #main-window[tabsintitlebar]:not([sizemode=fullscreen]) .tabbrowser-tab:not([selected=true]),
+  #main-window[tabsintitlebar]:not([sizemode=fullscreen]) .tabbrowser-tab[selected=true] {
+    position: relative;
+    z-index: 3;
+  }
+
+  #main-window[tabsintitlebar]:not([sizemode=fullscreen]) .tabbrowser-tab:not([selected=true]) {
+    position: relative;
+    z-index: 2;
+  }
+
   #main-window[tabsintitlebar]:not([sizemode=fullscreen]) .tabs-newtab-button {
     position: relative;
     z-index: 1;
@@ -178,12 +187,22 @@
     z-index: 1;
   }
 
+  #main-window[tabsintitlebar]:not([inFullscreen]) .tab-close-button:not(:-moz-any(:hover,:-moz-lwtheme,[selected="true"])) {
+    -moz-image-region: rect(0, 64px, 16px, 48px);
+  }
+
   #main-window[tabsintitlebar][sizemode="normal"] #titlebar-content:-moz-lwtheme {
     /* Render a window top border: */
     background-image: linear-gradient(to bottom,
           ThreeDLightShadow 0, ThreeDLightShadow 1px,
           ThreeDHighlight 1px, ThreeDHighlight 2px,
           ActiveBorder 2px, ActiveBorder 4px, transparent 4px);
+  }
+
+  /* End classic titlebar gradient */
+
+  #main-window[tabsintitlebar]:not([inFullscreen]) :-moz-any(#TabsToolbar, #toolbar-menubar) toolbarbutton:not(:-moz-lwtheme) {
+    color: inherit;
   }
 }
 
@@ -248,7 +267,7 @@
 #nav-bar {
   background-image: linear-gradient(@toolbarHighlight@, rgba(255,255,255,0));
   box-shadow: 0 1px 0 @toolbarHighlight@ inset;
-  margin-top: -1px; /* Move up 1px into the TabsToolbar */
+  margin-top: -@tabToolbarNavbarOverlap@; /* Move up into the TabsToolbar */
   /* Position the toolbar above the bottom of background tabs */
   position: relative;
   z-index: 1;
@@ -406,6 +425,17 @@ toolbarpaletteitem[place="palette"] > #personal-bookmarks > #bookmarks-toolbar-p
   opacity: 0;
 }
 
+#bookmarked-notification-dropmarker-anchor {
+  z-index: -1;
+  position: relative;
+}
+
+#bookmarked-notification-dropmarker-icon {
+  width: 18px;
+  height: 18px;
+  visibility: hidden;
+}
+
 #bookmarked-notification-anchor[notification="finish"] > #bookmarked-notification {
   background-image: url("chrome://browser/skin/places/bookmarks-notification-finish.png");
   animation: animation-bookmarkAdded 800ms;
@@ -413,6 +443,11 @@ toolbarpaletteitem[place="palette"] > #personal-bookmarks > #bookmarks-toolbar-p
 }
 
 #bookmarks-menu-button[notification="finish"] > .toolbarbutton-menubutton-dropmarker > .dropmarker-icon {
+  list-style-image: none !important;
+}
+
+#bookmarked-notification-dropmarker-anchor[notification="finish"] > #bookmarked-notification-dropmarker-icon {
+  visibility: visible;
   animation: animation-bookmarkPulse 300ms;
   animation-delay: 600ms;
   animation-timing-function: ease-out;
@@ -599,7 +634,8 @@ toolbar .toolbarbutton-1 > .toolbarbutton-menubutton-dropmarker:-moz-lwtheme-bri
   #nav-bar .toolbarbutton-1 > .toolbarbutton-icon,
   #nav-bar .toolbarbutton-1 > .toolbarbutton-text,
   #nav-bar .toolbarbutton-1 > .toolbarbutton-badge-container,
-  #nav-bar .toolbarbutton-1 > .toolbarbutton-menubutton-button > .toolbarbutton-icon {
+  #nav-bar .toolbarbutton-1 > .toolbarbutton-menubutton-button > .toolbarbutton-icon,
+  #nav-bar .toolbarbutton-1 > .toolbarbutton-menubutton-dropmarker > .dropmarker-icon {
     background-color: hsla(210,32%,93%,0);
     background-origin: padding-box;
     border-radius: 2px;
@@ -770,7 +806,7 @@ toolbarbutton[sdk-button="true"][cui-areatype="toolbar"] > .toolbarbutton-icon {
     border-color: hsla(210,54%,20%,.3) hsla(210,54%,20%,.35) hsla(210,54%,20%,.4);
     box-shadow: 0 1px 1px hsla(210,54%,20%,.1) inset,
                 0 0 1px hsla(210,54%,20%,.2) inset,
-                /* allows windows-keyhole-forward-clip-path to be used for non-hover as well as hover: */
+                /* allows keyhole-forward-clip-path to be used for non-hover as well as hover: */
                 0 1px 0 hsla(210,54%,20%,0),
                 0 0 2px hsla(210,54%,20%,0);
     text-shadow: none;
@@ -824,7 +860,7 @@ toolbarbutton[sdk-button="true"][cui-areatype="toolbar"] > .toolbarbutton-icon {
 #forward-button > .toolbarbutton-icon {
   background-clip: padding-box !important;
   /*mask: url(keyhole-forward-mask.svg#mask); XXX: this regresses twinopen */
-  clip-path: url(chrome://browser/content/browser.xul#windows-keyhole-forward-clip-path) !important;
+  clip-path: url(chrome://browser/content/browser.xul#keyhole-forward-clip-path) !important;
   margin-left: -6px !important;
   border-left-style: none !important;
   border-radius: 0 !important;
@@ -888,6 +924,7 @@ toolbarbutton[sdk-button="true"][cui-areatype="toolbar"] > .toolbarbutton-icon {
   box-shadow: none !important;
 }
 
+#back-button:not([disabled="true"]):hover:active > .toolbarbutton-icon,
 #back-button[open="true"] > .toolbarbutton-icon {
   background-color: hsla(210,4%,10%,.12) !important;
   box-shadow: 0 1px 0 0 hsla(210,80%,20%,.1) inset !important;
@@ -1126,7 +1163,7 @@ toolbarbutton[sdk-button="true"][cui-areatype="toolbar"] > .toolbarbutton-icon {
 }
 
 @conditionalForwardWithUrlbar@[forwarddisabled] > #urlbar-wrapper {
-  clip-path: url("chrome://browser/content/browser.xul#windows-urlbar-back-button-clip-path");
+  clip-path: url("chrome://browser/content/browser.xul#urlbar-back-button-clip-path");
 }
 
 @conditionalForwardWithUrlbar@[forwarddisabled] > #urlbar-wrapper > #urlbar {

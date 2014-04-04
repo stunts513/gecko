@@ -690,7 +690,6 @@ Sync11Service.prototype = {
       // to succeed, since that probably means we just don't have storage.
       if (this.clusterURL == "" && !this._clusterManager.setCluster()) {
         this.status.sync = NO_SYNC_NODE_FOUND;
-        Svc.Obs.notify("weave:service:sync:delayed");
         return true;
       }
 
@@ -910,7 +909,6 @@ Sync11Service.prototype = {
     this.identity.finalize().then(
       () => {
         this.identity.username = "";
-        Services.prefs.clearUserPref("services.sync.fxaccounts.enabled");
         this.status.__authManager = null;
         this.identity = Status._authManager;
         this._clusterManager = this.identity.createClusterManager(this);

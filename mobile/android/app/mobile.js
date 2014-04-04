@@ -236,7 +236,6 @@ pref("accessibility.browsewithcaret_shortcut.enabled", false);
 // Whether the character encoding menu is under the main Firefox button. This
 // preference is a string so that localizers can alter it.
 pref("browser.menu.showCharacterEncoding", "chrome://browser/locale/browser.properties");
-pref("intl.charsetmenu.browser.static", "chrome://browser/locale/browser.properties");
 
 // pointer to the default engine name
 pref("browser.search.defaultenginename", "chrome://browser/locale/region.properties");
@@ -548,7 +547,7 @@ pref("app.update.channel", "@MOZ_UPDATE_CHANNEL@");
 pref("editor.singleLine.pasteNewlines", 2);
 
 // threshold where a tap becomes a drag, in 1/240" reference pixels
-// The names of the preferences are to be in sync with nsEventStateManager.cpp
+// The names of the preferences are to be in sync with EventStateManager.cpp
 pref("ui.dragThresholdX", 25);
 pref("ui.dragThresholdY", 25);
 

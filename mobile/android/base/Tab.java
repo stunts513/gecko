@@ -68,6 +68,7 @@ public class Tab {
     private ErrorType mErrorType = ErrorType.NONE;
     private static final int MAX_HISTORY_LIST_SIZE = 50;
     private volatile int mLoadProgress;
+    private volatile int mRecordingCount = 0;
 
     public static final int STATE_DELAYED = 0;
     public static final int STATE_LOADING = 1;
@@ -457,6 +458,22 @@ public class Tab {
         });
     }
 
+    public void addToReadingList() {
+        if (!mReaderEnabled)
+            return;
+
+        JSONObject json = new JSONObject();
+        try {
+            json.put("tabID", String.valueOf(getId()));
+        } catch (JSONException e) {
+            Log.e(LOGTAG, "JSON error - failing to add to reading list", e);
+            return;
+        }
+
+        GeckoEvent e = GeckoEvent.createBroadcastEvent("Reader:Add", json.toString());
+        GeckoAppShell.sendEventToGecko(e);
+    }
+
     public void toggleReaderMode() {
         if (AboutPages.isAboutReader(mUrl)) {
             Tabs.getInstance().loadUrl(ReaderModeUtils.getUrlFromAboutReader(mUrl));
@@ -644,9 +661,9 @@ public class Tab {
         return !AboutPages.isAboutPage(url);
     }
 
-    void handleDocumentStart(boolean showProgress, String url) {
+    void handleDocumentStart(boolean restoring, String url) {
         setLoadProgress(LOAD_PROGRESS_START);
-        setState(showProgress ? STATE_LOADING : STATE_SUCCESS);
+        setState((!restoring && shouldShowProgress(url)) ? STATE_LOADING : STATE_SUCCESS);
         updateIdentityData(null);
         setReaderEnabled(false);
     }
@@ -797,5 +814,17 @@ public class Tab {
      */
     public int getLoadProgress() {
         return mLoadProgress;
+    }
+
+    public void setRecording(boolean isRecording) {
+        if (isRecording) {
+            mRecordingCount++;
+        } else {
+            mRecordingCount--;
+        }
+    }
+
+    public boolean isRecording() {
+        return mRecordingCount > 0;
     }
 }

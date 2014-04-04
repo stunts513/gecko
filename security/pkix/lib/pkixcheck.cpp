@@ -15,6 +15,8 @@
  * limitations under the License.
  */
 
+#include <limits>
+
 #include "pkix/pkix.h"
 #include "pkixcheck.h"
 #include "pkixder.h"
@@ -116,6 +118,14 @@ CheckCertificatePolicies(BackCert& cert, EndEntityOrCA endEntityOrCA,
     return FatalError;
   }
 
+  // Bug 989051. Until we handle inhibitAnyPolicy we will fail close when
+  // inhibitAnyPolicy extension is present and we need to evaluate certificate
+  // policies.
+  if (cert.encodedInhibitAnyPolicy) {
+    PR_SetError(SEC_ERROR_POLICY_VALIDATION_FAILED, 0);
+    return RecoverableError;
+  }
+
   // The root CA certificate may omit the policies that it has been
   // trusted for, so we cannot require the policies to be present in those
   // certificates. Instead, the determination of which roots are trusted for
@@ -141,10 +151,77 @@ CheckCertificatePolicies(BackCert& cert, EndEntityOrCA endEntityOrCA,
     if ((*policyInfos)->oid == requiredPolicy) {
       return Success;
     }
+    // Intermediate certs are allowed to have the anyPolicy OID
+    if (endEntityOrCA == MustBeCA &&
+        (*policyInfos)->oid == SEC_OID_X509_ANY_POLICY) {
+      return Success;
+    }
   }
 
   PR_SetError(SEC_ERROR_POLICY_VALIDATION_FAILED, 0);
   return RecoverableError;
+}
+
+//  BasicConstraints ::= SEQUENCE {
+//          cA                      BOOLEAN DEFAULT FALSE,
+//          pathLenConstraint       INTEGER (0..MAX) OPTIONAL }
+der::Result
+DecodeBasicConstraints(const SECItem* encodedBasicConstraints,
+                       CERTBasicConstraints& basicConstraints)
+{
+  PR_ASSERT(encodedBasicConstraints);
+  if (!encodedBasicConstraints) {
+    return der::Fail(SEC_ERROR_INVALID_ARGS);
+  }
+
+  basicConstraints.isCA = false;
+  basicConstraints.pathLenConstraint = 0;
+
+  der::Input input;
+  if (input.Init(encodedBasicConstraints->data, encodedBasicConstraints->len)
+        != der::Success) {
+    return der::Fail(SEC_ERROR_EXTENSION_VALUE_INVALID);
+  }
+
+  if (der::ExpectTagAndIgnoreLength(input, der::SEQUENCE) != der::Success) {
+    return der::Fail(SEC_ERROR_EXTENSION_VALUE_INVALID);
+  }
+
+  bool isCA = false;
+  // TODO(bug 989518): cA is by default false. According to DER, default
+  // values must not be explicitly encoded in a SEQUENCE. So, if this
+  // value is present and false, it is an encoding error. However, Go Daddy
+  // has issued many certificates with this improper encoding, so we can't
+  // enforce this yet (hence passing true for allowInvalidExplicitEncoding
+  // to der::OptionalBoolean).
+  if (der::OptionalBoolean(input, true, isCA) != der::Success) {
+    return der::Fail(SEC_ERROR_EXTENSION_VALUE_INVALID);
+  }
+  basicConstraints.isCA = isCA;
+
+  if (input.Peek(der::INTEGER)) {
+    SECItem pathLenConstraintEncoded;
+    if (der::Integer(input, pathLenConstraintEncoded) != der::Success) {
+      return der::Fail(SEC_ERROR_EXTENSION_VALUE_INVALID);
+    }
+    long pathLenConstraint = DER_GetInteger(&pathLenConstraintEncoded);
+    if (pathLenConstraint >= std::numeric_limits<int>::max() ||
+        pathLenConstraint < 0) {
+      return der::Fail(SEC_ERROR_EXTENSION_VALUE_INVALID);
+    }
+    basicConstraints.pathLenConstraint = static_cast<int>(pathLenConstraint);
+    // TODO(bug 985025): If isCA is false, pathLenConstraint MUST NOT
+    // be included (as per RFC 5280 section 4.2.1.9), but for compatibility
+    // reasons, we don't check this for now.
+  } else if (basicConstraints.isCA) {
+    // If this is a CA but the path length is omitted, it is unlimited.
+    basicConstraints.pathLenConstraint = CERT_UNLIMITED_PATH_CONSTRAINT;
+  }
+
+  if (der::End(input) != der::Success) {
+    return der::Fail(SEC_ERROR_EXTENSION_VALUE_INVALID);
+  }
+  return der::Success;
 }
 
 // RFC5280 4.2.1.9. Basic Constraints (id-ce-basicConstraints)
@@ -156,10 +233,9 @@ CheckBasicConstraints(const BackCert& cert,
 {
   CERTBasicConstraints basicConstraints;
   if (cert.encodedBasicConstraints) {
-    SECStatus rv = CERT_DecodeBasicConstraintValue(&basicConstraints,
-                                                   cert.encodedBasicConstraints);
-    if (rv != SECSuccess) {
-      return MapSECStatus(rv);
+    if (DecodeBasicConstraints(cert.encodedBasicConstraints,
+                               basicConstraints) != der::Success) {
+      return RecoverableError;
     }
   } else {
     // Synthesize a non-CA basic constraints by default
@@ -177,18 +253,10 @@ CheckBasicConstraints(const BackCert& cert,
     // TODO: add check for self-signedness?
     if (endEntityOrCA == MustBeCA && isTrustAnchor) {
       const CERTCertificate* nssCert = cert.GetNSSCert();
-
-      der::Input versionDer;
-      if (versionDer.Init(nssCert->version.data, nssCert->version.len)
-            != der::Success) {
-        return RecoverableError;
-      }
-      uint8_t version;
-      if (der::OptionalVersion(versionDer, version) || der::End(versionDer)
-            != der::Success) {
-        return RecoverableError;
-      }
-      if (version == 1) {
+      // We only allow trust anchor CA certs to omit the
+      // basicConstraints extension if they are v1. v1 is encoded
+      // implicitly.
+      if (!nssCert->version.data && !nssCert->version.len) {
         basicConstraints.isCA = true;
         basicConstraints.pathLenConstraint = CERT_UNLIMITED_PATH_CONSTRAINT;
       }
@@ -328,6 +396,16 @@ CheckExtendedKeyUsage(EndEntityOrCA endEntityOrCA, const SECItem* encodedEKUs,
       SECOidTag oidTag = SECOID_FindOIDTag(*oids);
       if (requiredEKU != SEC_OID_UNKNOWN && oidTag == requiredEKU) {
         found = true;
+      } else {
+        // Treat CA certs with step-up OID as also having SSL server type.
+        // COMODO has issued certificates that require this behavior
+        // that don't expire until June 2020!
+        // TODO 982932: Limit this expection to old certificates
+        if (endEntityOrCA == MustBeCA &&
+            requiredEKU == SEC_OID_EXT_KEY_USAGE_SERVER_AUTH &&
+            oidTag == SEC_OID_NS_KEY_USAGE_GOVT_APPROVED) {
+          found = true;
+        }
       }
       if (oidTag == SEC_OID_OCSP_RESPONDER) {
         foundOCSPSigning = true;

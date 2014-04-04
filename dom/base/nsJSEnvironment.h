@@ -44,11 +44,6 @@ public:
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS_AMBIGUOUS(nsJSContext,
                                                          nsIScriptContext)
 
-  virtual nsresult BindCompiledEventHandler(nsISupports *aTarget,
-                                            JS::Handle<JSObject*> aScope,
-                                            JS::Handle<JSObject*> aHandler,
-                                            JS::MutableHandle<JSObject*> aBoundHandler) MOZ_OVERRIDE;
-
   virtual nsIScriptGlobalObject *GetGlobalObject() MOZ_OVERRIDE;
   inline nsIScriptGlobalObject *GetGlobalObjectRef() { return mGlobalObjectRef; }
 
@@ -145,12 +140,6 @@ protected:
 
   nsresult AddSupportsPrimitiveTojsvals(nsISupports *aArg, JS::Value *aArgv);
 
-  // given an nsISupports object (presumably an event target or some other
-  // DOM object), get (or create) the JSObject wrapping it.
-  nsresult JSObjectFromInterface(nsISupports *aSup,
-                                 JS::Handle<JSObject*> aScript,
-                                 JSObject **aRet);
-
   // Report the pending exception on our mContext, if any.  This
   // function will set aside the frame chain on mContext before
   // reporting.
@@ -168,13 +157,8 @@ private:
   bool mGCOnDestruction;
   bool mProcessingScriptTag;
 
-  PRTime mOperationCallbackTime;
-
   PRTime mModalStateTime;
   uint32_t mModalStateDepth;
-
-  nsJSContext *mNext;
-  nsJSContext **mPrev;
 
   // mGlobalObjectRef ensures that the outer window stays alive as long as the
   // context does. It is eventually collected by the cycle collector.

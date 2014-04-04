@@ -23,6 +23,7 @@
 #include "xpcprivate.h"
 #include "XPCWrapper.h"
 
+#include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/dom/RegisterBindings.h"
 
 #include "nscore.h"
@@ -37,7 +38,6 @@
 #include "nsIXPCSecurityManager.h"
 #include "xptcall.h"
 #include "nsTArray.h"
-#include "nsDOMEventTargetHelper.h"
 #include "nsDocument.h" // nsDOMStyleSheetList
 #include "nsDOMBlobBuilder.h"
 
@@ -158,7 +158,6 @@
 #endif
 
 #include "nsIDOMGlobalObjectConstructor.h"
-#include "nsIDOMLockedFile.h"
 #include "nsDebug.h"
 
 #include "mozilla/dom/BindingUtils.h"
@@ -459,8 +458,6 @@ static nsDOMClassInfoData sClassInfoData[] = {
                            DOM_DEFAULT_SCRIPTABLE_FLAGS)
 #endif
 
-  NS_DEFINE_CLASSINFO_DATA(LockedFile, nsEventTargetSH,
-                           EVENTTARGET_SCRIPTABLE_FLAGS)
   NS_DEFINE_CLASSINFO_DATA(CSSFontFeatureValuesRule, nsDOMGenericSH,
                            DOM_DEFAULT_SCRIPTABLE_FLAGS)
 
@@ -1153,10 +1150,6 @@ nsDOMClassInfo::Init()
   DOM_CLASSINFO_MAP_END
 
 #endif
-
-  DOM_CLASSINFO_MAP_BEGIN(LockedFile, nsIDOMLockedFile)
-    DOM_CLASSINFO_MAP_ENTRY(nsIDOMLockedFile)
-  DOM_CLASSINFO_MAP_END
 
   DOM_CLASSINFO_MAP_BEGIN(CSSFontFeatureValuesRule, nsIDOMCSSFontFeatureValuesRule)
     DOM_CLASSINFO_MAP_ENTRY(nsIDOMCSSFontFeatureValuesRule)
@@ -3505,6 +3498,8 @@ NS_IMETHODIMP
 nsLocationSH::AddProperty(nsIXPConnectWrappedNative *wrapper, JSContext *cx,
                           JSObject *obj, jsid aId, jsval *vp, bool *_retval)
 {
+  JS::Rooted<JSObject*> rootedObj(cx, obj);
+
   // Shadowing protection. This will go away when nsLocation moves to the new
   // bindings.
   JS::Rooted<jsid> id(cx, aId);
@@ -3512,6 +3507,9 @@ nsLocationSH::AddProperty(nsIXPConnectWrappedNative *wrapper, JSContext *cx,
     JS_ReportError(cx, "Permission denied to shadow native property");
     return NS_ERROR_FAILURE;
   }
+
+  nsLocation* location = static_cast<nsLocation*>(GetNative(wrapper, rootedObj));
+  location->PreserveWrapper(location);
 
   return NS_OK;
 }
@@ -3523,8 +3521,7 @@ nsEventTargetSH::PreCreate(nsISupports *nativeObj, JSContext *cx,
                            JSObject *aGlobalObj, JSObject **parentObj)
 {
   JS::Rooted<JSObject*> globalObj(cx, aGlobalObj);
-  nsDOMEventTargetHelper *target =
-    nsDOMEventTargetHelper::FromSupports(nativeObj);
+  DOMEventTargetHelper* target = DOMEventTargetHelper::FromSupports(nativeObj);
 
   nsCOMPtr<nsIScriptGlobalObject> native_parent;
   target->GetParentObject(getter_AddRefs(native_parent));
@@ -3546,8 +3543,7 @@ nsEventTargetSH::AddProperty(nsIXPConnectWrappedNative *wrapper, JSContext *cx,
 void
 nsEventTargetSH::PreserveWrapper(nsISupports *aNative)
 {
-  nsDOMEventTargetHelper *target =
-    nsDOMEventTargetHelper::FromSupports(aNative);
+  DOMEventTargetHelper* target = DOMEventTargetHelper::FromSupports(aNative);
   target->PreserveWrapper(aNative);
 }
 
@@ -3916,12 +3912,11 @@ nsStorage2SH::NewEnumerate(nsIXPConnectWrappedNative *wrapper, JSContext *cx,
 
   if (enum_op == JSENUMERATE_NEXT && keys->Length() != 0) {
     nsString& key = keys->ElementAt(0);
-    JSString *str =
-      JS_NewUCStringCopyN(cx, key.get(), key.Length());
+    JS::Rooted<JSString*> str(cx, JS_NewUCStringCopyN(cx, key.get(), key.Length()));
     NS_ENSURE_TRUE(str, NS_ERROR_OUT_OF_MEMORY);
 
     JS::Rooted<jsid> id(cx);
-    JS_ValueToId(cx, JS::StringValue(str), &id);
+    JS_StringToId(cx, str, &id);
     *idp = id;
 
     keys->RemoveElementAt(0);

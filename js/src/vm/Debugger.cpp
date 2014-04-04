@@ -12,19 +12,17 @@
 #include "jsnum.h"
 #include "jsobj.h"
 #include "jswrapper.h"
-
 #include "frontend/BytecodeCompiler.h"
 #include "gc/Marking.h"
 #include "jit/BaselineJIT.h"
 #include "js/Vector.h"
 #include "vm/ArgumentsObject.h"
+#include "vm/DebuggerMemory.h"
 #include "vm/WrapperObject.h"
-
 #include "jsgcinlines.h"
 #include "jsobjinlines.h"
 #include "jsopcodeinlines.h"
 #include "jsscriptinlines.h"
-
 #include "vm/ObjectImpl-inl.h"
 #include "vm/Stack-inl.h"
 
@@ -1929,9 +1927,15 @@ Debugger::setUncaughtExceptionHook(JSContext *cx, unsigned argc, Value *vp)
                              "uncaughtExceptionHook");
         return false;
     }
-
     dbg->uncaughtExceptionHook = args[0].toObjectOrNull();
     args.rval().setUndefined();
+    return true;
+}
+bool
+Debugger::getMemory(JSContext *cx, unsigned argc, Value *vp)
+{
+    THIS_DEBUGGER(cx, argc, vp, "get memory", args, dbg);
+    args.rval().set(dbg->object->getReservedSlot(JSSLOT_DEBUG_MEMORY_INSTANCE));
     return true;
 }
 
@@ -2116,7 +2120,7 @@ Debugger::construct(JSContext *cx, unsigned argc, Value *vp)
     CallArgs args = CallArgsFromVp(argc, vp);
 
     /* Check that the arguments, if any, are cross-compartment wrappers. */
-    for (unsigned i = 0; i < argc; i++) {
+    for (unsigned i = 0; i < args.length(); i++) {
         const Value &arg = args[i];
         if (!arg.isObject())
             return ReportObjectRequired(cx);
@@ -2135,17 +2139,24 @@ Debugger::construct(JSContext *cx, unsigned argc, Value *vp)
         return false;
     RootedObject proto(cx, &v.toObject());
     JS_ASSERT(proto->getClass() == &Debugger::jsclass);
-
     /*
      * Make the new Debugger object. Each one has a reference to
-     * Debugger.{Frame,Object,Script}.prototype in reserved slots. The rest of
-     * the reserved slots are for hooks; they default to undefined.
+     * Debugger.{Frame,Object,Script,Memory}.prototype in reserved slots. The
+     * rest of the reserved slots are for hooks; they default to undefined.
      */
     RootedObject obj(cx, NewObjectWithGivenProto(cx, &Debugger::jsclass, proto, nullptr));
     if (!obj)
         return false;
     for (unsigned slot = JSSLOT_DEBUG_PROTO_START; slot < JSSLOT_DEBUG_PROTO_STOP; slot++)
         obj->setReservedSlot(slot, proto->getReservedSlot(slot));
+    /* Create the Debugger.Memory instance accessible by the
+     * |Debugger.prototype.memory| getter. */
+    Value memoryProto = obj->getReservedSlot(JSSLOT_DEBUG_MEMORY_PROTO);
+    RootedObject memory(cx, NewObjectWithGivenProto(cx, &DebuggerMemory::class_,
+                                                    &memoryProto.toObject(), nullptr));
+    if (!memory)
+        return false;
+    obj->setReservedSlot(JSSLOT_DEBUG_MEMORY_INSTANCE, ObjectValue(*memory));
 
     /* Construct the underlying C++ object. */
     Debugger *dbg = cx->new_<Debugger>(cx, obj.get());
@@ -2159,7 +2170,7 @@ Debugger::construct(JSContext *cx, unsigned argc, Value *vp)
     /* Now the JSObject owns the js::Debugger instance, so we needn't delete it. */
 
     /* Add the initial debuggees, if any. */
-    for (unsigned i = 0; i < argc; i++) {
+    for (unsigned i = 0; i < args.length(); i++) {
         Rooted<GlobalObject*>
             debuggee(cx, &args[i].toObject().as<ProxyObject>().private_().toObject().global());
         if (!dbg->addDebuggeeGlobal(cx, debuggee))
@@ -2713,7 +2724,7 @@ Debugger::findScripts(JSContext *cx, unsigned argc, Value *vp)
     if (!query.init())
         return false;
 
-    if (argc >= 1) {
+    if (args.length() >= 1) {
         RootedObject queryObject(cx, NonNullObject(cx, args[0]));
         if (!queryObject || !query.parseQuery(queryObject))
             return false;
@@ -2814,9 +2825,9 @@ const JSPropertySpec Debugger::properties[] = {
     JS_PSGS("onNewGlobalObject", Debugger::getOnNewGlobalObject, Debugger::setOnNewGlobalObject, 0),
     JS_PSGS("uncaughtExceptionHook", Debugger::getUncaughtExceptionHook,
             Debugger::setUncaughtExceptionHook, 0),
+    JS_PSG("memory", Debugger::getMemory, 0),
     JS_PS_END
 };
-
 const JSFunctionSpec Debugger::methods[] = {
     JS_FN("addDebuggee", Debugger::addDebuggee, 1, 0),
     JS_FN("addAllGlobalsAsDebuggees", Debugger::addAllGlobalsAsDebuggees, 0, 0),
@@ -3617,7 +3628,7 @@ DebuggerScript_getBreakpoints(JSContext *cx, unsigned argc, Value *vp)
     Debugger *dbg = Debugger::fromChildJSObject(obj);
 
     jsbytecode *pc;
-    if (argc > 0) {
+    if (args.length() > 0) {
         size_t offset;
         if (!ScriptOffset(cx, script, args[0], &offset))
             return false;
@@ -5321,7 +5332,7 @@ ApplyOrCall(JSContext *cx, unsigned argc, Value *vp, ApplyOrCallMode mode)
     Value *callArgv = nullptr;
     AutoValueVector argv(cx);
     if (mode == ApplyMode) {
-        if (argc >= 2 && !args[1].isNullOrUndefined()) {
+        if (args.length() >= 2 && !args[1].isNullOrUndefined()) {
             if (!args[1].isObject()) {
                 JS_ReportErrorNumber(cx, js_GetErrorMessage, nullptr, JSMSG_BAD_APPLY_ARGS,
                                      js_apply_str);
@@ -5336,7 +5347,7 @@ ApplyOrCall(JSContext *cx, unsigned argc, Value *vp, ApplyOrCallMode mode)
             callArgv = argv.begin();
         }
     } else {
-        callArgc = argc > 0 ? unsigned(Min(argc - 1, ARGS_LENGTH_MAX)) : 0;
+        callArgc = args.length() > 0 ? unsigned(Min(args.length() - 1, ARGS_LENGTH_MAX)) : 0;
         callArgv = args.array() + 1;
     }
 
@@ -5478,7 +5489,7 @@ DebuggerObject_unwrap(JSContext *cx, unsigned argc, Value *vp)
     THIS_DEBUGOBJECT_OWNER_REFERENT(cx, argc, vp, "unwrap", args, dbg, referent);
     JSObject *unwrapped = UnwrapOneChecked(referent);
     if (!unwrapped) {
-        vp->setNull();
+        args.rval().setNull();
         return true;
     }
 
@@ -5905,13 +5916,11 @@ JS_DefineDebuggerObject(JSContext *cx, HandleObject obj)
         scriptProto(cx),
         sourceProto(cx),
         objectProto(cx),
-        envProto(cx);
-
+        envProto(cx),
+        memoryProto(cx);
     objProto = obj->as<GlobalObject>().getOrCreateObjectPrototype(cx);
     if (!objProto)
         return false;
-
-
     debugProto = js_InitClass(cx, obj,
                               objProto, &Debugger::jsclass, Debugger::construct,
                               1, Debugger::properties, Debugger::methods, nullptr, nullptr,
@@ -5946,12 +5955,16 @@ JS_DefineDebuggerObject(JSContext *cx, HandleObject obj)
                                nullptr, nullptr);
     if (!objectProto)
         return false;
-
     envProto = js_InitClass(cx, debugCtor, objProto, &DebuggerEnv_class,
                                       DebuggerEnv_construct, 0,
                                       DebuggerEnv_properties, DebuggerEnv_methods,
                                       nullptr, nullptr);
     if (!envProto)
+        return false;
+    memoryProto = js_InitClass(cx, debugCtor, objProto, &DebuggerMemory::class_,
+                               DebuggerMemory::construct, 0, DebuggerMemory::properties,
+                               DebuggerMemory::methods, nullptr, nullptr);
+    if (!memoryProto)
         return false;
 
     debugProto->setReservedSlot(Debugger::JSSLOT_DEBUG_FRAME_PROTO, ObjectValue(*frameProto));
@@ -5959,5 +5972,6 @@ JS_DefineDebuggerObject(JSContext *cx, HandleObject obj)
     debugProto->setReservedSlot(Debugger::JSSLOT_DEBUG_SCRIPT_PROTO, ObjectValue(*scriptProto));
     debugProto->setReservedSlot(Debugger::JSSLOT_DEBUG_SOURCE_PROTO, ObjectValue(*sourceProto));
     debugProto->setReservedSlot(Debugger::JSSLOT_DEBUG_ENV_PROTO, ObjectValue(*envProto));
+    debugProto->setReservedSlot(Debugger::JSSLOT_DEBUG_MEMORY_PROTO, ObjectValue(*memoryProto));
     return true;
 }

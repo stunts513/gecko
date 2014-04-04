@@ -60,6 +60,7 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/Debug.h"
 #include "mozilla/EventListenerManager.h"
+#include "mozilla/EventStates.h"
 #include "mozilla/MouseEvents.h"
 #include "AudioChannelService.h"
 
@@ -131,10 +132,10 @@
 #endif
 #include "nsCDefaultURIFixup.h"
 #include "mozilla/EventDispatcher.h"
+#include "mozilla/EventStateManager.h"
 #include "nsIObserverService.h"
 #include "nsFocusManager.h"
 #include "nsIXULWindow.h"
-#include "nsEventStateManager.h"
 #include "nsITimedChannel.h"
 #include "nsServiceManagerUtils.h"
 #ifdef MOZ_XUL
@@ -204,7 +205,7 @@
 #include "nsLocation.h"
 #include "nsHTMLDocument.h"
 #include "nsWrapperCacheInlines.h"
-#include "nsDOMEventTargetHelper.h"
+#include "mozilla/DOMEventTargetHelper.h"
 #include "prrng.h"
 #include "nsSandboxFlags.h"
 #include "TimeChangeObserver.h"
@@ -216,6 +217,9 @@
 #include "nsITabChild.h"
 #include "mozilla/dom/MediaQueryList.h"
 #include "mozilla/dom/ScriptSettings.h"
+#ifdef HAVE_SIDEBAR
+#include "mozilla/dom/ExternalBinding.h"
+#endif
 
 #ifdef MOZ_WEBSPEECH
 #include "mozilla/dom/SpeechSynthesis.h"
@@ -1222,10 +1226,10 @@ nsGlobalWindow::Init()
 }
 
 static PLDHashOperator
-DisconnectEventTargetObjects(nsPtrHashKey<nsDOMEventTargetHelper>* aKey,
+DisconnectEventTargetObjects(nsPtrHashKey<DOMEventTargetHelper>* aKey,
                              void* aClosure)
 {
-  nsRefPtr<nsDOMEventTargetHelper> target = aKey->GetKey();
+  nsRefPtr<DOMEventTargetHelper> target = aKey->GetKey();
   target->DisconnectFromOwner();
   return PL_DHASH_NEXT;
 }
@@ -1333,13 +1337,13 @@ nsGlobalWindow::~nsGlobalWindow()
 }
 
 void
-nsGlobalWindow::AddEventTargetObject(nsDOMEventTargetHelper* aObject)
+nsGlobalWindow::AddEventTargetObject(DOMEventTargetHelper* aObject)
 {
   mEventTargetObjects.PutEntry(aObject);
 }
 
 void
-nsGlobalWindow::RemoveEventTargetObject(nsDOMEventTargetHelper* aObject)
+nsGlobalWindow::RemoveEventTargetObject(DOMEventTargetHelper* aObject)
 {
   mEventTargetObjects.RemoveEntry(aObject);
 }
@@ -1445,6 +1449,8 @@ nsGlobalWindow::CleanUp()
   mIndexedDB = nullptr;
 
   mConsole = nullptr;
+
+  mExternal = nullptr;
 
   mPerformance = nullptr;
 
@@ -1761,6 +1767,7 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INTERNAL(nsGlobalWindow)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mScrollbars)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mCrypto)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mConsole)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mExternal)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(nsGlobalWindow)
@@ -1819,6 +1826,7 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(nsGlobalWindow)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mScrollbars)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mCrypto)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mConsole)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mExternal)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 #ifdef DEBUG
@@ -2135,27 +2143,6 @@ WindowStateHolder::~WindowStateHolder()
 
 NS_IMPL_ISUPPORTS1(WindowStateHolder, WindowStateHolder)
 
-nsresult
-nsGlobalWindow::CreateOuterObject(nsGlobalWindow* aNewInner)
-{
-  AutoPushJSContext cx(mContext->GetNativeContext());
-
-  JS::Rooted<JSObject*> global(cx, aNewInner->FastGetGlobalJSObject());
-  JS::Rooted<JSObject*> outer(cx, NewOuterWindowProxy(cx, global, IsChromeWindow()));
-  if (!outer) {
-    return NS_ERROR_FAILURE;
-  }
-
-  js::SetProxyExtra(outer, 0, js::PrivateValue(ToSupports(this)));
-
-  JSAutoCompartment ac(cx, outer);
-
-  // Inform the nsJSContext, which is the canonical holder of the outer.
-  MOZ_ASSERT(IsOuterWindow());
-  mContext->SetWindowProxy(outer);
-  return NS_OK;
-}
-
 // We need certain special behavior for remote XUL whitelisted domains, but we
 // don't want that behavior to take effect in automation, because we whitelist
 // all the mochitest domains. So we need to check a pref here.
@@ -2462,7 +2449,14 @@ nsGlobalWindow::SetNewDocument(nsIDocument* aDocument,
     mInnerWindow = newInnerWindow;
 
     if (!mJSObject) {
-      CreateOuterObject(newInnerWindow);
+      JS::Rooted<JSObject*> global(cx, newInnerWindow->FastGetGlobalJSObject());
+      JS::Rooted<JSObject*> outer(cx, NewOuterWindowProxy(cx, global, thisChrome));
+      NS_ENSURE_TRUE(outer, NS_ERROR_FAILURE);
+
+      js::SetProxyExtra(outer, 0, js::PrivateValue(ToSupports(this)));
+
+      // Inform the nsJSContext, which is the canonical holder of the outer.
+      mContext->SetWindowProxy(outer);
       mContext->DidInitializeContext();
 
       mJSObject = mContext->GetWindowProxy();
@@ -2494,18 +2488,18 @@ nsGlobalWindow::SetNewDocument(nsIDocument* aDocument,
       {
         JSAutoCompartment ac(cx, mJSObject);
 
-        JS_SetParent(cx, mJSObject, newInnerWindow->mJSObject);
-
         JS::Rooted<JSObject*> obj(cx, mJSObject);
+        JS::Rooted<JSObject*> newParent(cx, newInnerWindow->mJSObject);
+        JS_SetParent(cx, obj, newParent);
 
         // Inform the nsJSContext, which is the canonical holder of the outer.
         mContext->SetWindowProxy(obj);
 
         NS_ASSERTION(!JS_IsExceptionPending(cx),
                      "We might overwrite a pending exception!");
-        XPCWrappedNativeScope* scope = xpc::GetObjectScope(mJSObject);
+        XPCWrappedNativeScope* scope = xpc::GetObjectScope(obj);
         if (scope->mWaiverWrapperMap) {
-          scope->mWaiverWrapperMap->Reparent(cx, newInnerWindow->mJSObject);
+          scope->mWaiverWrapperMap->Reparent(cx, newParent);
         }
       }
     }
@@ -5685,7 +5679,7 @@ nsGlobalWindow::DispatchResizeEvent(const nsIntSize& aSize)
   detail.mWidth = aSize.width;
   detail.mHeight = aSize.height;
   JS::Rooted<JS::Value> detailValue(cx);
-  if (!detail.ToObject(cx, JS::NullPtr(), &detailValue)) {
+  if (!detail.ToObject(cx, &detailValue)) {
     return false;
   }
 
@@ -8347,14 +8341,15 @@ nsGlobalWindow::EnterModalState()
 
   // If there is an active ESM in this window, clear it. Otherwise, this can
   // cause a problem if a modal state is entered during a mouseup event.
-  nsEventStateManager* activeESM =
-    static_cast<nsEventStateManager*>(nsEventStateManager::GetActiveEventStateManager());
+  EventStateManager* activeESM =
+    static_cast<EventStateManager*>(
+      EventStateManager::GetActiveEventStateManager());
   if (activeESM && activeESM->GetPresContext()) {
     nsIPresShell* activeShell = activeESM->GetPresContext()->GetPresShell();
     if (activeShell && (
         nsContentUtils::ContentIsCrossDocDescendantOf(activeShell->GetDocument(), mDoc) ||
         nsContentUtils::ContentIsCrossDocDescendantOf(mDoc, activeShell->GetDocument()))) {
-      nsEventStateManager::ClearGlobalActiveContent(activeESM);
+      EventStateManager::ClearGlobalActiveContent(activeESM);
 
       activeShell->SetCapturingContent(nullptr, 0);
 
@@ -11860,9 +11855,8 @@ nsGlobalWindow::RunTimeoutHandler(nsTimeout* aTimeout,
     options.setFileAndLine(filename, lineNo)
            .setVersion(JSVERSION_DEFAULT);
     JS::Rooted<JSObject*> global(entryScript.cx(), FastGetGlobalJSObject());
-    nsJSUtils::EvaluateOptions evalOptions;
     nsJSUtils::EvaluateString(entryScript.cx(), nsDependentString(script),
-                              global, options, evalOptions, nullptr);
+                              global, options);
   } else {
     // Hold strong ref to ourselves while we call the callback.
     nsCOMPtr<nsISupports> me(static_cast<nsIDOMWindow *>(this));
@@ -12862,12 +12856,12 @@ nsGlobalWindow::DisableTimeChangeNotifications()
 
 static PLDHashOperator
 CollectSizeAndListenerCount(
-  nsPtrHashKey<nsDOMEventTargetHelper> *aEntry,
+  nsPtrHashKey<DOMEventTargetHelper>* aEntry,
   void *arg)
 {
   nsWindowSizes* windowSizes = static_cast<nsWindowSizes*>(arg);
 
-  nsDOMEventTargetHelper* et = aEntry->GetKey();
+  DOMEventTargetHelper* et = aEntry->GetKey();
 
   if (nsCOMPtr<nsISizeOfEventTarget> iSizeOf = do_QueryObject(et)) {
     windowSizes->mDOMEventTargetsSize +=
@@ -12910,7 +12904,7 @@ nsGlobalWindow::AddSizeOfIncludingThis(nsWindowSizes* aWindowSizes) const
     mEventTargetObjects.SizeOfExcludingThis(nullptr,
                                             aWindowSizes->mMallocSizeOf);
   aWindowSizes->mDOMEventTargetsCount +=
-    const_cast<nsTHashtable<nsPtrHashKey<nsDOMEventTargetHelper> >*>
+    const_cast<nsTHashtable<nsPtrHashKey<DOMEventTargetHelper> >*>
       (&mEventTargetObjects)->EnumerateEntries(CollectSizeAndListenerCount,
                                                aWindowSizes);
 }
@@ -13448,16 +13442,6 @@ nsGlobalModalWindow::SetReturnValue(nsIVariant *aRetVal)
   return NS_OK;
 }
 
-void
-nsGlobalWindow::SetHasAudioAvailableEventListeners()
-{
-  MOZ_ASSERT(IsInnerWindow());
-
-  if (mDoc) {
-    mDoc->NotifyAudioAvailableListener();
-  }
-}
-
 NS_IMETHODIMP
 nsGlobalWindow::GetConsole(JSContext* aCx,
                            JS::MutableHandle<JS::Value> aConsole)
@@ -13509,6 +13493,54 @@ nsGlobalWindow::GetConsole(ErrorResult& aRv)
   }
 
   return mConsole;
+}
+
+already_AddRefed<External>
+nsGlobalWindow::GetExternal(ErrorResult& aRv)
+{
+  FORWARD_TO_INNER_OR_THROW(GetExternal, (aRv), aRv, nullptr);
+
+#ifdef HAVE_SIDEBAR
+  if (!mExternal) {
+    AutoJSContext cx;
+    JS::Rooted<JSObject*> jsImplObj(cx);
+    ConstructJSImplementation(cx, "@mozilla.org/sidebar;1",
+                              this, &jsImplObj, aRv);
+    if (aRv.Failed()) {
+      return nullptr;
+    }
+    mExternal = new External(jsImplObj, this);
+  }
+
+  nsRefPtr<External> external = static_cast<External*>(mExternal.get());
+  return external.forget();
+#else
+  aRv.Throw(NS_ERROR_NOT_IMPLEMENTED);
+  return nullptr;
+#endif
+}
+
+void
+nsGlobalWindow::GetSidebar(OwningExternalOrWindowProxy& aResult,
+                           ErrorResult& aRv)
+{
+  FORWARD_TO_INNER_OR_THROW(GetSidebar, (aResult, aRv), aRv, );
+
+#ifdef HAVE_SIDEBAR
+  // First check for a named frame named "sidebar"
+  nsCOMPtr<nsIDOMWindow> domWindow = GetChildWindow(NS_LITERAL_STRING("sidebar"));
+  if (domWindow) {
+    aResult.SetAsWindowProxy() = domWindow.forget();
+    return;
+  }
+
+  nsRefPtr<External> external = GetExternal(aRv);
+  if (external) {
+    aResult.SetAsExternal() = external;
+  }
+#else
+  aRv.Throw(NS_ERROR_NOT_IMPLEMENTED);
+#endif
 }
 
 #ifdef MOZ_B2G
@@ -13662,7 +13694,7 @@ nsGlobalWindow::DisableNetworkEvent(uint32_t aType)
   }
 #define WINDOW_ONLY_EVENT EVENT
 #define TOUCH_EVENT EVENT
-#include "nsEventNameList.h"
+#include "mozilla/EventNameList.h"
 #undef TOUCH_EVENT
 #undef WINDOW_ONLY_EVENT
 #undef BEFOREUNLOAD_EVENT

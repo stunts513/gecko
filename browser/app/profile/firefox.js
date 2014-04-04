@@ -828,12 +828,12 @@ pref("urlclassifier.gethashnoise", 4);
 // the database.
 pref("urlclassifier.max-complete-age", 2700);
 // Tables for application reputation.
-pref("urlclassifier.download_block_table", "goog-badbinurl-shavar");
+pref("urlclassifier.downloadBlockTable", "goog-badbinurl-shavar");
 #ifdef XP_WIN
 // Only download the whitelist on Windows, since the whitelist is
 // only useful for suppressing remote lookups for signed binaries which we can
 // only verify on Windows (Bug 974579).
-pref("urlclassifier.download_allow_table", "goog-downloadwhite-digest256");
+pref("urlclassifier.downloadAllowTable", "goog-downloadwhite-digest256");
 #endif
 #endif
 
@@ -1205,8 +1205,11 @@ pref("devtools.styleeditor.autocompletion-enabled", true);
 // Enable the Shader Editor.
 pref("devtools.shadereditor.enabled", false);
 
-// Enable tools for Chrome development.
-pref("devtools.chrome.enabled", false);
+// Enable the Canvas Debugger.
+pref("devtools.canvasdebugger.enabled", false);
+
+// Enable the Web Audio Editor
+pref("devtools.webaudioeditor.enabled", false);
 
 // Default theme ("dark" or "light")
 pref("devtools.theme", "light");
@@ -1226,7 +1229,7 @@ pref("devtools.webconsole.filter.cssparser", false);
 pref("devtools.webconsole.filter.csslog", false);
 pref("devtools.webconsole.filter.exception", true);
 pref("devtools.webconsole.filter.jswarn", false);
-pref("devtools.webconsole.filter.jslog", true);
+pref("devtools.webconsole.filter.jslog", false);
 pref("devtools.webconsole.filter.error", true);
 pref("devtools.webconsole.filter.warn", true);
 pref("devtools.webconsole.filter.info", true);
@@ -1236,10 +1239,10 @@ pref("devtools.webconsole.filter.secwarn", true);
 
 // Remember the Browser Console filters
 pref("devtools.browserconsole.filter.network", true);
-pref("devtools.browserconsole.filter.networkinfo", true);
+pref("devtools.browserconsole.filter.networkinfo", false);
 pref("devtools.browserconsole.filter.netwarn", true);
 pref("devtools.browserconsole.filter.csserror", true);
-pref("devtools.browserconsole.filter.cssparser", true);
+pref("devtools.browserconsole.filter.cssparser", false);
 pref("devtools.browserconsole.filter.csslog", false);
 pref("devtools.browserconsole.filter.exception", true);
 pref("devtools.browserconsole.filter.jswarn", true);
@@ -1312,6 +1315,8 @@ pref("browser.newtabpage.rows", 3);
 // number of columns of newtab grid
 pref("browser.newtabpage.columns", 3);
 
+pref("browser.newtabpage.directorySource", "chrome://global/content/directoryLinks.json");
+
 // Enable the DOM fullscreen API.
 pref("full-screen-api.enabled", true);
 
@@ -1360,6 +1365,8 @@ pref("security.csp.speccompliant", true);
 // Block insecure active content on https pages
 pref("security.mixed_content.block_active_content", true);
 
+pref("security.use_mozillapkix_verification", true);
+
 // Override the Gecko-default value of false for Firefox.
 pref("plain_text.wrap_long_lines", true);
 
@@ -1369,6 +1376,11 @@ pref("dom.debug.propagate_gesture_events_through_content", false);
 
 // The request URL of the GeoLocation backend.
 pref("geo.wifi.uri", "https://www.googleapis.com/geolocation/v1/geolocate?key=%GOOGLE_API_KEY%");
+#ifdef RELEASE_BUILD
+pref("geo.wifi.logging.enabled", false);
+#else
+pref("geo.wifi.logging.enabled", true);
+#endif
 
 // Necko IPC security checks only needed for app isolation for cookies/cache/etc:
 // currently irrelevant for desktop e10s
@@ -1410,3 +1422,5 @@ pref("experiments.manifest.fetchIntervalSeconds", 86400);
 pref("experiments.manifest.uri", "https://telemetry-experiment.cdn.mozilla.net/manifest/v1/firefox/%VERSION%/%CHANNEL%");
 pref("experiments.manifest.certs.1.commonName", "*.cdn.mozilla.net");
 pref("experiments.manifest.certs.1.issuerName", "CN=Cybertrust Public SureServer SV CA,O=Cybertrust Inc");
+// Whether experiments are supported by the current application profile.
+pref("experiments.supported", true);

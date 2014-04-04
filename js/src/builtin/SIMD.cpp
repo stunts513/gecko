@@ -137,7 +137,7 @@ class Float32x4Defn {
 } // namespace js
 
 const JSFunctionSpec js::Float32x4Defn::TypeDescriptorMethods[] = {
-    JS_SELF_HOSTED_FN("toSource", "DescrToSourceMethod", 0, 0),
+    JS_SELF_HOSTED_FN("toSource", "DescrToSource", 0, 0),
     JS_SELF_HOSTED_FN("array", "ArrayShorthand", 1, 0),
     JS_SELF_HOSTED_FN("equivalent", "TypeDescrEquivalent", 1, 0),
     JS_FS_END
@@ -158,7 +158,7 @@ const JSFunctionSpec js::Float32x4Defn::TypedObjectMethods[] = {
 };
 
 const JSFunctionSpec js::Int32x4Defn::TypeDescriptorMethods[] = {
-    JS_SELF_HOSTED_FN("toSource", "DescrToSourceMethod", 0, 0),
+    JS_SELF_HOSTED_FN("toSource", "DescrToSource", 0, 0),
     JS_SELF_HOSTED_FN("array", "ArrayShorthand", 1, 0),
     JS_SELF_HOSTED_FN("equivalent", "TypeDescrEquivalent", 1, 0),
     JS_FS_END,
@@ -180,17 +180,31 @@ const JSFunctionSpec js::Int32x4Defn::TypedObjectMethods[] = {
 
 template<typename T>
 static JSObject *
-CreateX4Class(JSContext *cx, Handle<GlobalObject*> global)
+CreateX4Class(JSContext *cx,
+              Handle<GlobalObject*> global,
+              HandlePropertyName stringRepr)
 {
+    const X4TypeDescr::Type type = T::type;
+
     RootedObject funcProto(cx, global->getOrCreateFunctionPrototype(cx));
     if (!funcProto)
         return nullptr;
 
-    // Create type representation.
+    // Create type constructor itself and initialize its reserved slots.
 
-    RootedObject typeReprObj(cx);
-    typeReprObj = X4TypeRepresentation::Create(cx, T::type);
-    if (!typeReprObj)
+    Rooted<X4TypeDescr*> x4(cx);
+    x4 = NewObjectWithProto<X4TypeDescr>(cx, funcProto, global, TenuredObject);
+    if (!x4)
+        return nullptr;
+
+    x4->initReservedSlot(JS_DESCR_SLOT_KIND, Int32Value(TypeDescr::X4));
+    x4->initReservedSlot(JS_DESCR_SLOT_STRING_REPR, StringValue(stringRepr));
+    x4->initReservedSlot(JS_DESCR_SLOT_ALIGNMENT, Int32Value(X4TypeDescr::size(type)));
+    x4->initReservedSlot(JS_DESCR_SLOT_SIZE, Int32Value(X4TypeDescr::alignment(type)));
+    x4->initReservedSlot(JS_DESCR_SLOT_OPAQUE, BooleanValue(false));
+    x4->initReservedSlot(JS_DESCR_SLOT_TYPE, Int32Value(T::type));
+
+    if (!CreateUserSizeAndAlignmentProperties(cx, x4))
         return nullptr;
 
     // Create prototype property, which inherits from Object.prototype.
@@ -198,20 +212,12 @@ CreateX4Class(JSContext *cx, Handle<GlobalObject*> global)
     RootedObject objProto(cx, global->getOrCreateObjectPrototype(cx));
     if (!objProto)
         return nullptr;
-    RootedObject proto(cx);
-    proto = NewObjectWithProto<JSObject>(cx, objProto, global, SingletonObject);
+    Rooted<TypedProto*> proto(cx);
+    proto = NewObjectWithProto<TypedProto>(cx, objProto, nullptr, TenuredObject);
     if (!proto)
         return nullptr;
-
-    // Create type constructor itself and initialize its reserved slots.
-
-    Rooted<X4TypeDescr*> x4(cx);
-    x4 = NewObjectWithProto<X4TypeDescr>(cx, funcProto, global, TenuredObject);
-    if (!x4 || !InitializeCommonTypeDescriptorProperties(cx, x4, typeReprObj))
-        return nullptr;
-    x4->initReservedSlot(JS_DESCR_SLOT_TYPE_REPR, ObjectValue(*typeReprObj));
-    x4->initReservedSlot(JS_DESCR_SLOT_TYPE, Int32Value(T::type));
-    x4->initReservedSlot(JS_DESCR_SLOT_PROTO, ObjectValue(*proto));
+    proto->initTypeDescrSlot(*x4);
+    x4->initReservedSlot(JS_DESCR_SLOT_TYPROTO, ObjectValue(*proto));
 
     // Link constructor to prototype and install properties.
 
@@ -310,7 +316,9 @@ SIMDObject::initClass(JSContext *cx, Handle<GlobalObject *> global)
 
     // float32x4
 
-    RootedObject float32x4Object(cx, CreateX4Class<Float32x4Defn>(cx, global));
+    RootedObject float32x4Object(cx);
+    float32x4Object = CreateX4Class<Float32x4Defn>(cx, global,
+                                                   cx->names().float32x4);
     if (!float32x4Object)
         return nullptr;
 
@@ -325,7 +333,9 @@ SIMDObject::initClass(JSContext *cx, Handle<GlobalObject *> global)
 
     // int32x4
 
-    RootedObject int32x4Object(cx, CreateX4Class<Int32x4Defn>(cx, global));
+    RootedObject int32x4Object(cx);
+    int32x4Object = CreateX4Class<Int32x4Defn>(cx, global,
+                                               cx->names().int32x4);
     if (!int32x4Object)
         return nullptr;
 
@@ -527,7 +537,7 @@ Func(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
-    if (argc == 1) {
+    if (args.length() == 1) {
         if((!args[0].isObject() || !ObjectIsVector<V>(args[0].toObject()))) {
             JS_ReportErrorNumber(cx, js_GetErrorMessage, nullptr, JSMSG_TYPED_ARRAY_BAD_ARGS);
             return false;
@@ -546,7 +556,7 @@ Func(JSContext *cx, unsigned argc, Value *vp)
         args.rval().setObject(*obj);
         return true;
 
-    } else if (argc == 2) {
+    } else if (args.length() == 2) {
         if((!args[0].isObject() || !ObjectIsVector<V>(args[0].toObject())) ||
            (!args[1].isObject() || !ObjectIsVector<V>(args[1].toObject())))
         {
@@ -583,7 +593,7 @@ FuncWith(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
-    if ((argc != 2) ||
+    if ((args.length() != 2) ||
         (!args[0].isObject() || !ObjectIsVector<V>(args[0].toObject())) ||
         (!args[1].isNumber() && !args[1].isBoolean()))
     {
@@ -619,7 +629,7 @@ FuncShuffle(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
-    if(argc == 2){
+    if (args.length() == 2) {
         if ((!args[0].isObject() || !ObjectIsVector<V>(args[0].toObject())) ||
             (!args[1].isNumber()))
         {
@@ -642,7 +652,7 @@ FuncShuffle(JSContext *cx, unsigned argc, Value *vp)
 
         args.rval().setObject(*obj);
         return true;
-    } else if (argc == 3){
+    } else if (args.length() == 3) {
         if ((!args[0].isObject() || !ObjectIsVector<V>(args[0].toObject())) ||
             (!args[1].isObject() || !ObjectIsVector<V>(args[1].toObject())) ||
             (!args[2].isNumber()))
@@ -684,7 +694,7 @@ FuncConvert(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
-    if ((argc != 1) ||
+    if ((args.length() != 1) ||
        (!args[0].isObject() || !ObjectIsVector<V>(args[0].toObject())))
     {
         JS_ReportErrorNumber(cx, js_GetErrorMessage, nullptr, JSMSG_TYPED_ARRAY_BAD_ARGS);
@@ -711,7 +721,7 @@ FuncConvertBits(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
-    if ((argc != 1) ||
+    if ((args.length() != 1) ||
        (!args[0].isObject() || !ObjectIsVector<V>(args[0].toObject())))
     {
         JS_ReportErrorNumber(cx, js_GetErrorMessage, nullptr, JSMSG_TYPED_ARRAY_BAD_ARGS);
@@ -735,7 +745,7 @@ FuncZero(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
-    if (argc != 0) {
+    if (args.length() != 0) {
         JS_ReportErrorNumber(cx, js_GetErrorMessage, nullptr, JSMSG_TYPED_ARRAY_BAD_ARGS);
         return false;
     }
@@ -757,7 +767,7 @@ FuncSplat(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
-    if ((argc != 1) || (!args[0].isNumber())) {
+    if ((args.length() != 1) || (!args[0].isNumber())) {
         JS_ReportErrorNumber(cx, js_GetErrorMessage, nullptr, JSMSG_TYPED_ARRAY_BAD_ARGS);
         return false;
     }
@@ -781,7 +791,7 @@ Int32x4Bool(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
-    if ((argc != 4) ||
+    if ((args.length() != 4) ||
         (!args[0].isBoolean()) || !args[1].isBoolean() ||
         (!args[2].isBoolean()) || !args[3].isBoolean())
     {
@@ -805,7 +815,7 @@ Float32x4Clamp(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
-    if ((argc != 3) ||
+    if ((args.length() != 3) ||
         (!args[0].isObject() || !ObjectIsVector<Float32x4>(args[0].toObject())) ||
         (!args[1].isObject() || !ObjectIsVector<Float32x4>(args[1].toObject())) ||
         (!args[2].isObject() || !ObjectIsVector<Float32x4>(args[2].toObject())))
@@ -842,7 +852,7 @@ Int32x4Select(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
-    if ((argc != 3) ||
+    if ((args.length() != 3) ||
         (!args[0].isObject() || !ObjectIsVector<Int32x4>(args[0].toObject())) ||
         (!args[1].isObject() || !ObjectIsVector<Float32x4>(args[1].toObject())) ||
         (!args[2].isObject() || !ObjectIsVector<Float32x4>(args[2].toObject())))

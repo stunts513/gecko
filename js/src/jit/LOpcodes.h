@@ -28,6 +28,7 @@
     _(NewSlots)                     \
     _(NewDeclEnvObject)             \
     _(NewCallObject)                \
+    _(NewSingletonCallObject)       \
     _(NewStringObject)              \
     _(NewPar)                       \
     _(NewDenseArrayPar)             \
@@ -63,6 +64,7 @@
     _(SetArgumentsObjectArg)        \
     _(ReturnFromCtor)               \
     _(ComputeThis)                  \
+    _(LoadArrowThis)                \
     _(BitNotI)                      \
     _(BitNotV)                      \
     _(BitOpI)                       \

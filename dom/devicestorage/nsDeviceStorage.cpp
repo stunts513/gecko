@@ -1512,6 +1512,8 @@ DeviceStorageFile::DoUnmount(nsAString& aStatus)
 void
 DeviceStorageFile::GetStatus(nsAString& aStatus)
 {
+  aStatus.AssignLiteral("unavailable");
+
   DeviceStorageTypeChecker* typeChecker
     = DeviceStorageTypeChecker::CreateOrGet();
   if (!typeChecker) {
@@ -1522,7 +1524,6 @@ DeviceStorageFile::GetStatus(nsAString& aStatus)
     return;
   }
 
-  aStatus.AssignLiteral("unavailable");
 #ifdef MOZ_WIDGET_GONK
   nsCOMPtr<nsIVolumeService> vs = do_GetService(NS_VOLUMESERVICE_CONTRACTID);
   NS_ENSURE_TRUE_VOID(vs);
@@ -1565,6 +1566,8 @@ DeviceStorageFile::GetStatus(nsAString& aStatus)
 void
 DeviceStorageFile::GetStorageStatus(nsAString& aStatus)
 {
+  aStatus.AssignLiteral("undefined");
+
   DeviceStorageTypeChecker* typeChecker
     = DeviceStorageTypeChecker::CreateOrGet();
   if (!typeChecker) {
@@ -1575,7 +1578,6 @@ DeviceStorageFile::GetStorageStatus(nsAString& aStatus)
     return;
   }
 
-  aStatus.AssignLiteral("undefined");
 #ifdef MOZ_WIDGET_GONK
   nsCOMPtr<nsIVolumeService> vs = do_GetService(NS_VOLUMESERVICE_CONTRACTID);
   NS_ENSURE_TRUE_VOID(vs);
@@ -3091,13 +3093,13 @@ NS_IMPL_CYCLE_COLLECTION_4(DeviceStorageRequest,
 NS_INTERFACE_MAP_BEGIN(nsDOMDeviceStorage)
   NS_INTERFACE_MAP_ENTRY(nsIDOMDeviceStorage)
   NS_INTERFACE_MAP_ENTRY(nsIObserver)
-NS_INTERFACE_MAP_END_INHERITING(nsDOMEventTargetHelper)
+NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
 
-NS_IMPL_ADDREF_INHERITED(nsDOMDeviceStorage, nsDOMEventTargetHelper)
-NS_IMPL_RELEASE_INHERITED(nsDOMDeviceStorage, nsDOMEventTargetHelper)
+NS_IMPL_ADDREF_INHERITED(nsDOMDeviceStorage, DOMEventTargetHelper)
+NS_IMPL_RELEASE_INHERITED(nsDOMDeviceStorage, DOMEventTargetHelper)
 
 nsDOMDeviceStorage::nsDOMDeviceStorage(nsPIDOMWindow* aWindow)
-  : nsDOMEventTargetHelper(aWindow)
+  : DOMEventTargetHelper(aWindow)
   , mIsWatchingFile(false)
   , mAllowedToWatchFile(false)
 {
@@ -3361,7 +3363,12 @@ nsDOMDeviceStorage::GetDefaultStorageName(const nsAString& aStorageType,
   GetOrderedVolumeNames(volNames);
   if (volNames.Length() > 0) {
     aStorageName = volNames[0];
+    return;
   }
+
+  // No volumes available, return the empty string. This is normal for
+  // b2g-desktop.
+  aStorageName.Truncate();
 }
 
 bool
@@ -4168,8 +4175,8 @@ nsDOMDeviceStorage::AddEventListener(const nsAString & aType,
     return rv;
   }
 
-  return nsDOMEventTargetHelper::AddEventListener(aType, aListener, aUseCapture,
-                                                  aWantsUntrusted, aArgc);
+  return DOMEventTargetHelper::AddEventListener(aType, aListener, aUseCapture,
+                                                aWantsUntrusted, aArgc);
 }
 
 void
@@ -4197,8 +4204,8 @@ nsDOMDeviceStorage::AddEventListener(const nsAString & aType,
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return;
   }
-  nsDOMEventTargetHelper::AddEventListener(aType, aListener, aUseCapture,
-                                           aWantsUntrusted, aRv);
+  DOMEventTargetHelper::AddEventListener(aType, aListener, aUseCapture,
+                                         aWantsUntrusted, aRv);
 }
 
 NS_IMETHODIMP
@@ -4223,7 +4230,7 @@ nsDOMDeviceStorage::RemoveEventListener(const nsAString & aType,
                                         nsIDOMEventListener *aListener,
                                         bool aUseCapture)
 {
-  nsDOMEventTargetHelper::RemoveEventListener(aType, aListener, false);
+  DOMEventTargetHelper::RemoveEventListener(aType, aListener, false);
 
   if (mIsWatchingFile && !HasListenersFor(nsGkAtoms::onchange)) {
     mIsWatchingFile = false;
@@ -4239,7 +4246,7 @@ nsDOMDeviceStorage::RemoveEventListener(const nsAString& aType,
                                         bool aCapture,
                                         ErrorResult& aRv)
 {
-  nsDOMEventTargetHelper::RemoveEventListener(aType, aListener, aCapture, aRv);
+  DOMEventTargetHelper::RemoveEventListener(aType, aListener, aCapture, aRv);
 
   if (mIsWatchingFile && !HasListenersFor(nsGkAtoms::onchange)) {
     mIsWatchingFile = false;
@@ -4260,37 +4267,37 @@ NS_IMETHODIMP
 nsDOMDeviceStorage::DispatchEvent(nsIDOMEvent *aEvt,
                                   bool *aRetval)
 {
-  return nsDOMEventTargetHelper::DispatchEvent(aEvt, aRetval);
+  return DOMEventTargetHelper::DispatchEvent(aEvt, aRetval);
 }
 
 EventTarget*
 nsDOMDeviceStorage::GetTargetForDOMEvent()
 {
-  return nsDOMEventTargetHelper::GetTargetForDOMEvent();
+  return DOMEventTargetHelper::GetTargetForDOMEvent();
 }
 
 EventTarget *
 nsDOMDeviceStorage::GetTargetForEventTargetChain()
 {
-  return nsDOMEventTargetHelper::GetTargetForEventTargetChain();
+  return DOMEventTargetHelper::GetTargetForEventTargetChain();
 }
 
 nsresult
 nsDOMDeviceStorage::PreHandleEvent(EventChainPreVisitor& aVisitor)
 {
-  return nsDOMEventTargetHelper::PreHandleEvent(aVisitor);
+  return DOMEventTargetHelper::PreHandleEvent(aVisitor);
 }
 
 nsresult
 nsDOMDeviceStorage::WillHandleEvent(EventChainPostVisitor& aVisitor)
 {
-  return nsDOMEventTargetHelper::WillHandleEvent(aVisitor);
+  return DOMEventTargetHelper::WillHandleEvent(aVisitor);
 }
 
 nsresult
 nsDOMDeviceStorage::PostHandleEvent(EventChainPostVisitor& aVisitor)
 {
-  return nsDOMEventTargetHelper::PostHandleEvent(aVisitor);
+  return DOMEventTargetHelper::PostHandleEvent(aVisitor);
 }
 
 nsresult
@@ -4299,34 +4306,34 @@ nsDOMDeviceStorage::DispatchDOMEvent(WidgetEvent* aEvent,
                                      nsPresContext* aPresContext,
                                      nsEventStatus* aEventStatus)
 {
-  return nsDOMEventTargetHelper::DispatchDOMEvent(aEvent,
-                                                  aDOMEvent,
-                                                  aPresContext,
-                                                  aEventStatus);
+  return DOMEventTargetHelper::DispatchDOMEvent(aEvent,
+                                                aDOMEvent,
+                                                aPresContext,
+                                                aEventStatus);
 }
 
 EventListenerManager*
 nsDOMDeviceStorage::GetOrCreateListenerManager()
 {
-  return nsDOMEventTargetHelper::GetOrCreateListenerManager();
+  return DOMEventTargetHelper::GetOrCreateListenerManager();
 }
 
 EventListenerManager*
 nsDOMDeviceStorage::GetExistingListenerManager() const
 {
-  return nsDOMEventTargetHelper::GetExistingListenerManager();
+  return DOMEventTargetHelper::GetExistingListenerManager();
 }
 
 nsIScriptContext *
 nsDOMDeviceStorage::GetContextForEventHandlers(nsresult *aRv)
 {
-  return nsDOMEventTargetHelper::GetContextForEventHandlers(aRv);
+  return DOMEventTargetHelper::GetContextForEventHandlers(aRv);
 }
 
 JSContext *
 nsDOMDeviceStorage::GetJSContextForEventHandlers()
 {
-  return nsDOMEventTargetHelper::GetJSContextForEventHandlers();
+  return DOMEventTargetHelper::GetJSContextForEventHandlers();
 }
 
 NS_IMPL_EVENT_HANDLER(nsDOMDeviceStorage, change)

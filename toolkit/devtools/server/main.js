@@ -50,13 +50,16 @@ function loadSubScript(aURL)
       .getService(Ci.mozIJSSubScriptLoader);
     loader.loadSubScript(aURL, this);
   } catch(e) {
-    let errorStr = "Error loading: " + aURL + ": " + e + " - " + e.stack + "\n";
+    let errorStr = "Error loading: " + aURL + ":\n" +
+                   (e.fileName ? "at " + e.fileName + " : " + e.lineNumber + "\n" : "") +
+                   e + " - " + e.stack + "\n";
     dump(errorStr);
     Cu.reportError(errorStr);
     throw e;
   }
 }
 
+let events = require("sdk/event/core");
 let {defer, resolve, reject, promised, all} = require("sdk/core/promise");
 this.defer = defer;
 this.resolve = resolve;
@@ -65,6 +68,7 @@ this.promised = promised;
 this.all = all;
 
 Cu.import("resource://gre/modules/devtools/SourceMap.jsm");
+Cu.import("resource://gre/modules/devtools/Console.jsm");
 
 function dumpn(str) {
   if (wantLogging) {
@@ -357,11 +361,11 @@ var DebuggerServer = {
     if (!restrictPrivileges) {
       this.addTabActors();
       this.addGlobalActor(this.ChromeDebuggerActor, "chromeDebugger");
+      this.registerModule("devtools/server/actors/preference");
     }
 
     this.addActors("resource://gre/modules/devtools/server/actors/webapps.js");
     this.registerModule("devtools/server/actors/device");
-    this.registerModule("devtools/server/actors/preference");
   },
 
   /**
@@ -390,7 +394,10 @@ var DebuggerServer = {
     this.addActors("resource://gre/modules/devtools/server/actors/script.js");
     this.addActors("resource://gre/modules/devtools/server/actors/webconsole.js");
     this.registerModule("devtools/server/actors/inspector");
+    this.registerModule("devtools/server/actors/call-watcher");
+    this.registerModule("devtools/server/actors/canvas");
     this.registerModule("devtools/server/actors/webgl");
+    this.registerModule("devtools/server/actors/webaudio");
     this.registerModule("devtools/server/actors/stylesheets");
     this.registerModule("devtools/server/actors/styleeditor");
     this.registerModule("devtools/server/actors/storage");
@@ -398,8 +405,9 @@ var DebuggerServer = {
     this.registerModule("devtools/server/actors/tracer");
     this.registerModule("devtools/server/actors/memory");
     this.registerModule("devtools/server/actors/eventlooplag");
-    if ("nsIProfiler" in Ci)
+    if ("nsIProfiler" in Ci) {
       this.addActors("resource://gre/modules/devtools/server/actors/profiler.js");
+    }
   },
 
   /**
@@ -565,6 +573,7 @@ var DebuggerServer = {
           // If we have a child transport, the actor has already
           // been created. We need to stop using this message manager.
           childTransport.close();
+          childTransport = null;
           aConnection.cancelForwarding(prefix);
         } else {
           // Otherwise, the app has been closed before the actor
@@ -587,6 +596,20 @@ var DebuggerServer = {
     }).bind(this);
     Services.obs.addObserver(onMessageManagerDisconnect,
                              "message-manager-disconnect", false);
+
+    events.once(aConnection, "closed", () => {
+      if (childTransport) {
+        // When the client disconnects, we have to unplug the dedicated
+        // ChildDebuggerTransport...
+        childTransport.close();
+        childTransport = null;
+        aConnection.cancelForwarding(prefix);
+
+        // ... and notify the child process to clean the tab actors.
+        mm.sendAsyncMessage("debug:disconnect");
+      }
+      Services.obs.removeObserver(onMessageManagerDisconnect, "message-manager-disconnect");
+    });
 
     mm.sendAsyncMessage("debug:connect", { prefix: prefix });
 
@@ -1150,6 +1173,11 @@ DebuggerServerConnection.prototype = {
    */
   onClosed: function DSC_onClosed(aStatus) {
     dumpn("Cleaning up connection.");
+    if (!this._actorPool) {
+      // Ignore this call if the connection is already closed.
+      return;
+    }
+    events.emit(this, "closed", aStatus);
 
     this._actorPool.cleanup();
     this._actorPool = null;

@@ -46,11 +46,13 @@
 #include "ImageContainer.h"
 #include "nsCanvasFrame.h"
 #include "StickyScrollContainer.h"
+#include "mozilla/EventStates.h"
 #include "mozilla/LookAndFeel.h"
 #include "mozilla/Preferences.h"
 #include "ActiveLayerTracker.h"
 #include "nsContentUtils.h"
 #include "nsPrintfCString.h"
+#include "UnitTransforms.h"
 
 #include <stdint.h>
 #include <algorithm>
@@ -312,9 +314,9 @@ ToTimingFunction(css::ComputedTimingFunction& aCTF)
 }
 
 static void
-AddAnimationsForProperty(nsIFrame* aFrame, nsCSSProperty aProperty,
-                         ElementAnimation* ea, Layer* aLayer,
-                         AnimationData& aData, bool aPending)
+AddAnimationForProperty(nsIFrame* aFrame, nsCSSProperty aProperty,
+                        mozilla::StyleAnimation* ea, Layer* aLayer,
+                        AnimationData& aData, bool aPending)
 {
   NS_ASSERTION(aLayer->AsContainerLayer(), "Should only animate ContainerLayer");
   nsStyleContext* styleContext = aFrame->StyleContext();
@@ -323,8 +325,10 @@ AddAnimationsForProperty(nsIFrame* aFrame, nsCSSProperty aProperty,
   // all data passed directly to the compositor should be in css pixels
   float scale = nsDeviceContext::AppUnitsPerCSSPixel();
 
-  Animation* animation = aPending ? aLayer->AddAnimationForNextTransaction()
-                                  : aLayer->AddAnimation();
+  mozilla::layers::Animation* animation =
+    aPending ?
+    aLayer->AddAnimationForNextTransaction() :
+    aLayer->AddAnimation();
 
   animation->startTime() = ea->mStartTime + ea->mDelay;
   animation->duration() = ea->mIterationDuration;
@@ -365,6 +369,25 @@ AddAnimationsForProperty(nsIFrame* aFrame, nsCSSProperty aProperty,
       animSegment->endPortion() = segment->mToKey;
       animSegment->sampleFn() = ToTimingFunction(segment->mTimingFunction);
     }
+  }
+}
+
+template<class T>
+static void
+AddAnimationsForProperty(nsIFrame* aFrame, nsCSSProperty aProperty,
+                         nsTArray<T>& aAnimations,
+                         Layer* aLayer, AnimationData& aData,
+                         bool aPending) {
+  mozilla::TimeStamp currentTime =
+    aFrame->PresContext()->RefreshDriver()->MostRecentRefresh();
+  for (uint32_t animIdx = 0; animIdx < aAnimations.Length(); animIdx++) {
+    mozilla::StyleAnimation* anim = &aAnimations[animIdx];
+    if (!(anim->HasAnimationOfProperty(aProperty) &&
+          anim->IsRunningAt(currentTime))) {
+      continue;
+    }
+    AddAnimationForProperty(aFrame, aProperty, anim, aLayer, aData, aPending);
+    anim->mIsRunningOnCompositor = true;
   }
 }
 
@@ -422,8 +445,6 @@ nsDisplayListBuilder::AddAnimationsAndTransitionsToLayer(Layer* aLayer,
     return;
   }
 
-  mozilla::TimeStamp currentTime =
-    aFrame->PresContext()->RefreshDriver()->MostRecentRefresh();
   AnimationData data;
   if (aProperty == eCSSProperty_transform) {
     nsRect bounds = nsDisplayTransform::GetFrameBoundsForTransform(aFrame);
@@ -460,50 +481,14 @@ nsDisplayListBuilder::AddAnimationsAndTransitionsToLayer(Layer* aLayer,
   }
 
   if (et) {
-    for (uint32_t tranIdx = 0; tranIdx < et->mPropertyTransitions.Length(); tranIdx++) {
-      ElementPropertyTransition* pt = &et->mPropertyTransitions[tranIdx];
-      if (pt->mProperty != aProperty || !pt->IsRunningAt(currentTime)) {
-        continue;
-      }
-
-      ElementAnimation anim;
-      anim.mIterationCount = 1;
-      anim.mDirection = NS_STYLE_ANIMATION_DIRECTION_NORMAL;
-      anim.mFillMode = NS_STYLE_ANIMATION_FILL_MODE_NONE;
-      // Transition mStartTime is end-of-delay; animation mStartTime
-      // is start-of-delay, so set delay here to 0.
-      anim.mStartTime = pt->mStartTime;
-      anim.mDelay = TimeDuration::FromMilliseconds(0);
-      anim.mIterationDuration = pt->mDuration;
-
-      AnimationProperty& prop = *anim.mProperties.AppendElement();
-      prop.mProperty = pt->mProperty;
-
-      AnimationPropertySegment& segment = *prop.mSegments.AppendElement();
-      segment.mFromKey = 0;
-      segment.mToKey = 1;
-      segment.mFromValue = pt->mStartValue;
-      segment.mToValue = pt->mEndValue;
-      segment.mTimingFunction = pt->mTimingFunction;
-
-      AddAnimationsForProperty(aFrame, aProperty, &anim,
-                               aLayer, data, pending);
-
-      pt->mIsRunningOnCompositor = true;
-    }
+    AddAnimationsForProperty(aFrame, aProperty, et->mPropertyTransitions,
+                             aLayer, data, pending);
     aLayer->SetAnimationGeneration(et->mAnimationGeneration);
   }
 
   if (ea) {
-    for (uint32_t animIdx = 0; animIdx < ea->mAnimations.Length(); animIdx++) {
-      ElementAnimation* anim = &ea->mAnimations[animIdx];
-      if (!(anim->HasAnimationOfProperty(aProperty) &&
-            anim->IsRunningAt(currentTime))) {
-        continue;
-      }
-      AddAnimationsForProperty(aFrame, aProperty, anim,
-                               aLayer, data, pending);
-    }
+    AddAnimationsForProperty(aFrame, aProperty, ea->mAnimations,
+                             aLayer, data, pending);
     aLayer->SetAnimationGeneration(ea->mAnimationGeneration);
   }
 }
@@ -637,6 +622,76 @@ static bool GetApzcTreePrintPref() {
   return gPrintApzcTree;
 }
 
+static CSSSize
+CalculateRootCompositionSize(FrameMetrics& aMetrics,
+                             bool aIsRootContentDocRootScrollFrame,
+                             nsPresContext* aPresContext,
+                             nsIFrame* aForFrame, nsIFrame* aScrollFrame)
+{
+
+  if (aIsRootContentDocRootScrollFrame) {
+    return ViewAs<LayerPixel>(ParentLayerSize(aMetrics.mCompositionBounds.Size()),
+                              PixelCastJustification::ParentLayerToLayerForRootComposition)
+           / aMetrics.LayersPixelsPerCSSPixel();
+  }
+  LayerSize rootCompositionSize;
+  nsPresContext* rootPresContext =
+    aPresContext->GetToplevelContentDocumentPresContext();
+  if (!rootPresContext) {
+    rootPresContext = aPresContext->GetRootPresContext();
+  }
+  nsIPresShell* rootPresShell = nullptr;
+  if (rootPresContext) {
+    nsIPresShell* rootPresShell = rootPresContext->PresShell();
+    if (nsIFrame* rootFrame = rootPresShell->GetRootFrame()) {
+      if (nsView* view = rootFrame->GetView()) {
+        nsIWidget* widget = view->GetWidget();
+  #ifdef MOZ_WIDGET_ANDROID
+        // Android hack - temporary workaround for bug 983208 until we figure
+        // out what a proper fix is.
+        if (!widget) {
+          widget = rootFrame->GetNearestWidget();
+        }
+  #endif
+        if (widget) {
+          nsIntRect bounds;
+          widget->GetBounds(bounds);
+          rootCompositionSize = LayerSize(ViewAs<LayerPixel>(bounds.Size()));
+        } else {
+          LayoutDeviceToParentLayerScale parentResolution(
+            rootPresShell->GetCumulativeResolution().width
+            / rootPresShell->GetResolution().width);
+          int32_t rootAUPerDevPixel = rootPresContext->AppUnitsPerDevPixel();
+          nsRect viewBounds = view->GetBounds();
+          rootCompositionSize = ViewAs<LayerPixel>(
+            (LayoutDeviceRect::FromAppUnits(viewBounds, rootAUPerDevPixel)
+             * parentResolution).Size(), PixelCastJustification::ParentLayerToLayerForRootComposition);
+        }
+      }
+    }
+  } else {
+    nsIWidget* widget = (aScrollFrame ? aScrollFrame : aForFrame)->GetNearestWidget();
+    nsIntRect bounds;
+    widget->GetBounds(bounds);
+    rootCompositionSize = LayerSize(ViewAs<LayerPixel>(bounds.Size()));
+  }
+
+  // Adjust composition size for the size of scroll bars.
+  nsIFrame* rootRootScrollFrame = rootPresShell ? rootPresShell->GetRootScrollFrame() : nullptr;
+  nsIScrollableFrame* rootScrollableFrame = nullptr;
+  if (rootRootScrollFrame) {
+    rootScrollableFrame = aScrollFrame->GetScrollTargetFrame();
+  }
+  if (rootScrollableFrame && !LookAndFeel::GetInt(LookAndFeel::eIntID_UseOverlayScrollbars)) {
+    CSSMargin margins = CSSMargin::FromAppUnits(rootScrollableFrame->GetActualScrollbarSizes());
+    // Scrollbars are not subject to scaling, so CSS pixels = layer pixels for them.
+    rootCompositionSize.width -= margins.LeftRight();
+    rootCompositionSize.height -= margins.TopBottom();
+  }
+
+  return rootCompositionSize / aMetrics.LayersPixelsPerCSSPixel();
+}
+
 static void RecordFrameMetrics(nsIFrame* aForFrame,
                                nsIFrame* aScrollFrame,
                                const nsIFrame* aReferenceFrame,
@@ -669,20 +724,11 @@ static void RecordFrameMetrics(nsIFrame* aForFrame,
   if (aScrollFrame)
     scrollableFrame = aScrollFrame->GetScrollTargetFrame();
 
+  metrics.mScrollableRect = CSSRect::FromAppUnits(
+    nsLayoutUtils::CalculateScrollableRectForFrame(scrollableFrame, aForFrame));
+
   if (scrollableFrame) {
-    nsRect contentBounds = scrollableFrame->GetScrollRange();
     nsPoint scrollPosition = scrollableFrame->GetScrollPosition();
-    if (scrollableFrame->GetScrollbarStyles().mVertical == NS_STYLE_OVERFLOW_HIDDEN) {
-      contentBounds.y = scrollPosition.y;
-      contentBounds.height = 0;
-    }
-    if (scrollableFrame->GetScrollbarStyles().mHorizontal == NS_STYLE_OVERFLOW_HIDDEN) {
-      contentBounds.x = scrollPosition.x;
-      contentBounds.width = 0;
-    }
-    contentBounds.width += scrollableFrame->GetScrollPortRect().width;
-    contentBounds.height += scrollableFrame->GetScrollPortRect().height;
-    metrics.mScrollableRect = CSSRect::FromAppUnits(contentBounds);
     metrics.SetScrollOffset(CSSPoint::FromAppUnits(scrollPosition));
 
     // If the frame was scrolled since the last layers update, and by
@@ -693,12 +739,8 @@ static void RecordFrameMetrics(nsIFrame* aForFrame,
       metrics.SetScrollOffsetUpdated(scrollableFrame->CurrentScrollGeneration());
     }
   }
-  else {
-    nsRect contentBounds = aForFrame->GetRect();
-    metrics.mScrollableRect = CSSRect::FromAppUnits(contentBounds);
-  }
 
-  metrics.mScrollId = aScrollId;
+  metrics.SetScrollId(aScrollId);
   metrics.mIsRoot = aIsRoot;
 
   // Only the root scrollable frame for a given presShell should pick up
@@ -795,6 +837,10 @@ static void RecordFrameMetrics(nsIFrame* aForFrame,
     ParentLayerIntMargin boundMargins = RoundedToInt(CSSMargin::FromAppUnits(sizes) * CSSToParentLayerScale(1.0f));
     metrics.mCompositionBounds.Deflate(boundMargins);
   }
+
+  metrics.SetRootCompositionSize(
+    CalculateRootCompositionSize(metrics, isRootContentDocRootScrollFrame,
+                                 presContext, aForFrame, aScrollFrame));
 
   if (GetApzcTreePrintPref()) {
     if (nsIContent* content = frameForCompositionBoundsCalculation->GetContent()) {
@@ -2493,7 +2539,7 @@ nsDisplayThemedBackground::PaintInternal(nsDisplayListBuilder* aBuilder,
 
 bool nsDisplayThemedBackground::IsWindowActive()
 {
-  nsEventStates docState = mFrame->GetContent()->OwnerDoc()->GetDocumentState();
+  EventStates docState = mFrame->GetContent()->OwnerDoc()->GetDocumentState();
   return !docState.HasState(NS_DOCUMENT_STATE_WINDOW_INACTIVE);
 }
 
@@ -4631,7 +4677,7 @@ nsDisplayTransform::ShouldPrerenderTransformedContent(nsDisplayListBuilder* aBui
   // Elements whose transform has been modified recently, or which
   // have a compositor-animated transform, can be prerendered. An element
   // might have only just had its transform animated in which case
-  // nsChangeHint_UpdateTransformLayer will not be present yet.
+  // the ActiveLayerManager may not have been notified yet.
   if (!ActiveLayerTracker::IsStyleAnimated(aFrame, eCSSProperty_transform) &&
       (!aFrame->GetContent() ||
        !nsLayoutUtils::HasAnimationsForCompositor(aFrame->GetContent(),

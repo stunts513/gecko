@@ -245,6 +245,13 @@ this.WebappManager = {
   _autoUpdate: function(aData, aOldApp) { return Task.spawn((function*() {
     debug("_autoUpdate app of type " + aData.type);
 
+    if (aOldApp.apkPackageName != aData.apkPackageName) {
+      // This happens when the app was installed as a shortcut via the old
+      // runtime and is now being updated to an APK.
+      debug("update apkPackageName from " + aOldApp.apkPackageName + " to " + aData.apkPackageName);
+      aOldApp.apkPackageName = aData.apkPackageName;
+    }
+
     if (aData.type == "hosted") {
       let oldManifest = yield DOMApplicationRegistry.getManifestFor(aData.manifestURL);
       DOMApplicationRegistry.updateHostedApp(aData, aOldApp.id, aOldApp, oldManifest, aData.manifest);
@@ -331,7 +338,7 @@ this.WebappManager = {
     sendMessageToJava({
       type: "Webapps:GetApkVersions",
       packageNames: packageNames 
-    }, data => deferred.resolve(JSON.parse(data).versions));
+    }, data => deferred.resolve(data.versions));
 
     return deferred.promise;
   },

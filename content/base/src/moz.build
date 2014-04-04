@@ -53,6 +53,10 @@ if CONFIG['INTEL_ARCHITECTURE']:
     SOURCES += ['nsTextFragmentSSE2.cpp']
     SOURCES['nsTextFragmentSSE2.cpp'].flags += CONFIG['SSE2_FLAGS']
 
+EXPORTS.mozilla += [
+    'FeedWriterEnabled.h',
+]
+
 EXPORTS.mozilla.dom += [
     'Attr.h',
     'Comment.h',
@@ -209,7 +213,6 @@ LOCAL_INCLUDES += [
     '/content/xul/document/src',
     '/docshell/base',
     '/dom/base',
-    '/dom/events',
     '/dom/ipc',
     '/dom/workers',
     '/dom/xbl',
@@ -225,3 +228,7 @@ LOCAL_INCLUDES += [
     '/layout/xul',
     '/netwerk/base/src',
 ]
+
+if CONFIG['GNU_CC'] and CONFIG['MOZ_WIDGET_TOOLKIT'] == 'android':
+    # Work around bug 986928
+    CXXFLAGS += ['-Wno-error=format']

@@ -40,7 +40,6 @@
 #include "nsDOMMutationObserver.h"
 #include "nsDOMString.h"
 #include "nsDOMTokenList.h"
-#include "nsEventStateManager.h"
 #include "nsFocusManager.h"
 #include "nsFrameManager.h"
 #include "nsFrameSelection.h"
@@ -2186,15 +2185,6 @@ nsINode::IsEqualNode(nsIDOMNode* aOther, bool* aReturn)
   return NS_OK;
 }
 
-static void
-nsCOMArrayDeleter(void* aObject, nsIAtom* aPropertyName,
-                  void* aPropertyValue, void* aData)
-{
-  nsCOMArray<nsISupports>* objects =
-    static_cast<nsCOMArray<nsISupports>*>(aPropertyValue);
-  delete objects;
-}
-
 void
 nsINode::BindObject(nsISupports* aObject)
 {
@@ -2202,7 +2192,8 @@ nsINode::BindObject(nsISupports* aObject)
     static_cast<nsCOMArray<nsISupports>*>(GetProperty(nsGkAtoms::keepobjectsalive));
   if (!objects) {
     objects = new nsCOMArray<nsISupports>();
-    SetProperty(nsGkAtoms::keepobjectsalive, objects, nsCOMArrayDeleter, true);
+    SetProperty(nsGkAtoms::keepobjectsalive, objects,
+                nsINode::DeleteProperty< nsCOMArray<nsISupports> >, true);
   }
   objects->AppendObject(aObject);
 }
@@ -2268,7 +2259,7 @@ nsINode::SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const
   }
 #define TOUCH_EVENT EVENT
 #define DOCUMENT_ONLY_EVENT EVENT
-#include "nsEventNameList.h"
+#include "mozilla/EventNameList.h"
 #undef DOCUMENT_ONLY_EVENT
 #undef TOUCH_EVENT
 #undef EVENT

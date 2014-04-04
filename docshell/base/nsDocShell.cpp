@@ -15,6 +15,7 @@
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/TabChild.h"
+#include "mozilla/EventStateManager.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/Services.h"
 #include "mozilla/StartupTimeline.h"
@@ -149,8 +150,6 @@
 #include "nsISelectionDisplay.h"
 
 #include "nsIGlobalHistory2.h"
-
-#include "nsEventStateManager.h"
 
 #include "nsIFrame.h"
 #include "nsSubDocumentFrame.h"
@@ -2988,9 +2987,14 @@ nsDocShell::RecomputeCanExecuteScripts()
 
     // If we have no tree owner, that means that we've been detached from the
     // docshell tree (this is distinct from having no parent dochshell, which
-    // is the case for root docshells). In that case, don't allow script.
+    // is the case for root docshells). It would be nice to simply disallow
+    // script in detached docshells, but bug 986542 demonstrates that this
+    // behavior breaks at least one website.
+    //
+    // So instead, we use our previous value, unless mAllowJavascript has been
+    // explicitly set to false.
     if (!mTreeOwner) {
-        mCanExecuteScripts = false;
+        mCanExecuteScripts = mCanExecuteScripts && mAllowJavascript;
     // If scripting has been explicitly disabled on our docshell, we're done.
     } else if (!mAllowJavascript) {
         mCanExecuteScripts = false;
@@ -12777,7 +12781,7 @@ bool
 nsDocShell::ShouldBlockLoadingForBackButton()
 {
   if (!(mLoadType & LOAD_CMD_HISTORY) ||
-      nsEventStateManager::IsHandlingUserInput() ||
+      EventStateManager::IsHandlingUserInput() ||
       !Preferences::GetBool("accessibility.blockjsredirection")) {
     return false;
   }

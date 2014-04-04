@@ -424,7 +424,7 @@ CheckAllocatorState(ThreadSafeContext *cx, AllocKind kind)
 #endif
 
     // For testing out of memory conditions
-    JS_OOM_POSSIBLY_FAIL_REPORT(ncx);
+    JS_OOM_POSSIBLY_FAIL();
 
     if (allowGC) {
 #ifdef JS_GC_ZEAL
@@ -437,8 +437,6 @@ CheckAllocatorState(ThreadSafeContext *cx, AllocKind kind)
             // handle that here. Just check in case we need to collect instead.
             js::gc::GCIfNeeded(ncx);
         }
-
-        MaybeCheckStackRoots(ncx);
     }
 
     return true;

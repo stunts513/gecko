@@ -233,7 +233,7 @@ ReadLine(JSContext *cx, unsigned argc, jsval *vp)
     unsigned int buflen = strlen(buf);
     if (buflen == 0) {
         if (feof(gInFile)) {
-            JS_SET_RVAL(cx, vp, JSVAL_NULL);
+            args.rval().setNull();
             return true;
         }
     } else if (buf[buflen - 1] == '\n') {
@@ -245,7 +245,7 @@ ReadLine(JSContext *cx, unsigned argc, jsval *vp)
     if (!str)
         return false;
 
-    JS_SET_RVAL(cx, vp, STRING_TO_JSVAL(str));
+    args.rval().setString(str);
     return true;
 }
 
@@ -344,8 +344,7 @@ Load(JSContext *cx, unsigned argc, jsval *vp)
         if (!script)
             return false;
 
-        JS::Rooted<JS::Value> result(cx);
-        if (!compileOnly && !JS_ExecuteScript(cx, obj, script, result.address()))
+        if (!compileOnly && !JS_ExecuteScript(cx, obj, script))
             return false;
     }
     args.rval().setUndefined();
@@ -355,19 +354,20 @@ Load(JSContext *cx, unsigned argc, jsval *vp)
 static bool
 Version(JSContext *cx, unsigned argc, jsval *vp)
 {
-    JSVersion origVersion = JS_GetVersion(cx);
-    JS_SET_RVAL(cx, vp, INT_TO_JSVAL(origVersion));
-    if (argc > 0 && JSVAL_IS_INT(JS_ARGV(cx, vp)[0]))
+    CallArgs args = CallArgsFromVp(argc, vp);
+    args.rval().setInt32(JS_GetVersion(cx));
+    if (args.get(0).isInt32())
         JS_SetVersionForCompartment(js::GetContextCompartment(cx),
-                                    JSVersion(JSVAL_TO_INT(JS_ARGV(cx, vp)[0])));
+                                    JSVersion(args[0].toInt32()));
     return true;
 }
 
 static bool
 BuildDate(JSContext *cx, unsigned argc, jsval *vp)
 {
+    CallArgs args = CallArgsFromVp(argc, vp);
     fprintf(gOutFile, "built on %s at %s\n", __DATE__, __TIME__);
-    JS_SET_RVAL(cx, vp, JSVAL_VOID);
+    args.rval().setUndefined();
     return true;
 }
 
@@ -389,7 +389,7 @@ static bool
 IgnoreReportedErrors(JSContext *cx, unsigned argc, jsval *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
-    if (argc != 1 || !args[0].isBoolean()) {
+    if (args.length() != 1 || !args[0].isBoolean()) {
         JS_ReportError(cx, "Bad arguments");
         return false;
     }
@@ -418,12 +418,13 @@ DumpXPC(JSContext *cx, unsigned argc, jsval *vp)
 static bool
 GC(JSContext *cx, unsigned argc, jsval *vp)
 {
+    CallArgs args = CallArgsFromVp(argc, vp);
     JSRuntime *rt = JS_GetRuntime(cx);
     JS_GC(rt);
 #ifdef JS_GCMETER
     js_DumpGCStats(rt, stdout);
 #endif
-    JS_SET_RVAL(cx, vp, JSVAL_VOID);
+    args.rval().setUndefined();
     return true;
 }
 
@@ -478,7 +479,7 @@ Options(JSContext *cx, unsigned argc, jsval *vp)
     JS::CallArgs args = CallArgsFromVp(argc, vp);
     ContextOptions oldOptions = ContextOptionsRef(cx);
 
-    for (unsigned i = 0; i < argc; ++i) {
+    for (unsigned i = 0; i < args.length(); ++i) {
         JSString *str = ToString(cx, args[i]);
         if (!str)
             return false;
@@ -535,18 +536,19 @@ Options(JSContext *cx, unsigned argc, jsval *vp)
 static bool
 Parent(JSContext *cx, unsigned argc, jsval *vp)
 {
-    if (argc != 1) {
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (args.length() != 1) {
         JS_ReportError(cx, "Wrong number of arguments");
         return false;
     }
 
-    jsval v = JS_ARGV(cx, vp)[0];
+    Value v = args[0];
     if (JSVAL_IS_PRIMITIVE(v)) {
         JS_ReportError(cx, "Only objects have parents!");
         return false;
     }
 
-    *vp = OBJECT_TO_JSVAL(JS_GetParent(JSVAL_TO_OBJECT(v)));
+    args.rval().setObjectOrNull(JS_GetParent(&v.toObject()));
     return true;
 }
 
@@ -925,7 +927,7 @@ ProcessFile(JSContext *cx, JS::Handle<JSObject*> obj, const char *filename, FILE
                .setFileAndLine(filename, 1);
         script = JS::Compile(cx, obj, options, file);
         if (script && !compileOnly)
-            (void)JS_ExecuteScript(cx, obj, script, result.address());
+            (void)JS_ExecuteScript(cx, obj, script, &result);
         DoEndRequest(cx);
 
         return;
@@ -964,7 +966,7 @@ ProcessFile(JSContext *cx, JS::Handle<JSObject*> obj, const char *filename, FILE
             JSErrorReporter older;
 
             if (!compileOnly) {
-                ok = JS_ExecuteScript(cx, obj, script, result.address());
+                ok = JS_ExecuteScript(cx, obj, script, &result);
                 if (ok && result != JSVAL_VOID) {
                     /* Suppress error reports from JS::ToString(). */
                     older = JS_SetErrorReporter(cx, nullptr);
@@ -1151,8 +1153,7 @@ ProcessArgs(JSContext *cx, JS::Handle<JSObject*> obj, char **argv, int argc, XPC
                 return usage();
             }
 
-            JS_EvaluateScript(cx, obj, argv[i], strlen(argv[i]), "-e", 1,
-                              rval.address());
+            JS_EvaluateScript(cx, obj, argv[i], strlen(argv[i]), "-e", 1, &rval);
 
             isInteractive = false;
             break;
@@ -1651,13 +1652,13 @@ XPCShellDirProvider::SetPluginDir(nsIFile* pluginDir)
     mPluginDir = pluginDir;
 }
 
-NS_IMETHODIMP_(nsrefcnt)
+NS_IMETHODIMP_(MozExternalRefCountType)
 XPCShellDirProvider::AddRef()
 {
     return 2;
 }
 
-NS_IMETHODIMP_(nsrefcnt)
+NS_IMETHODIMP_(MozExternalRefCountType)
 XPCShellDirProvider::Release()
 {
     return 1;

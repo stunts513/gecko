@@ -28,7 +28,6 @@
 #include "nsPIDOMWindow.h"
 #include "nsIDOMXULPopupElement.h"
 #include "nsIEditingSession.h"
-#include "nsEventStateManager.h"
 #include "nsIFrame.h"
 #include "nsIInterfaceRequestorUtils.h"
 #include "nsImageFrame.h"
@@ -44,6 +43,7 @@
 #include "nsNameSpaceManager.h"
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/Assertions.h"
+#include "mozilla/EventStates.h"
 #include "mozilla/dom/DocumentType.h"
 #include "mozilla/dom/Element.h"
 
@@ -1146,7 +1146,7 @@ DocAccessible::ContentAppended(nsIDocument* aDocument,
 void
 DocAccessible::ContentStateChanged(nsIDocument* aDocument,
                                    nsIContent* aContent,
-                                   nsEventStates aStateMask)
+                                   EventStates aStateMask)
 {
   Accessible* accessible = GetAccessible(aContent);
   if (!accessible)
@@ -1185,7 +1185,7 @@ DocAccessible::ContentStateChanged(nsIDocument* aDocument,
 
 void
 DocAccessible::DocumentStatesChanged(nsIDocument* aDocument,
-                                     nsEventStates aStateMask)
+                                     EventStates aStateMask)
 {
 }
 

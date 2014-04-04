@@ -1000,7 +1000,7 @@ MacroAssembler::generateBailoutTail(Register scratch, Register bailoutInfo)
         // Enter exit frame for the FinishBailoutToBaseline call.
         loadPtr(Address(bailoutInfo, offsetof(BaselineBailoutInfo, resumeFramePtr)), temp);
         load32(Address(temp, BaselineFrame::reverseOffsetOfFrameSize()), temp);
-        makeFrameDescriptor(temp, IonFrame_BaselineJS);
+        makeFrameDescriptor(temp, JitFrame_BaselineJS);
         push(temp);
         push(Address(bailoutInfo, offsetof(BaselineBailoutInfo, resumeAddr)));
         enterFakeExitFrame();
@@ -1846,7 +1846,7 @@ MacroAssembler::branchIfNotInterpretedConstructor(Register fun, Register scratch
     // Emit code for the following test:
     //
     // bool isInterpretedConstructor() const {
-    //     return isInterpreted() && !isFunctionPrototype() &&
+    //     return isInterpreted() && !isFunctionPrototype() && !isArrow() &&
     //         (!isSelfHostedBuiltin() || isSelfHostedConstructor());
     // }
 
@@ -1854,16 +1854,15 @@ MacroAssembler::branchIfNotInterpretedConstructor(Register fun, Register scratch
     load32(Address(fun, JSFunction::offsetOfNargs()), scratch);
     branchTest32(Assembler::Zero, scratch, Imm32(JSFunction::INTERPRETED << 16), label);
 
-    // Common case: if both IS_FUN_PROTO and SELF_HOSTED are not set,
-    // we're done.
+    // Common case: if IS_FUN_PROTO, ARROW and SELF_HOSTED are not set,
+    // the function is an interpreted constructor and we're done.
     Label done;
-    uint32_t bits = (JSFunction::IS_FUN_PROTO | JSFunction::SELF_HOSTED) << 16;
+    uint32_t bits = (JSFunction::IS_FUN_PROTO | JSFunction::ARROW | JSFunction::SELF_HOSTED) << 16;
     branchTest32(Assembler::Zero, scratch, Imm32(bits), &done);
     {
-        // The callee is either Function.prototype or self-hosted. Fail if
-        // SELF_HOSTED_CTOR is not set. This means the callee must be
-        // Function.prototype or a self-hosted function that's not a
-        // constructor.
+        // The callee is either Function.prototype, an arrow function or
+        // self-hosted. None of these are constructible, except self-hosted
+        // constructors, so branch to |label| if SELF_HOSTED_CTOR is not set.
         branchTest32(Assembler::Zero, scratch, Imm32(JSFunction::SELF_HOSTED_CTOR << 16), label);
 
 #ifdef DEBUG
@@ -1903,4 +1902,55 @@ MacroAssembler::branchEqualTypeIfNeeded(MIRType type, MDefinition *maybeDef, Reg
             MOZ_ASSUME_UNREACHABLE("Unsupported type");
         }
     }
+}
+
+
+// If a pseudostack frame has this as its label, its stack pointer
+// field points to the registers saved on entry to JIT code.  A native
+// stack unwinder could use that information to continue unwinding
+// past that point.
+const char MacroAssembler::enterJitLabel[] = "EnterJIT";
+
+// Creates an enterJIT pseudostack frame, as described above.  Pushes
+// a word to the stack to indicate whether this was done.  |framePtr| is
+// the pointer to the machine-dependent saved state.
+void
+MacroAssembler::spsMarkJit(SPSProfiler *p, Register framePtr, Register temp)
+{
+    Label spsNotEnabled;
+    uint32_t *enabledAddr = p->addressOfEnabled();
+    load32(AbsoluteAddress(enabledAddr), temp);
+    push(temp); // +4: Did we push an sps frame.
+    branchTest32(Assembler::Equal, temp, temp, &spsNotEnabled);
+
+    Label stackFull;
+    // We always need the "safe" versions, because these are used in trampolines
+    // and won't be regenerated when SPS state changes.
+    spsProfileEntryAddressSafe(p, 0, temp, &stackFull);
+
+    storePtr(ImmPtr(enterJitLabel), Address(temp, ProfileEntry::offsetOfString()));
+    storePtr(framePtr,              Address(temp, ProfileEntry::offsetOfStackAddress()));
+    storePtr(ImmWord(uintptr_t(0)), Address(temp, ProfileEntry::offsetOfScript()));
+    store32(Imm32(ProfileEntry::NullPCIndex), Address(temp, ProfileEntry::offsetOfPCIdx()));
+
+    /* Always increment the stack size, whether or not we actually pushed. */
+    bind(&stackFull);
+    loadPtr(AbsoluteAddress(p->addressOfSizePointer()), temp);
+    add32(Imm32(1), Address(temp, 0));
+
+    bind(&spsNotEnabled);
+}
+
+// Pops the word pushed by spsMarkJit and, if spsMarkJit pushed an SPS
+// frame, pops it.
+void
+MacroAssembler::spsUnmarkJit(SPSProfiler *p, Register temp)
+{
+    Label spsNotEnabled;
+    pop(temp); // -4: Was the profiler enabled.
+    branchTest32(Assembler::Equal, temp, temp, &spsNotEnabled);
+
+    spsPopFrameSafe(p, temp);
+
+    bind(&spsNotEnabled);
 }

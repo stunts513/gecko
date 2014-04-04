@@ -2114,7 +2114,7 @@ CodeGenerator::visitCallGeneric(LCallGeneric *call)
     masm.freeStack(unusedStack);
 
     // Construct the IonFramePrefix.
-    uint32_t descriptor = MakeFrameDescriptor(masm.framePushed(), IonFrame_OptimizedJS);
+    uint32_t descriptor = MakeFrameDescriptor(masm.framePushed(), JitFrame_IonJS);
     masm.Push(Imm32(call->numActualArgs()));
     masm.Push(calleereg);
     masm.Push(Imm32(descriptor));
@@ -2235,7 +2235,7 @@ CodeGenerator::visitCallKnown(LCallKnown *call)
     masm.freeStack(unusedStack);
 
     // Construct the IonFramePrefix.
-    uint32_t descriptor = MakeFrameDescriptor(masm.framePushed(), IonFrame_OptimizedJS);
+    uint32_t descriptor = MakeFrameDescriptor(masm.framePushed(), JitFrame_IonJS);
     masm.Push(Imm32(call->numActualArgs()));
     masm.Push(calleereg);
     masm.Push(Imm32(descriptor));
@@ -2442,7 +2442,7 @@ CodeGenerator::visitApplyArgsGeneric(LApplyArgsGeneric *apply)
         // Create the frame descriptor.
         unsigned pushed = masm.framePushed();
         masm.addPtr(Imm32(pushed), copyreg);
-        masm.makeFrameDescriptor(copyreg, IonFrame_OptimizedJS);
+        masm.makeFrameDescriptor(copyreg, JitFrame_IonJS);
 
         masm.Push(argcreg);
         masm.Push(calleereg);
@@ -3537,8 +3537,7 @@ CodeGenerator::visitNewDeclEnvObject(LNewDeclEnvObject *lir)
     return true;
 }
 
-typedef JSObject *(*NewCallObjectFn)(JSContext *, HandleScript, HandleShape,
-                                     HandleTypeObject, HeapSlot *);
+typedef JSObject *(*NewCallObjectFn)(JSContext *, HandleShape, HandleTypeObject, HeapSlot *);
 static const VMFunction NewCallObjectInfo =
     FunctionInfo<NewCallObjectFn>(NewCallObject);
 
@@ -3550,45 +3549,75 @@ CodeGenerator::visitNewCallObject(LNewCallObject *lir)
 
     JSObject *templateObj = lir->mir()->templateObject();
 
-    // If we have a template object, we can inline call object creation.
     OutOfLineCode *ool;
     if (lir->slots()->isRegister()) {
         ool = oolCallVM(NewCallObjectInfo, lir,
-                        (ArgList(), ImmGCPtr(lir->mir()->block()->info().script()),
-                                    ImmGCPtr(templateObj->lastProperty()),
-                                    ImmGCPtr(templateObj->hasSingletonType() ? nullptr : templateObj->type()),
+                        (ArgList(), ImmGCPtr(templateObj->lastProperty()),
+                                    ImmGCPtr(templateObj->type()),
                                     ToRegister(lir->slots())),
                         StoreRegisterTo(objReg));
     } else {
         ool = oolCallVM(NewCallObjectInfo, lir,
-                        (ArgList(), ImmGCPtr(lir->mir()->block()->info().script()),
-                                    ImmGCPtr(templateObj->lastProperty()),
-                                    ImmGCPtr(templateObj->hasSingletonType() ? nullptr : templateObj->type()),
+                        (ArgList(), ImmGCPtr(templateObj->lastProperty()),
+                                    ImmGCPtr(templateObj->type()),
                                     ImmPtr(nullptr)),
                         StoreRegisterTo(objReg));
     }
     if (!ool)
         return false;
 
-    if (lir->mir()->needsSingletonType()
 #ifdef JSGC_GENERATIONAL
-        // Slot initialization is not barriered in this case, so we must either
+    if (templateObj->hasDynamicSlots()) {
+        // Slot initialization is unbarriered in this case, so we must either
         // allocate in the nursery or bail if that is not possible.
-        || lir->mir()->templateObject()->hasDynamicSlots()
-#endif
-       )
-    {
-        // Objects can only be given singleton types in VM calls.
         masm.jump(ool->entry());
-    } else {
+    } else
+#endif
+    {
+        // Inline call object creation, using the OOL path only for tricky cases.
         masm.newGCThing(objReg, tempReg, templateObj, ool->entry(), gc::DefaultHeap);
         masm.initGCThing(objReg, tempReg, templateObj);
-
-        if (lir->slots()->isRegister())
-            masm.storePtr(ToRegister(lir->slots()), Address(objReg, JSObject::offsetOfSlots()));
     }
 
+    if (lir->slots()->isRegister())
+        masm.storePtr(ToRegister(lir->slots()), Address(objReg, JSObject::offsetOfSlots()));
+
     masm.bind(ool->rejoin());
+    return true;
+}
+
+typedef JSObject *(*NewSingletonCallObjectFn)(JSContext *, HandleShape, HeapSlot *);
+static const VMFunction NewSingletonCallObjectInfo =
+    FunctionInfo<NewSingletonCallObjectFn>(NewSingletonCallObject);
+
+bool
+CodeGenerator::visitNewSingletonCallObject(LNewSingletonCallObject *lir)
+{
+    Register objReg = ToRegister(lir->output());
+
+    JSObject *templateObj = lir->mir()->templateObject();
+
+    OutOfLineCode *ool;
+    if (lir->slots()->isRegister()) {
+        ool = oolCallVM(NewSingletonCallObjectInfo, lir,
+                        (ArgList(), ImmGCPtr(templateObj->lastProperty()),
+                                    ToRegister(lir->slots())),
+                        StoreRegisterTo(objReg));
+    } else {
+        ool = oolCallVM(NewSingletonCallObjectInfo, lir,
+                        (ArgList(), ImmGCPtr(templateObj->lastProperty()),
+                                    ImmPtr(nullptr)),
+                        StoreRegisterTo(objReg));
+    }
+    if (!ool)
+        return false;
+
+    // Objects can only be given singleton types in VM calls.  We make the call
+    // out of line to not bloat inline code, even if (naively) this seems like
+    // extra work.
+    masm.jump(ool->entry());
+    masm.bind(ool->rejoin());
+
     return true;
 }
 
@@ -4029,6 +4058,15 @@ CodeGenerator::visitComputeThis(LComputeThis *lir)
     masm.unboxObject(value, output);
 
     masm.bind(ool->rejoin());
+    return true;
+}
+
+bool
+CodeGenerator::visitLoadArrowThis(LLoadArrowThis *lir)
+{
+    Register callee = ToRegister(lir->callee());
+    ValueOperand output = ToOutValue(lir);
+    masm.loadValue(Address(callee, FunctionExtended::offsetOfArrowThisSlot()), output);
     return true;
 }
 
@@ -6081,6 +6119,7 @@ CodeGenerator::generateAsmJS()
     // every step in CodeGenerator::link must be a nop, as asserted here:
     JS_ASSERT(snapshots_.listSize() == 0);
     JS_ASSERT(snapshots_.RVATableSize() == 0);
+    JS_ASSERT(recovers_.size() == 0);
     JS_ASSERT(bailouts_.empty());
     JS_ASSERT(graph.numConstants() == 0);
     JS_ASSERT(safepointIndices_.empty());
@@ -6204,7 +6243,7 @@ CodeGenerator::link(JSContext *cx, types::CompilerConstraintList *constraints)
       IonScript::New(cx, recompileInfo,
                      graph.totalSlotCount(), scriptFrameSize,
                      snapshots_.listSize(), snapshots_.RVATableSize(),
-                     bailouts_.length(), graph.numConstants(),
+                     recovers_.size(), bailouts_.length(), graph.numConstants(),
                      safepointIndices_.length(), osiIndices_.length(),
                      cacheList_.length(), runtimeData_.length(),
                      safepoints_.size(), callTargets.length(),
@@ -6314,6 +6353,9 @@ CodeGenerator::link(JSContext *cx, types::CompilerConstraintList *constraints)
         ionScript->copyOsiIndices(&osiIndices_[0], masm);
     if (snapshots_.listSize())
         ionScript->copySnapshots(&snapshots_);
+    MOZ_ASSERT_IF(snapshots_.listSize(), recovers_.size());
+    if (recovers_.size())
+        ionScript->copyRecovers(&recovers_);
     if (graph.numConstants())
         ionScript->copyConstants(graph.constantPool());
     if (callTargets.length() > 0)

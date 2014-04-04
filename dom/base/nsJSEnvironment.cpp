@@ -191,7 +191,6 @@ static uint32_t sPreviousSuspectedCount = 0;
 static uint32_t sCleanupsSinceLastGC = UINT32_MAX;
 static bool sNeedsFullCC = false;
 static bool sNeedsGCAfterCC = false;
-static nsJSContext *sContextList = nullptr;
 static bool sIncrementalCC = false;
 
 static nsScriptNameSpaceManager *gNameSpaceManager;
@@ -767,13 +766,6 @@ nsJSContext::nsJSContext(bool aGCOnDestruction,
 {
   EnsureStatics();
 
-  mNext = sContextList;
-  mPrev = &sContextList;
-  if (sContextList) {
-    sContextList->mPrev = &mNext;
-  }
-  sContextList = this;
-
   ++sContextCount;
 
   mContext = ::JS_NewContext(sRuntime, gStackSize);
@@ -795,11 +787,6 @@ nsJSContext::nsJSContext(bool aGCOnDestruction,
 
 nsJSContext::~nsJSContext()
 {
-  *mPrev = mNext;
-  if (mNext) {
-    mNext->mPrev = mPrev;
-  }
-
   mGlobalObjectRef = nullptr;
 
   DestroyJSContext();
@@ -908,95 +895,6 @@ AtomIsEventHandlerName(nsIAtom *aName)
   return true;
 }
 #endif
-
-// Helper function to find the JSObject associated with a (presumably DOM)
-// interface.
-nsresult
-nsJSContext::JSObjectFromInterface(nsISupports* aTarget,
-                                   JS::Handle<JSObject*> aScope,
-                                   JSObject** aRet)
-{
-  // It is legal to specify a null target.
-  if (!aTarget) {
-    *aRet = nullptr;
-    return NS_OK;
-  }
-
-  AutoJSContext cx;
-
-  // Get the jsobject associated with this target
-  // We don't wrap here because we trust the JS engine to wrap the target
-  // later.
-  JS::Rooted<JS::Value> v(cx);
-  nsresult rv = nsContentUtils::WrapNative(cx, aScope, aTarget, &v);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  JSObject* obj = v.toObjectOrNull();
-  if (obj) {
-    JS::ExposeObjectToActiveJS(obj);
-  }
-
-#ifdef DEBUG
-  JS::Rooted<JSObject*> rootedObj(cx, obj);
-  nsCOMPtr<nsISupports> targetSupp = do_QueryInterface(aTarget);
-  nsCOMPtr<nsISupports> native =
-    nsContentUtils::XPConnect()->GetNativeOfWrapper(cx, rootedObj);
-  NS_ASSERTION(native == targetSupp, "Native should be the target!");
-  obj = rootedObj;
-#endif
-
-  *aRet = obj;
-  return NS_OK;
-}
-
-nsresult
-nsJSContext::BindCompiledEventHandler(nsISupports* aTarget,
-                                      JS::Handle<JSObject*> aScope,
-                                      JS::Handle<JSObject*> aHandler,
-                                      JS::MutableHandle<JSObject*> aBoundHandler)
-{
-  NS_ENSURE_ARG(aHandler);
-  NS_ENSURE_TRUE(mIsInitialized, NS_ERROR_NOT_INITIALIZED);
-  NS_PRECONDITION(!aBoundHandler, "Shouldn't already have a bound handler!");
-
-  if (aScope) {
-    JS::ExposeObjectToActiveJS(aScope);
-  }
-  JS::ExposeObjectToActiveJS(aHandler);
-  AutoPushJSContext cx(mContext);
-
-  // Get the jsobject associated with this target
-  JS::Rooted<JSObject*> target(cx);
-  JS::Rooted<JSObject*> scope(cx, aScope);
-  nsresult rv = JSObjectFromInterface(aTarget, scope, target.address());
-  NS_ENSURE_SUCCESS(rv, rv);
-
-#ifdef DEBUG
-  {
-    JSAutoCompartment ac(cx, aHandler);
-    JS::Rooted<JS::Value> val(cx, JS::ObjectValue(*aHandler));
-    NS_ASSERTION(JS_TypeOfValue(cx, val) == JSTYPE_FUNCTION,
-                 "Event handler object not a function");
-  }
-#endif
-
-  JSAutoCompartment ac(cx, target);
-
-  JSObject* funobj;
-  // Make sure the handler function is parented by its event target object
-  if (aHandler) {
-    funobj = JS_CloneFunctionObject(cx, aHandler, target);
-    if (!funobj) {
-      rv = NS_ERROR_OUT_OF_MEMORY;
-    }
-  } else {
-    funobj = nullptr;
-  }
-
-  aBoundHandler.set(funobj);
-
-  return rv;
-}
 
 nsIScriptGlobalObject *
 nsJSContext::GetGlobalObject()
@@ -2895,9 +2793,10 @@ NS_DOMWriteStructuredClone(JSContext* cx,
 
   // Write the internals to the stream.
   JSAutoCompartment ac(cx, dataArray);
+  JS::Rooted<JS::Value> arrayValue(cx, JS::ObjectValue(*dataArray));
   return JS_WriteUint32Pair(writer, SCTAG_DOM_IMAGEDATA, 0) &&
          JS_WriteUint32Pair(writer, width, height) &&
-         JS_WriteTypedArray(writer, JS::ObjectValue(*dataArray));
+         JS_WriteTypedArray(writer, arrayValue);
 }
 
 void

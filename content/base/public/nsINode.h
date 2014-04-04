@@ -692,6 +692,15 @@ public:
                                void **aOldValue = nullptr);
 
   /**
+   * A generic destructor for property values allocated with new.
+   */
+  template<class T>
+  static void DeleteProperty(void *, nsIAtom *, void *aPropertyValue, void *)
+  {
+    delete static_cast<T *>(aPropertyValue);
+  }
+
+  /**
    * Destroys a property associated with this node. The value is destroyed
    * using the destruction function given when that value was set.
    *
@@ -1771,7 +1780,7 @@ public:
   void SetOn##name_(mozilla::dom::EventHandlerNonNull* listener);
 #define TOUCH_EVENT EVENT
 #define DOCUMENT_ONLY_EVENT EVENT
-#include "nsEventNameList.h"
+#include "mozilla/EventNameList.h"
 #undef DOCUMENT_ONLY_EVENT
 #undef TOUCH_EVENT
 #undef EVENT

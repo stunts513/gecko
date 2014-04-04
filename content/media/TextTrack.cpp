@@ -17,17 +17,17 @@ namespace mozilla {
 namespace dom {
 
 NS_IMPL_CYCLE_COLLECTION_INHERITED_5(TextTrack,
-                                     nsDOMEventTargetHelper,
+                                     DOMEventTargetHelper,
                                      mParent,
                                      mCueList,
                                      mActiveCueList,
                                      mTextTrackList,
                                      mTrackElement)
 
-NS_IMPL_ADDREF_INHERITED(TextTrack, nsDOMEventTargetHelper)
-NS_IMPL_RELEASE_INHERITED(TextTrack, nsDOMEventTargetHelper)
+NS_IMPL_ADDREF_INHERITED(TextTrack, DOMEventTargetHelper)
+NS_IMPL_RELEASE_INHERITED(TextTrack, DOMEventTargetHelper)
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION_INHERITED(TextTrack)
-NS_INTERFACE_MAP_END_INHERITING(nsDOMEventTargetHelper)
+NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
 
 TextTrack::TextTrack(nsISupports* aParent,
                      TextTrackKind aKind,
@@ -96,9 +96,20 @@ TextTrack::SetMode(TextTrackMode aValue)
 }
 
 void
+TextTrack::GetId(nsAString& aId) const
+{
+  // If the track has a track element then its id should be the same as the
+  // track element's id.
+  if (mTrackElement) {
+    mTrackElement->GetAttribute(NS_LITERAL_STRING("id"), aId);
+  }
+}
+
+void
 TextTrack::AddCue(TextTrackCue& aCue)
 {
   mCueList->AddCue(aCue);
+  aCue.SetTrack(this);
   if (mTextTrackList) {
     HTMLMediaElement* mediaElement = mTextTrackList->GetMediaElement();
     if (mediaElement) {
@@ -178,6 +189,14 @@ TextTrackReadyState
 TextTrack::ReadyState() const
 {
   return mReadyState;
+}
+
+void
+TextTrack::SetReadyState(uint32_t aReadyState)
+{
+  if (aReadyState <= TextTrackReadyState::FailedToLoad) {
+    SetReadyState(static_cast<TextTrackReadyState>(aReadyState));
+  }
 }
 
 void
