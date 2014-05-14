@@ -1653,7 +1653,7 @@ nsBulletFrame::GetDesiredSize(nsPresContext*  aCX,
   }
 }
 
-nsresult
+void
 nsBulletFrame::Reflow(nsPresContext* aPresContext,
                       nsHTMLReflowMetrics& aMetrics,
                       const nsHTMLReflowState& aReflowState,
@@ -1694,7 +1694,6 @@ nsBulletFrame::Reflow(nsPresContext* aPresContext,
 
   aStatus = NS_FRAME_COMPLETE;
   NS_FRAME_SET_TRUNCATION(aStatus, aReflowState, aMetrics);
-  return NS_OK;
 }
 
 /* virtual */ nscoord
@@ -1893,7 +1892,7 @@ nsBulletFrame::GetBaseline() const
 
 
 
-NS_IMPL_ISUPPORTS1(nsBulletListener, imgINotificationObserver)
+NS_IMPL_ISUPPORTS(nsBulletListener, imgINotificationObserver)
 
 nsBulletListener::nsBulletListener() :
   mFrame(nullptr)

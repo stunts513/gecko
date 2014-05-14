@@ -146,7 +146,6 @@ Components.utils.import('resource://gre/modules/ctypes.jsm');
 
   let appInfo = Cc["@mozilla.org/xre/app-info;1"]
                   .getService(Ci.nsIXULAppInfo);
-  let update_channel = Services.prefs.getCharPref('app.update.channel');
 
   // Get the hardware info and firmware revision from device properties.
   let hardware_info = null;
@@ -164,7 +163,6 @@ Components.utils.import('resource://gre/modules/ctypes.jsm');
     'deviceinfo.software': software,
     'deviceinfo.platform_version': appInfo.platformVersion,
     'deviceinfo.platform_build_id': appInfo.platformBuildID,
-    'deviceinfo.update_channel': update_channel,
     'deviceinfo.hardware': hardware_info,
     'deviceinfo.firmware_revision': firmware_revision,
     'deviceinfo.product_model': product_model
@@ -546,6 +544,7 @@ function setUpdateTrackingId() {
 }
 setUpdateTrackingId();
 
+
 // ================ Debug ================
 (function Composer2DSettingToPref() {
   //layers.composer.enabled can be enabled in three ways
@@ -563,7 +562,12 @@ setUpdateTrackingId();
         enabled = Services.prefs.getBoolPref('layers.composer2d.enabled');
       } else {
 #ifdef MOZ_WIDGET_GONK
-        enabled = (libcutils.property_get('ro.display.colorfill') === '1');
+        let androidVersion = libcutils.property_get("ro.build.version.sdk");
+        if (androidVersion >= 17 ) {
+          enabled = true;
+        } else {
+          enabled = (libcutils.property_get('ro.display.colorfill') === '1');
+        }
 #endif
       }
       navigator.mozSettings.createLock().set({'layers.composer2d.enabled': enabled });
@@ -601,37 +605,32 @@ SettingsListener.observe("accessibility.screenreader", false, function(value) {
   });
 })();
 
-// =================== AsyncPanZoom ======================
-SettingsListener.observe('apz.displayport.heuristics', 'default', function(value) {
-  // first reset everything to default
-  Services.prefs.clearUserPref('apz.velocity_bias');
-  Services.prefs.clearUserPref('apz.use_paint_duration');
-  Services.prefs.clearUserPref('apz.x_skate_size_multiplier');
-  Services.prefs.clearUserPref('apz.y_skate_size_multiplier');
-  Services.prefs.clearUserPref('apz.allow-checkerboarding');
-  // and then set the things that we want to change
-  switch (value) {
-  case 'default':
-    break;
-  case 'center-displayport':
-    Services.prefs.setCharPref('apz.velocity_bias', '0.0');
-    break;
-  case 'perfect-paint-times':
-    Services.prefs.setBoolPref('apz.use_paint_duration', false);
-    Services.prefs.setCharPref('apz.velocity_bias', '0.32'); // 16/50 (assumes 16ms paint times instead of 50ms)
-    break;
-  case 'taller-displayport':
-    Services.prefs.setCharPref('apz.y_skate_size_multiplier', '3.5');
-    break;
-  case 'faster-paint':
-    Services.prefs.setCharPref('apz.x_skate_size_multiplier', '1.0');
-    Services.prefs.setCharPref('apz.y_skate_size_multiplier', '1.5');
-    break;
-  case 'no-checkerboard':
-    Services.prefs.setBoolPref('apz.allow-checkerboarding', false);
-    break;
-  }
-});
+// =================== Telemetry  ======================
+(function setupTelemetrySettings() {
+  let gaiaSettingName = 'debug.performance_data.shared';
+  let geckoPrefName = 'toolkit.telemetry.enabled';
+  SettingsListener.observe(gaiaSettingName, null, function(value) {
+    if (value !== null) {
+      // Gaia setting has been set; update Gecko pref to that.
+      Services.prefs.setBoolPref(geckoPrefName, value);
+      return;
+    }
+    // Gaia setting has not been set; set the gaia setting to default.
+#ifdef MOZ_TELEMETRY_ON_BY_DEFAULT
+    let prefValue = true;
+#else
+    let prefValue = false;
+#endif
+    try {
+      prefValue = Services.prefs.getBoolPref(geckoPrefName);
+    } catch (e) {
+      // Pref not set; use default value.
+    }
+    let setting = {};
+    setting[gaiaSettingName] = prefValue;
+    window.navigator.mozSettings.createLock().set(setting);
+  });
+})();
 
 // =================== Various simple mapping  ======================
 let settingsToObserve = {
@@ -667,7 +666,6 @@ let settingsToObserve = {
   },
   'layers.enable-tiles': true,
   'layers.simple-tiles': false,
-  'layers.progressive-paint': false,
   'layers.draw-tile-borders': false,
   'layers.dump': false,
   'debug.fps.enabled': {
@@ -680,6 +678,12 @@ let settingsToObserve = {
   },
   'layers.draw-borders': false,
   'app.update.interval': 86400,
+  'app.update.url': {
+    resetToPref: true
+  },
+  'app.update.channel': {
+    resetToPref: true
+  },
   'debug.log-animations.enabled': {
     prefName: 'layers.offmainthreadcomposition.log-animations',
     defaultValue: false
@@ -689,34 +693,54 @@ let settingsToObserve = {
 for (let key in settingsToObserve) {
   let setting = settingsToObserve[key];
 
-  // By default, assume the setting name and the pref name are the same.
-  let prefName = key;
-  let defaultValue = setting;
-
-  // Check if the pref name has been overidden.
-  if (typeof setting == 'object') {
-    prefName = setting.prefName;
-    defaultValue = setting.defaultValue;
+  // Allow setting to contain flags redefining prefName and defaultValue.
+  let prefName = setting.prefName || key;
+  let defaultValue = setting.defaultValue;
+  if (defaultValue === undefined) {
+    defaultValue = setting;
   }
 
+  let prefs = Services.prefs;
+
+  // If requested, reset setting value and defaultValue to the pref value.
+  if (setting.resetToPref) {
+    switch (prefs.getPrefType(prefName)) {
+      case Ci.nsIPrefBranch.PREF_BOOL:
+        defaultValue = prefs.getBoolPref(prefName);
+        break;
+
+      case Ci.nsIPrefBranch.PREF_INT:
+        defaultValue = prefs.getIntPref(prefName);
+        break;
+
+      case Ci.nsIPrefBranch.PREF_STRING:
+        defaultValue = prefs.getCharPref(prefName);
+        break;
+    }
+
+    let setting = {};
+    setting[key] = defaultValue;
+    window.navigator.mozSettings.createLock().set(setting);
+  }
+
+  // Figure out the right setter function for this type of pref.
+  let setPref;
   switch (typeof defaultValue) {
     case 'boolean':
-      SettingsListener.observe(key, defaultValue, function(value) {
-        Services.prefs.setBoolPref(prefName, value);
-      });
-      break;
-
-    case 'string':
-      SettingsListener.observe(key, defaultValue, function(value) {
-        Services.prefs.setCharPref(prefName, value);
-      });
+      setPref = prefs.setBoolPref.bind(prefs);
       break;
 
     case 'number':
-      SettingsListener.observe(key, defaultValue, function(value) {
-        Services.prefs.setIntPref(prefName, value);
-      });
+      setPref = prefs.setIntPref.bind(prefs);
+      break;
+
+    case 'string':
+      setPref = prefs.setCharPref.bind(prefs);
       break;
   }
+
+  SettingsListener.observe(key, defaultValue, function(value) {
+    setPref(prefName, value);
+  });
 };
 

@@ -195,7 +195,7 @@ nsMenuBarFrame::FindMenuWithShortcut(nsIDOMKeyEvent* aKeyEvent)
 
   // Find a most preferred accesskey which should be returned.
   nsIFrame* foundMenu = nullptr;
-  uint32_t foundIndex = accessKeys.NoIndex;
+  size_t foundIndex = accessKeys.NoIndex;
   nsIFrame* currFrame = immediateParent->GetFirstPrincipalChild();
 
   while (currFrame) {
@@ -211,7 +211,7 @@ nsMenuBarFrame::FindMenuWithShortcut(nsIDOMKeyEvent* aKeyEvent)
         const char16_t* start = shortcutKey.BeginReading();
         const char16_t* end = shortcutKey.EndReading();
         uint32_t ch = UTF16CharEnumerator::NextChar(&start, end);
-        uint32_t index = accessKeys.IndexOf(ch);
+        size_t index = accessKeys.IndexOf(ch);
         if (index != accessKeys.NoIndex &&
             (foundIndex == accessKeys.NoIndex || index < foundIndex)) {
           foundMenu = currFrame;
@@ -238,7 +238,7 @@ nsMenuBarFrame::FindMenuWithShortcut(nsIDOMKeyEvent* aKeyEvent)
   if (pm) {
     nsIFrame* popup = pm->GetTopPopup(ePopupTypeAny);
     if (popup)
-      pm->HidePopup(popup->GetContent(), true, true, true);
+      pm->HidePopup(popup->GetContent(), true, true, true, false);
   }
 
   SetCurrentMenuItem(nullptr);
@@ -308,7 +308,7 @@ public:
 
     if (mOldMenu) {
       nsWeakFrame weakMenuBar(menubar);
-      pm->HidePopup(mOldMenu, false, false, false);
+      pm->HidePopup(mOldMenu, false, false, false, false);
       // clear the flag again
       if (mNewMenu && weakMenuBar.IsAlive())
         menubar->SetStayActive(false);

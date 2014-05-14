@@ -164,7 +164,7 @@ public:
   }
 };
 
-NS_IMPL_ISUPPORTS1(GeolocationSettingsCallback, nsISettingsServiceCallback)
+NS_IMPL_ISUPPORTS(GeolocationSettingsCallback, nsISettingsServiceCallback)
 
 class RequestPromptEvent : public nsRunnable
 {
@@ -240,7 +240,7 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(PositionError)
   NS_INTERFACE_MAP_ENTRY(nsIDOMGeoPositionError)
 NS_INTERFACE_MAP_END
 
-NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_1(PositionError, mParent)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(PositionError, mParent)
 NS_IMPL_CYCLE_COLLECTING_ADDREF(PositionError)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(PositionError)
 
@@ -289,9 +289,9 @@ PositionError::GetParentObject() const
 }
 
 JSObject*
-PositionError::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+PositionError::WrapObject(JSContext* aCx)
 {
-  return PositionErrorBinding::Wrap(aCx, aScope, this);
+  return PositionErrorBinding::Wrap(aCx, this);
 }
 
 void
@@ -346,7 +346,7 @@ NS_INTERFACE_MAP_END
 NS_IMPL_CYCLE_COLLECTING_ADDREF(nsGeolocationRequest)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(nsGeolocationRequest)
 
-NS_IMPL_CYCLE_COLLECTION_3(nsGeolocationRequest, mCallback, mErrorCallback, mLocator)
+NS_IMPL_CYCLE_COLLECTION(nsGeolocationRequest, mCallback, mErrorCallback, mLocator)
 
 NS_IMETHODIMP
 nsGeolocationRequest::Notify(nsITimer* aTimer)
@@ -685,7 +685,12 @@ nsresult nsGeolocationService::Init()
 #endif
 
 #ifdef MOZ_WIDGET_GONK
-  mProvider = do_CreateInstance(GONK_GPS_GEOLOCATION_PROVIDER_CONTRACTID);
+  // GonkGPSGeolocationProvider can be started at boot up time for initialization reasons.
+  // do_getService gets hold of the already initialized component and starts
+  // processing location requests immediately.
+  // do_Createinstance will create multiple instances of the provider which is not right.
+  // bug 993041
+  mProvider = do_GetService(GONK_GPS_GEOLOCATION_PROVIDER_CONTRACTID);
 #endif
 
 #ifdef MOZ_WIDGET_COCOA
@@ -1027,11 +1032,11 @@ NS_INTERFACE_MAP_END
 NS_IMPL_CYCLE_COLLECTING_ADDREF(Geolocation)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(Geolocation)
 
-NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_4(Geolocation,
-                                        mCachedPosition,
-                                        mPendingCallbacks,
-                                        mWatchingCallbacks,
-                                        mPendingRequests)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(Geolocation,
+                                      mCachedPosition,
+                                      mPendingCallbacks,
+                                      mWatchingCallbacks,
+                                      mPendingRequests)
 
 Geolocation::Geolocation()
 : mLastWatchId(0)
@@ -1518,7 +1523,7 @@ Geolocation::RegisterRequestWithPrompt(nsGeolocationRequest* request)
 }
 
 JSObject*
-Geolocation::WrapObject(JSContext *aCtx, JS::Handle<JSObject*> aScope)
+Geolocation::WrapObject(JSContext *aCtx)
 {
-  return GeolocationBinding::Wrap(aCtx, aScope, this);
+  return GeolocationBinding::Wrap(aCtx, this);
 }

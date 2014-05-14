@@ -99,7 +99,7 @@ ifdef MOZ_WEBRTC
 ifeq (WINNT,$(OS_TARGET))
 ifndef MOZ_HAS_WINSDK_WITH_D3D
 EXTRA_DSO_LDOPTS += \
-  -LIBPATH:'$(MOZ_DIRECTX_SDK_PATH)/lib/$(MOZ_DIRECTX_SDK_CPU_SUFFIX)' \
+  -LIBPATH:'$(MOZ_DIRECTX_SDK_PATH)/lib/$(MOZ_D3D_CPU_SUFFIX)' \
   $(NULL)
 endif
 OS_LIBS += $(call EXPAND_LIBNAME,secur32 crypt32 iphlpapi strmiids dmoguids wmcodecdspuuid amstrmid msdmo wininet)
@@ -207,19 +207,12 @@ OS_LIBS += $(call EXPAND_LIBNAME,util)
 endif
 
 ifeq ($(OS_ARCH),WINNT)
-OS_LIBS += $(call EXPAND_LIBNAME,shell32 ole32 version winspool comdlg32 imm32 msimg32 shlwapi psapi ws2_32 dbghelp rasapi32 rasdlg iphlpapi uxtheme setupapi secur32 sensorsapi portabledeviceguids windowscodecs wininet wbemuuid wintrust)
+OS_LIBS += $(call EXPAND_LIBNAME,shell32 ole32 version winspool comdlg32 imm32 msimg32 shlwapi psapi ws2_32 dbghelp rasapi32 rasdlg iphlpapi uxtheme setupapi secur32 sensorsapi portabledeviceguids windowscodecs wininet wbemuuid wintrust wtsapi32)
 ifdef ACCESSIBILITY
 OS_LIBS += $(call EXPAND_LIBNAME,oleacc)
 endif
 ifdef MOZ_METRO
 OS_LIBS += $(call EXPAND_LIBNAME,uiautomationcore runtimeobject)
-endif
-ifdef MOZ_GAMEPAD
-ifdef MOZ_HAS_WINSDK_WITH_D3D
-OS_LIBS += $(call EXPAND_LIBNAME,dxguid dinput8)
-else
-OS_LIBS += $(call EXPAND_LIBNAME_PATH,dxguid dinput8, '$(subst \,/,$(MOZ_DIRECTX_SDK_PATH))/Lib/$(MOZ_DIRECTX_SDK_CPU_SUFFIX)')
-endif
 endif
 endif # WINNT
 

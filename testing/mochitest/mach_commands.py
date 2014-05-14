@@ -184,13 +184,14 @@ class MochitestRunner(MozbuildObject):
         return mochitest.run_remote_mochitests(parser, options)
 
     def run_desktop_test(self, context, suite=None, test_paths=None, debugger=None,
-        debugger_args=None, slowscript=False, shuffle=False, keep_open=False,
+        debugger_args=None, slowscript=False, screenshot_on_fail = False, shuffle=False, keep_open=False,
         rerun_failures=False, no_autorun=False, repeat=0, run_until_failure=False,
         slow=False, chunk_by_dir=0, total_chunks=None, this_chunk=None,
         jsdebugger=False, debug_on_failure=False, start_at=None, end_at=None,
         e10s=False, dmd=False, dump_output_directory=None,
         dump_about_memory_after_test=False, dump_dmd_after_test=False,
-        install_extension=None, quiet=False, **kwargs):
+        install_extension=None, quiet=False, environment=[], app_override=None,
+        useTestMediaDevices=False, **kwargs):
         """Runs a mochitest.
 
         test_paths are path to tests. They can be a relative path from the
@@ -257,6 +258,7 @@ class MochitestRunner(MozbuildObject):
         opts = mochitest.MochitestOptions()
         options, args = opts.parse_args([])
 
+        options.subsuite = ''
         flavor = suite
 
         # Need to set the suite options before verifyOptions below.
@@ -268,6 +270,9 @@ class MochitestRunner(MozbuildObject):
         elif suite == 'browser':
             options.browserChrome = True
             flavor = 'browser-chrome'
+        elif suite == 'devtools':
+            options.browserChrome = True
+            options.subsuite = 'devtools'
         elif suite == 'metro':
             options.immersiveMode = True
             options.browserChrome = True
@@ -289,6 +294,7 @@ class MochitestRunner(MozbuildObject):
         options.autorun = not no_autorun
         options.closeWhenDone = not keep_open
         options.slowscript = slowscript
+        options.screenshotOnFail = screenshot_on_fail
         options.shuffle = shuffle
         options.consoleLevel = 'INFO'
         options.repeat = repeat
@@ -309,6 +315,8 @@ class MochitestRunner(MozbuildObject):
         options.dumpDMDAfterTest = dump_dmd_after_test
         options.dumpOutputDirectory = dump_output_directory
         options.quiet = quiet
+        options.environment = environment
+        options.useTestMediaDevices = useTestMediaDevices
 
         options.failureFile = failure_file_path
         if install_extension != None:
@@ -333,6 +341,8 @@ class MochitestRunner(MozbuildObject):
             manifest.tests.extend(tests)
 
             options.manifestFile = manifest
+            if len(test_paths) == 1 and len(tests) == 1:
+                options.testPath = test_paths[0]
 
         if rerun_failures:
             options.testManifest = failure_file_path
@@ -345,6 +355,11 @@ class MochitestRunner(MozbuildObject):
                 print("--debugger-args passed, but no debugger specified.")
                 return 1
             options.debuggerArgs = debugger_args
+
+        if app_override == "dist":
+            options.app = self.get_binary_path(where='staged-package')
+        elif app_override:
+            options.app = app_override
 
         options = opts.verifyOptions(options, runner)
 
@@ -407,6 +422,10 @@ def MochitestCommand(func):
         help='Do not set the JS_DISABLE_SLOW_SCRIPT_SIGNALS env variable; when not set, recoverable but misleading SIGSEGV instances may occur in Ion/Odin JIT code')
     func = slowscript(func)
 
+    screenshot_on_fail = CommandArgument('--screenshot-on-fail', action='store_true',
+        help='Take screenshots on all test failures. Set $MOZ_UPLOAD_DIR to a directory for storing the screenshots.')
+    func = screenshot_on_fail(func)
+
     shuffle = CommandArgument('--shuffle', action='store_true',
         help='Shuffle execution order.')
     func = shuffle(func)
@@ -457,10 +476,6 @@ def MochitestCommand(func):
         help='If running tests by chunks, the number of the chunk to run.')
     func = this_chunk(func)
 
-    hide_subtests = CommandArgument('--hide-subtests', action='store_true',
-        help='If specified, will only log subtest results on failure or timeout.')
-    func = hide_subtests(func)
-
     debug_on_failure = CommandArgument('--debug-on-failure', action='store_true',
         help='Breaks execution and enters the JS debugger on a test failure. ' \
              'Should be used together with --jsdebugger.')
@@ -506,6 +521,24 @@ def MochitestCommand(func):
         help='Do not print test log lines unless a failure occurs.')
     func = quiet(func)
 
+    setenv = CommandArgument('--setenv', default=[], action='append',
+                             metavar='NAME=VALUE', dest='environment',
+                             help="Sets the given variable in the application's environment")
+    func = setenv(func)
+
+    test_media = CommandArgument('--use-test-media-devices', default=False,
+                                 action='store_true',
+                                 dest='useTestMediaDevices',
+        help='Use test media device drivers for media testing.')
+    func = test_media(func)
+
+    app_override = CommandArgument('--app-override', default=None, action='store',
+        help="Override the default binary used to run tests with the path you provide, e.g. " \
+            " --app-override /usr/bin/firefox . " \
+            "If you have run ./mach package beforehand, you can specify 'dist' to " \
+            "run tests against the distribution bundle's binary.");
+    func = app_override(func)
+
     return func
 
 def B2GCommand(func):
@@ -537,10 +570,6 @@ def B2GCommand(func):
         help='Define size of sdcard: 1MB, 50MB...etc')
     func = sdcard(func)
 
-    emulator = CommandArgument('--emulator', default='arm',
-        help='Architecture of emulator to use: x86 or arm')
-    func = emulator(func)
-
     marionette = CommandArgument('--marionette', default=None,
         help='host:port to use when connecting to Marionette')
     func = marionette(func)
@@ -552,10 +581,6 @@ def B2GCommand(func):
     this_chunk = CommandArgument('--this-chunk', type=int,
         help='If running tests by chunks, the number of the chunk to run.')
     func = this_chunk(func)
-
-    hide_subtests = CommandArgument('--hide-subtests', action='store_true',
-        help='If specified, will only log subtest results on failure or timeout.')
-    func = hide_subtests(func)
 
     path = CommandArgument('test_paths', default=None, nargs='*',
         metavar='TEST',
@@ -590,6 +615,13 @@ class MachCommands(MachCommandBase):
     @MochitestCommand
     def run_mochitest_browser(self, test_paths, **kwargs):
         return self.run_mochitest(test_paths, 'browser', **kwargs)
+
+    @Command('mochitest-devtools', category='testing',
+        conditions=[conditions.is_firefox],
+        description='Run a devtools mochitest with browser chrome.')
+    @MochitestCommand
+    def run_mochitest_devtools(self, test_paths, **kwargs):
+        return self.run_mochitest(test_paths, 'devtools', **kwargs)
 
     @Command('mochitest-metro', category='testing',
         conditions=[conditions.is_firefox],
@@ -637,7 +669,7 @@ class MachCommands(MachCommandBase):
 # they should be modified to work with all devices.
 def is_emulator(cls):
     """Emulator needs to be configured."""
-    return cls.device_name in ('emulator', 'emulator-jb')
+    return cls.device_name.startswith('emulator')
 
 
 @CommandProvider
@@ -658,6 +690,12 @@ class B2GCommands(MachCommandBase):
     @B2GCommand
     def run_mochitest_remote(self, test_paths, **kwargs):
         from mozbuild.controller.building import BuildDriver
+
+        if self.device_name.startswith('emulator'):
+            emulator = 'arm'
+            if 'x86' in self.device_name:
+                emulator = 'x86'
+            kwargs['emulator'] = emulator
 
         self._ensure_state_subdir_exists('.')
 

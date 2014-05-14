@@ -104,7 +104,7 @@ public:
   DataTransfer(nsISupports* aParent, uint32_t aEventType, bool aIsExternal,
                int32_t aClipboardType);
 
-  virtual JSObject* WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope);
+  virtual JSObject* WrapObject(JSContext* aCx);
   nsISupports* GetParentObject()
   {
     return mParent;
@@ -218,9 +218,6 @@ public:
                  bool aIsCrossDomainSubFrameDrop, DataTransfer** aResult);
 
 protected:
-
-  // returns a weak reference to the current principal
-  nsIPrincipal* GetCurrentPrincipal(nsresult* rv);
 
   // converts some formats used for compatibility in aInFormat into aOutFormat.
   // Text and text/unicode become text/plain, and URL becomes text/uri-list

@@ -189,14 +189,14 @@ private:
   nsRefPtr<nsGenericHTMLElement> mElement;
 };
 
-NS_IMPL_CYCLE_COLLECTION_1(nsGenericHTMLElementTearoff, mElement)
+NS_IMPL_CYCLE_COLLECTION(nsGenericHTMLElementTearoff, mElement)
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(nsGenericHTMLElementTearoff)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(nsGenericHTMLElementTearoff)
 
 NS_INTERFACE_TABLE_HEAD(nsGenericHTMLElementTearoff)
-  NS_INTERFACE_TABLE_INHERITED1(nsGenericHTMLElementTearoff,
-                                nsIDOMElementCSSInlineStyle)
+  NS_INTERFACE_TABLE_INHERITED(nsGenericHTMLElementTearoff,
+                               nsIDOMElementCSSInlineStyle)
   NS_INTERFACE_TABLE_TO_MAP_SEGUE_CYCLE_COLLECTION(nsGenericHTMLElementTearoff)
 NS_INTERFACE_MAP_END_AGGREGATED(mElement)
 
@@ -1924,9 +1924,9 @@ nsGenericHTMLFormElement::~nsGenericHTMLFormElement()
   NS_ASSERTION(!mForm, "mForm should be null at this point!");
 }
 
-NS_IMPL_ISUPPORTS_INHERITED1(nsGenericHTMLFormElement,
-                             nsGenericHTMLElement,
-                             nsIFormControl)
+NS_IMPL_ISUPPORTS_INHERITED(nsGenericHTMLFormElement,
+                            nsGenericHTMLElement,
+                            nsIFormControl)
 
 mozilla::dom::ParentObject
 nsGenericHTMLFormElement::GetParentObject() const
@@ -3051,7 +3051,8 @@ nsGenericHTMLElement::GetItemValue(JSContext* aCx, JSObject* aScope,
 
   if (ItemScope()) {
     JS::Rooted<JS::Value> v(aCx);
-    if (!mozilla::dom::WrapObject(aCx, scope, this, &v)) {
+    JSAutoCompartment ac(aCx, scope);
+    if (!mozilla::dom::WrapObject(aCx, this, &v)) {
       aError.Throw(NS_ERROR_FAILURE);
       return JS::UndefinedValue();
     }
@@ -3135,80 +3136,6 @@ nsGenericHTMLElement::SetItemValueText(const nsAString& text)
 {
   mozilla::ErrorResult rv;
   SetTextContentInternal(text, rv);
-}
-
-static void
-nsDOMSettableTokenListPropertyDestructor(void *aObject, nsIAtom *aProperty,
-                                         void *aPropertyValue, void *aData)
-{
-  nsDOMSettableTokenList* list =
-    static_cast<nsDOMSettableTokenList*>(aPropertyValue);
-  NS_RELEASE(list);
-}
-
-static nsIAtom** sPropertiesToTraverseAndUnlink[] =
-  {
-    &nsGkAtoms::microdataProperties,
-    &nsGkAtoms::itemtype,
-    &nsGkAtoms::itemref,
-    &nsGkAtoms::itemprop,
-    &nsGkAtoms::sandbox,
-    nullptr
-  };
-
-// static
-nsIAtom***
-nsGenericHTMLElement::PropertiesToTraverseAndUnlink()
-{
-  return sPropertiesToTraverseAndUnlink;
-}
-
-nsDOMSettableTokenList*
-nsGenericHTMLElement::GetTokenList(nsIAtom* aAtom)
-{
-#ifdef DEBUG
-    nsIAtom*** props =
-      nsGenericHTMLElement::PropertiesToTraverseAndUnlink();
-    bool found = false;
-    for (uint32_t i = 0; props[i]; ++i) {
-      if (*props[i] == aAtom) {
-        found = true;
-        break;
-      }
-    }
-    MOZ_ASSERT(found, "Trying to use an unknown tokenlist!");
-#endif
-
-  nsDOMSettableTokenList* list = nullptr;
-  if (HasProperties()) {
-    list = static_cast<nsDOMSettableTokenList*>(GetProperty(aAtom));
-  }
-  if (!list) {
-    list = new nsDOMSettableTokenList(this, aAtom);
-    NS_ADDREF(list);
-    SetProperty(aAtom, list, nsDOMSettableTokenListPropertyDestructor);
-  }
-  return list;
-}
-
-void
-nsGenericHTMLElement::GetTokenList(nsIAtom* aAtom, nsIVariant** aResult)
-{
-  nsISupports* itemType = GetTokenList(aAtom);
-  nsCOMPtr<nsIWritableVariant> out = new nsVariant();
-  out->SetAsInterface(NS_GET_IID(nsISupports), itemType);
-  out.forget(aResult);
-}
-
-nsresult
-nsGenericHTMLElement::SetTokenList(nsIAtom* aAtom, nsIVariant* aValue)
-{
-  nsDOMSettableTokenList* itemType = GetTokenList(aAtom);
-  nsAutoString string;
-  aValue->GetAsAString(string);
-  ErrorResult rv;
-  itemType->SetValue(string, rv);
-  return rv.ErrorCode();
 }
 
 static void

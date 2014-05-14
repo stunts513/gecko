@@ -17,15 +17,12 @@
 
 #include "AudioChannelFormat.h"
 #include <mozilla/Monitor.h>
+#include "mozilla/layers/GrallocTextureClient.h"
 
 using namespace mozilla;
 using namespace mozilla::gfx;
 using namespace mozilla::layers;
 
-#define ENCODER_CONFIG_BITRATE 2000000 // bps
-// How many seconds between I-frames.
-#define ENCODER_CONFIG_I_FRAME_INTERVAL 1
-// Wait up to 5ms for input buffers.
 #define INPUT_BUFFER_TIMEOUT_US (5 * 1000ll)
 // AMR NB kbps
 #define AMRNB_BITRATE 12200
@@ -128,34 +125,28 @@ OMXCodecWrapper::Stop()
 }
 
 // Check system property to see if we're running on emulator.
-static
-bool IsRunningOnEmulator()
+static bool
+IsRunningOnEmulator()
 {
   char qemu[PROPERTY_VALUE_MAX];
   property_get("ro.kernel.qemu", qemu, "");
   return strncmp(qemu, "1", 1) == 0;
 }
 
-nsresult
-OMXVideoEncoder::Configure(int aWidth, int aHeight, int aFrameRate)
-{
-  MOZ_ASSERT(!mStarted, "Configure() was called already.");
+#define ENCODER_CONFIG_BITRATE 2000000 // bps
+// How many seconds between I-frames.
+#define ENCODER_CONFIG_I_FRAME_INTERVAL 1
+// Wait up to 5ms for input buffers.
 
+nsresult
+OMXVideoEncoder::Configure(int aWidth, int aHeight, int aFrameRate,
+                           BlobFormat aBlobFormat)
+{
   NS_ENSURE_TRUE(aWidth > 0 && aHeight > 0 && aFrameRate > 0,
                  NS_ERROR_INVALID_ARG);
 
   OMX_VIDEO_AVCLEVELTYPE level = OMX_VIDEO_AVCLevel3;
   OMX_VIDEO_CONTROLRATETYPE bitrateMode = OMX_Video_ControlRateConstant;
-  // Limitation of soft AVC/H.264 encoder running on emulator in stagefright.
-  static bool emu = IsRunningOnEmulator();
-  if (emu) {
-    if (aWidth > 352 || aHeight > 288) {
-      CODEC_ERROR("SoftAVCEncoder doesn't support resolution larger than CIF");
-      return NS_ERROR_INVALID_ARG;
-    }
-    level = OMX_VIDEO_AVCLevel2;
-    bitrateMode = OMX_Video_ControlRateVariable;
-  }
 
   // Set up configuration parameters for AVC/H.264 encoder.
   sp<AMessage> format = new AMessage;
@@ -178,12 +169,43 @@ OMXVideoEncoder::Configure(int aWidth, int aHeight, int aFrameRate)
   format->setInt32("slice-height", aHeight);
   format->setInt32("frame-rate", aFrameRate);
 
-  status_t result = mCodec->configure(format, nullptr, nullptr,
+  return ConfigureDirect(format, aBlobFormat);
+}
+
+nsresult
+OMXVideoEncoder::ConfigureDirect(sp<AMessage>& aFormat,
+                                 BlobFormat aBlobFormat)
+{
+  MOZ_ASSERT(!mStarted, "Configure() was called already.");
+
+  int width = 0;
+  int height = 0;
+  int frameRate = 0;
+  aFormat->findInt32("width", &width);
+  aFormat->findInt32("height", &height);
+  aFormat->findInt32("frame-rate", &frameRate);
+  NS_ENSURE_TRUE(width > 0 && height > 0 && frameRate > 0,
+                 NS_ERROR_INVALID_ARG);
+
+  // Limitation of soft AVC/H.264 encoder running on emulator in stagefright.
+  static bool emu = IsRunningOnEmulator();
+  if (emu) {
+    if (width > 352 || height > 288) {
+      CODEC_ERROR("SoftAVCEncoder doesn't support resolution larger than CIF");
+      return NS_ERROR_INVALID_ARG;
+    }
+    aFormat->setInt32("level", OMX_VIDEO_AVCLevel2);
+    aFormat->setInt32("bitrate-mode", OMX_Video_ControlRateVariable);
+  }
+
+
+  status_t result = mCodec->configure(aFormat, nullptr, nullptr,
                                       MediaCodec::CONFIGURE_FLAG_ENCODE);
   NS_ENSURE_TRUE(result == OK, NS_ERROR_FAILURE);
 
-  mWidth = aWidth;
-  mHeight = aHeight;
+  mWidth = width;
+  mHeight = height;
+  mBlobFormat = aBlobFormat;
 
   result = Start();
 
@@ -199,8 +221,7 @@ OMXVideoEncoder::Configure(int aWidth, int aHeight, int aFrameRate)
 // interpolation.
 // aSource contains info about source image data, and the result will be stored
 // in aDestination, whose size needs to be >= Y plane size * 3 / 2.
-static
-void
+static void
 ConvertPlanarYCbCrToNV12(const PlanarYCbCrData* aSource, uint8_t* aDestination)
 {
   // Fill Y plane.
@@ -251,14 +272,11 @@ ConvertPlanarYCbCrToNV12(const PlanarYCbCrData* aSource, uint8_t* aDestination)
 // conversion. Currently only 2 source format are supported:
 // - NV21/HAL_PIXEL_FORMAT_YCrCb_420_SP (from camera preview window).
 // - YV12/HAL_PIXEL_FORMAT_YV12 (from video decoder).
-static
-void
+static void
 ConvertGrallocImageToNV12(GrallocImage* aSource, uint8_t* aDestination)
 {
   // Get graphic buffer.
-  SurfaceDescriptor handle = aSource->GetSurfaceDescriptor();
-  SurfaceDescriptorGralloc gralloc = handle.get_SurfaceDescriptorGralloc();
-  sp<GraphicBuffer> graphicBuffer = GrallocBufferActor::GetFrom(gralloc);
+  sp<GraphicBuffer> graphicBuffer = aSource->GetGraphicBuffer();
 
   int pixelFormat = graphicBuffer->getPixelFormat();
   // Only support NV21 (from camera) or YV12 (from HW decoder output) for now.
@@ -374,26 +392,63 @@ status_t
 OMXVideoEncoder::AppendDecoderConfig(nsTArray<uint8_t>* aOutputBuf,
                                      ABuffer* aData)
 {
-  // AVC/H.264 decoder config descriptor is needed to construct MP4 'avcC' box
-  // (defined in ISO/IEC 14496-15 5.2.4.1.1).
-  return GenerateAVCDescriptorBlob(aData, aOutputBuf);
+  // Codec already parsed aData. Using its result makes generating config blob
+  // much easier.
+  sp<AMessage> format;
+  mCodec->getOutputFormat(&format);
+
+  // NAL unit format is needed by WebRTC for RTP packets; AVC/H.264 decoder
+  // config descriptor is needed to construct MP4 'avcC' box.
+  status_t result = GenerateAVCDescriptorBlob(format, aOutputBuf, mBlobFormat);
+  mHasConfigBlob = (result == OK);
+
+  return result;
 }
 
 // Override to replace NAL unit start code with 4-bytes unit length.
 // See ISO/IEC 14496-15 5.2.3.
-void OMXVideoEncoder::AppendFrame(nsTArray<uint8_t>* aOutputBuf,
-                                  const uint8_t* aData, size_t aSize)
+void
+OMXVideoEncoder::AppendFrame(nsTArray<uint8_t>* aOutputBuf,
+                             const uint8_t* aData, size_t aSize)
 {
+  aOutputBuf->SetCapacity(aSize);
+
+  if (mBlobFormat == BlobFormat::AVC_NAL) {
+    // Append NAL format data without modification.
+    aOutputBuf->AppendElements(aData, aSize);
+    return;
+  }
+  // Replace start code with data length.
   uint8_t length[] = {
     (aSize >> 24) & 0xFF,
     (aSize >> 16) & 0xFF,
     (aSize >> 8) & 0xFF,
     aSize & 0xFF,
   };
-  aOutputBuf->SetCapacity(aSize);
   aOutputBuf->AppendElements(length, sizeof(length));
   aOutputBuf->AppendElements(aData + sizeof(length), aSize);
 }
+
+nsresult
+OMXVideoEncoder::GetCodecConfig(nsTArray<uint8_t>* aOutputBuf)
+{
+  MOZ_ASSERT(mHasConfigBlob, "Haven't received codec config yet.");
+
+  return AppendDecoderConfig(aOutputBuf, nullptr) == OK ? NS_OK : NS_ERROR_FAILURE;
+}
+
+// MediaCodec::setParameters() is available only after API level 18.
+#if ANDROID_VERSION >= 18
+nsresult
+OMXVideoEncoder::SetBitrate(int32_t aKbps)
+{
+  sp<AMessage> msg = new AMessage();
+  msg->setInt32("videoBitrate", aKbps * 1000 /* kbps -> bps */);
+  status_t result = mCodec->setParameters(msg);
+  MOZ_ASSERT(result == OK);
+  return result == OK ? NS_OK : NS_ERROR_FAILURE;
+}
+#endif
 
 nsresult
 OMXAudioEncoder::Configure(int aChannels, int aInputSampleRate,

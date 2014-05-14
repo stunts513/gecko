@@ -13,7 +13,6 @@ import time
 import traceback
 
 from automation import Automation
-from devicemanager import NetworkTools
 from mozprocess import ProcessHandlerMixin
 
 
@@ -128,10 +127,6 @@ class B2GRemoteAutomation(Automation):
         cmd, args = Automation.buildCommandLine(self, app, debuggerInfo, profileDir, testURL, extraArgs)
 
         return app, args
-
-    def getLanIp(self):
-        nettools = NetworkTools()
-        return nettools.getLanIp()
 
     def waitForFinish(self, proc, utilityPath, timeout, maxTime, startTime,
                       debuggerInfo, symbolsPath):
@@ -254,17 +249,6 @@ class B2GRemoteAutomation(Automation):
         session = self.marionette.start_session()
         if 'b2g' not in session:
             raise Exception("bad session value %s returned by start_session" % session)
-
-        if self._is_emulator:
-            # Disable offline status management (bug 777145), otherwise the network
-            # will be 'offline' when the mochitests start.  Presumably, the network
-            # won't be offline on a real device, so we only do this for emulators.
-            self.marionette.set_context(self.marionette.CONTEXT_CHROME)
-            self.marionette.execute_script("""
-                Components.utils.import("resource://gre/modules/Services.jsm");
-                Services.io.manageOfflineStatus = false;
-                Services.io.offline = false;
-                """)
 
         if self.context_chrome:
             self.marionette.set_context(self.marionette.CONTEXT_CHROME)

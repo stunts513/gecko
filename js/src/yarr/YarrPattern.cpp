@@ -187,7 +187,7 @@ public:
 
     CharacterClass* charClass()
     {
-        CharacterClass* characterClass = js_new<CharacterClass>();
+        CharacterClass* characterClass = newOrCrash<CharacterClass>();
 
         characterClass->m_matches.swap(m_matches);
         characterClass->m_ranges.swap(m_ranges);
@@ -285,7 +285,7 @@ public:
         , m_characterClassConstructor(pattern.m_ignoreCase)
         , m_invertParentheticalAssertion(false)
     {
-        m_pattern.m_body = js_new<PatternDisjunction>();
+        m_pattern.m_body = newOrCrash<PatternDisjunction>();
         m_alternative = m_pattern.m_body->addNewAlternative();
         m_pattern.m_disjunctions.append(m_pattern.m_body);
     }
@@ -299,7 +299,7 @@ public:
         m_pattern.reset();
         m_characterClassConstructor.reset();
 
-        m_pattern.m_body = js_new<PatternDisjunction>();
+        m_pattern.m_body = newOrCrash<PatternDisjunction>();
         m_alternative = m_pattern.m_body->addNewAlternative();
         m_pattern.m_disjunctions.append(m_pattern.m_body);
     }
@@ -411,7 +411,7 @@ public:
         if (capture)
             m_pattern.m_numSubpatterns++;
 
-        PatternDisjunction* parenthesesDisjunction = js_new<PatternDisjunction>(m_alternative);
+        PatternDisjunction* parenthesesDisjunction = newOrCrash<PatternDisjunction>(m_alternative);
         m_pattern.m_disjunctions.append(parenthesesDisjunction);
         m_alternative->m_terms.append(PatternTerm(PatternTerm::TypeParenthesesSubpattern, subpatternId, parenthesesDisjunction, capture, false));
         m_alternative = parenthesesDisjunction->addNewAlternative();
@@ -419,7 +419,7 @@ public:
 
     void atomParentheticalAssertionBegin(bool invert = false)
     {
-        PatternDisjunction* parenthesesDisjunction = js_new<PatternDisjunction>(m_alternative);
+        PatternDisjunction* parenthesesDisjunction = newOrCrash<PatternDisjunction>(m_alternative);
         m_pattern.m_disjunctions.append(parenthesesDisjunction);
         m_alternative->m_terms.append(PatternTerm(PatternTerm::TypeParentheticalAssertion, m_pattern.m_numSubpatterns + 1, parenthesesDisjunction, false, invert));
         m_alternative = parenthesesDisjunction->addNewAlternative();
@@ -493,7 +493,7 @@ public:
             PatternAlternative* alternative = disjunction->m_alternatives[alt];
             if (!filterStartsWithBOL || !alternative->m_startsWithBOL) {
                 if (!newDisjunction) {
-                    newDisjunction = js_new<PatternDisjunction>();
+                    newDisjunction = newOrCrash<PatternDisjunction>();
                     newDisjunction->m_parent = disjunction->m_parent;
                 }
                 PatternAlternative* newAlternative = newDisjunction->addNewAlternative();
@@ -592,11 +592,13 @@ public:
             case PatternTerm::TypeAssertionBOL:
             case PatternTerm::TypeAssertionEOL:
             case PatternTerm::TypeAssertionWordBoundary:
-                term.inputPosition = currentInputPosition.unsafeGet();
+                if (Checked<int>(currentInputPosition).safeGet(term.inputPosition))
+                    return RuntimeError;
                 break;
 
             case PatternTerm::TypeBackReference:
-                term.inputPosition = currentInputPosition.unsafeGet();
+                if (Checked<int>(currentInputPosition).safeGet(term.inputPosition))
+                    return RuntimeError;
                 term.frameLocation = currentCallFrameSize;
                 currentCallFrameSize += YarrStackSpaceForBackTrackInfoBackReference;
                 alternative->m_hasFixedSize = false;
@@ -606,7 +608,8 @@ public:
                 break;
 
             case PatternTerm::TypePatternCharacter:
-                term.inputPosition = currentInputPosition.unsafeGet();
+                if (Checked<int>(currentInputPosition).safeGet(term.inputPosition))
+                    return RuntimeError;
                 if (term.quantityType != QuantifierFixedCount) {
                     term.frameLocation = currentCallFrameSize;
                     currentCallFrameSize += YarrStackSpaceForBackTrackInfoPatternCharacter;
@@ -616,7 +619,8 @@ public:
                 break;
 
             case PatternTerm::TypeCharacterClass:
-                term.inputPosition = currentInputPosition.unsafeGet();
+                if (Checked<int>(currentInputPosition).safeGet(term.inputPosition))
+                    return RuntimeError;
                 if (term.quantityType != QuantifierFixedCount) {
                     term.frameLocation = currentCallFrameSize;
                     currentCallFrameSize += YarrStackSpaceForBackTrackInfoCharacterClass;
@@ -628,24 +632,30 @@ public:
             case PatternTerm::TypeParenthesesSubpattern:
                 // Note: for fixed once parentheses we will ensure at least the minimum is available; others are on their own.
                 term.frameLocation = currentCallFrameSize;
+                unsigned position;
+                if (currentInputPosition.safeGet(position))
+                    return RuntimeError;
                 if (term.quantityCount == 1 && !term.parentheses.isCopy) {
                     if (term.quantityType != QuantifierFixedCount)
                         currentCallFrameSize += YarrStackSpaceForBackTrackInfoParenthesesOnce;
-                    if (ErrorCode error = setupDisjunctionOffsets(term.parentheses.disjunction, currentCallFrameSize, currentInputPosition.unsafeGet(), &currentCallFrameSize))
+                    if (ErrorCode error = setupDisjunctionOffsets(term.parentheses.disjunction, currentCallFrameSize, position, &currentCallFrameSize))
                         return error;
                     // If quantity is fixed, then pre-check its minimum size.
                     if (term.quantityType == QuantifierFixedCount)
                         currentInputPosition += term.parentheses.disjunction->m_minimumSize;
-                    term.inputPosition = currentInputPosition.unsafeGet();
+                    if (Checked<int>(currentInputPosition).safeGet(term.inputPosition))
+                        return RuntimeError;
                 } else if (term.parentheses.isTerminal) {
                     currentCallFrameSize += YarrStackSpaceForBackTrackInfoParenthesesTerminal;
-                    if (ErrorCode error = setupDisjunctionOffsets(term.parentheses.disjunction, currentCallFrameSize, currentInputPosition.unsafeGet(), &currentCallFrameSize))
+                    if (ErrorCode error = setupDisjunctionOffsets(term.parentheses.disjunction, currentCallFrameSize, position, &currentCallFrameSize))
                         return error;
-                    term.inputPosition = currentInputPosition.unsafeGet();
+                    if (Checked<int>(currentInputPosition).safeGet(term.inputPosition))
+                        return RuntimeError;
                 } else {
-                    term.inputPosition = currentInputPosition.unsafeGet();
+                    if (Checked<int>(currentInputPosition).safeGet(term.inputPosition))
+                        return RuntimeError;
                     unsigned dummy;
-                    if (ErrorCode error = setupDisjunctionOffsets(term.parentheses.disjunction, BASE_FRAME_SIZE, currentInputPosition.unsafeGet(), &dummy))
+                    if (ErrorCode error = setupDisjunctionOffsets(term.parentheses.disjunction, BASE_FRAME_SIZE, position, &dummy))
                         return error;
                     currentCallFrameSize += YarrStackSpaceForBackTrackInfoParentheses;
                 }
@@ -654,9 +664,10 @@ public:
                 break;
 
             case PatternTerm::TypeParentheticalAssertion:
-                term.inputPosition = currentInputPosition.unsafeGet();
+                if (Checked<int>(currentInputPosition).safeGet(term.inputPosition))
+                    return RuntimeError;
                 term.frameLocation = currentCallFrameSize;
-                if (ErrorCode error = setupDisjunctionOffsets(term.parentheses.disjunction, currentCallFrameSize + YarrStackSpaceForBackTrackInfoParentheticalAssertion, currentInputPosition.unsafeGet(), &currentCallFrameSize))
+                if (ErrorCode error = setupDisjunctionOffsets(term.parentheses.disjunction, currentCallFrameSize + YarrStackSpaceForBackTrackInfoParentheticalAssertion, term.inputPosition, &currentCallFrameSize))
                     return error;
                 break;
 
@@ -667,7 +678,8 @@ public:
             }
         }
 
-        alternative->m_minimumSize = (currentInputPosition - initialInputPosition).unsafeGet();
+        if ((currentInputPosition - initialInputPosition).safeGet(alternative->m_minimumSize))
+            return RuntimeError;
         *callFrameSizeOut = currentCallFrameSize;
         return NoError;
     }

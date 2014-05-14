@@ -9,9 +9,10 @@
 const TAB_URL = EXAMPLE_URL + "doc_breakpoints-break-on-last-line-of-script-on-reload.html";
 const CODE_URL = EXAMPLE_URL + "code_breakpoints-break-on-last-line-of-script-on-reload.js";
 
-const { promiseInvoke } = require("devtools/async-utils");
-
 function test() {
+  // Debug test slaves are a bit slow at this test.
+  requestLongerTimeout(2);
+
   let gPanel, gDebugger, gThreadClient, gEvents;
 
   initDebugger(TAB_URL).then(([aTab, aDebuggee, aPanel]) => {
@@ -59,15 +60,15 @@ function test() {
 
         // And we should hit the breakpoints as we resume.
         yield promise.all([
-          doResume(),
+          doResume(gPanel),
           waitForCaretAndScopes(gPanel, 3)
         ]);
         yield promise.all([
-          doResume(),
+          doResume(gPanel),
           waitForCaretAndScopes(gPanel, 4)
         ]);
         yield promise.all([
-          doResume(),
+          doResume(gPanel),
           waitForCaretAndScopes(gPanel, 5)
         ]);
 
@@ -89,23 +90,6 @@ function test() {
       }
     });
   });
-
-  function rdpInvoke(obj, method) {
-    return promiseInvoke(obj, method)
-      .then(({error, message }) => {
-        if (error) {
-          throw new Error(error + ": " + message);
-        }
-      });
-  }
-
-  function doResume() {
-    return rdpInvoke(gThreadClient, gThreadClient.resume);
-  }
-
-  function doInterrupt() {
-    return rdpInvoke(gThreadClient, gThreadClient.interrupt);
-  }
 
   function setBreakpoint(location) {
     let deferred = promise.defer();

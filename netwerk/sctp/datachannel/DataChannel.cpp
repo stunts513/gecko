@@ -143,7 +143,7 @@ public:
   }
 };
 
-NS_IMPL_ISUPPORTS1(DataChannelShutdown, nsIObserver);
+NS_IMPL_ISUPPORTS(DataChannelShutdown, nsIObserver);
 
 
 BufferedMsg::BufferedMsg(struct sctp_sendv_spa &spa, const char *data,
@@ -292,8 +292,8 @@ void DataChannelConnection::DestroyOnSTS(struct socket *aMasterSocket,
   disconnect_all();
 }
 
-NS_IMPL_ISUPPORTS1(DataChannelConnection,
-                   nsITimerCallback)
+NS_IMPL_ISUPPORTS(DataChannelConnection,
+                  nsITimerCallback)
 
 bool
 DataChannelConnection::Init(unsigned short aPort, uint16_t aNumStreams, bool aUsingDtls)
@@ -715,7 +715,9 @@ DataChannelConnection::SctpDtlsOutput(void *addr, void *buffer, size_t length,
   } else {
     unsigned char *data = new unsigned char[length];
     memcpy(data, buffer, length);
-    res = -1;
+    // Commented out since we have to Dispatch SendPacket to avoid deadlock"
+    // res = -1;
+
     // XXX It might be worthwhile to add an assertion against the thread
     // somehow getting into the DataChannel/SCTP code again, as
     // DISPATCH_SYNC is not fully blocking.  This may be tricky, as it

@@ -1,4 +1,5 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -305,9 +306,9 @@ typedef MozRefCountType nsrefcnt;
  * Use these macros to do 64bit safe pointer conversions.
  */
 
-#define NS_PTR_TO_INT32(x)  ((int32_t)  (intptr_t) (x))
-#define NS_PTR_TO_UINT32(x) ((uint32_t) (intptr_t) (x))
-#define NS_INT32_TO_PTR(x)  ((void *)   (intptr_t) (x))
+#define NS_PTR_TO_INT32(x) ((int32_t)(intptr_t)(x))
+#define NS_PTR_TO_UINT32(x) ((uint32_t)(intptr_t)(x))
+#define NS_INT32_TO_PTR(x) ((void*)(intptr_t)(x))
 
 /*
  * Use NS_STRINGIFY to form a string literal from the value of a macro.
@@ -315,11 +316,11 @@ typedef MozRefCountType nsrefcnt;
 #define NS_STRINGIFY_HELPER(x_) #x_
 #define NS_STRINGIFY(x_) NS_STRINGIFY_HELPER(x_)
 
- /*
-  * If we're being linked as standalone glue, we don't want a dynamic
-  * dependency on NSPR libs, so we skip the debug thread-safety
-  * checks, and we cannot use the THREADSAFE_ISUPPORTS macros.
-  */
+/*
+ * If we're being linked as standalone glue, we don't want a dynamic
+ * dependency on NSPR libs, so we skip the debug thread-safety
+ * checks, and we cannot use the THREADSAFE_ISUPPORTS macros.
+ */
 #if defined(XPCOM_GLUE) && !defined(XPCOM_GLUE_USE_NSPR)
 #define XPCOM_GLUE_AVOID_NSPR
 #endif

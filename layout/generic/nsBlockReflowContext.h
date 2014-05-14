@@ -12,7 +12,6 @@
 #include "nsIFrame.h"
 #include "nsHTMLReflowMetrics.h"
 
-class nsBlockFrame;
 class nsBlockReflowState;
 struct nsHTMLReflowState;
 class nsLineBox;
@@ -29,23 +28,23 @@ public:
                        const nsHTMLReflowState& aParentRS);
   ~nsBlockReflowContext() { }
 
-  nsresult ReflowBlock(const nsRect&       aSpace,
-                       bool                aApplyTopMargin,
-                       nsCollapsingMargin& aPrevMargin,
-                       nscoord             aClearance,
-                       bool                aIsAdjacentWithTop,
-                       nsLineBox*          aLine,
-                       nsHTMLReflowState&  aReflowState,
-                       nsReflowStatus&     aReflowStatus,
-                       nsBlockReflowState& aState);
+  void ReflowBlock(const nsRect&       aSpace,
+                   bool                aApplyTopMargin,
+                   nsCollapsingMargin& aPrevMargin,
+                   nscoord             aClearance,
+                   bool                aIsAdjacentWithTop,
+                   nsLineBox*          aLine,
+                   nsHTMLReflowState&  aReflowState,
+                   nsReflowStatus&     aReflowStatus,
+                   nsBlockReflowState& aState);
 
   bool PlaceBlock(const nsHTMLReflowState& aReflowState,
-                    bool                     aForceFit,
-                    nsLineBox*               aLine,
-                    nsCollapsingMargin&      aBottomMarginResult /* out */,
-                    nsRect&                  aInFlowBounds,
-                    nsOverflowAreas&         aOverflowAreas,
-                    nsReflowStatus           aReflowStatus);
+                  bool                     aForceFit,
+                  nsLineBox*               aLine,
+                  nsCollapsingMargin&      aBottomMarginResult /* out */,
+                  nsOverflowAreas&         aOverflowAreas,
+                  nsReflowStatus           aReflowStatus,
+                  nscoord                  aContainerWidth);
 
   nsCollapsingMargin& GetCarriedOutBottomMargin() {
     return mMetrics.mCarriedOutBottomMargin;

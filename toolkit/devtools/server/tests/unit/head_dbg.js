@@ -8,9 +8,10 @@ const Cu = Components.utils;
 const Cr = Components.results;
 
 const { devtools } = Cu.import("resource://gre/modules/devtools/Loader.jsm", {});
-const DevToolsUtils = devtools.require("devtools/toolkit/DevToolsUtils.js");
-const Services = devtools.require("Services");
 const {Promise: promise} = Cu.import("resource://gre/modules/Promise.jsm", {});
+
+const Services = devtools.require("Services");
+const DevToolsUtils = devtools.require("devtools/toolkit/DevToolsUtils.js");
 
 // Always log packets when running tests. runxpcshelltests.py will throw
 // the output away anyway, unless you give it the --verbose flag.
@@ -32,6 +33,9 @@ tryImport("resource://gre/modules/devtools/dbg-server.jsm");
 tryImport("resource://gre/modules/devtools/dbg-client.jsm");
 tryImport("resource://gre/modules/devtools/Loader.jsm");
 tryImport("resource://gre/modules/devtools/Console.jsm");
+
+let { RootActor } = devtools.require("devtools/server/actors/root");
+let { BreakpointStore, LongStringActor, ThreadActor } = devtools.require("devtools/server/actors/script");
 
 function testExceptionHook(ex) {
   try {
@@ -180,18 +184,16 @@ function attachTestTabAndResume(aClient, aTitle, aCallback) {
  */
 function initTestDebuggerServer()
 {
-  DebuggerServer.addActors("resource://gre/modules/devtools/server/actors/root.js");
-  DebuggerServer.addActors("resource://gre/modules/devtools/server/actors/script.js");
-  DebuggerServer.addActors("resource://test/testactors.js");
+  DebuggerServer.registerModule("devtools/server/actors/script");
+  DebuggerServer.registerModule("xpcshell-test/testactors");
   // Allow incoming connections.
   DebuggerServer.init(function () { return true; });
 }
 
 function initTestTracerServer()
 {
-  DebuggerServer.addActors("resource://gre/modules/devtools/server/actors/root.js");
-  DebuggerServer.addActors("resource://gre/modules/devtools/server/actors/script.js");
-  DebuggerServer.addActors("resource://test/testactors.js");
+  DebuggerServer.registerModule("devtools/server/actors/script");
+  DebuggerServer.registerModule("xpcshell-test/testactors");
   DebuggerServer.registerModule("devtools/server/actors/tracer");
   // Allow incoming connections.
   DebuggerServer.init(function () { return true; });
@@ -359,3 +361,23 @@ function executeSoon(aFunc) {
     run: DevToolsUtils.makeInfallible(aFunc)
   }, Ci.nsIThread.DISPATCH_NORMAL);
 }
+
+// Create async version of the object where calling each method
+// is equivalent of calling it with asyncall. Mainly useful for
+// destructuring objects with methods that take callbacks.
+const Async = target => new Proxy(target, Async);
+Async.get = (target, name) =>
+  typeof(target[name]) === "function" ? asyncall.bind(null, target[name], target) :
+  target[name];
+
+// Calls async function that takes callback and errorback and returns
+// returns promise representing result.
+const asyncall = (fn, self, ...args) =>
+  new Promise((...etc) => fn.call(self, ...args, ...etc));
+
+const Test = task => () => {
+  add_task(task);
+  run_next_test();
+};
+
+const assert = do_check_true;

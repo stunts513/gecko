@@ -22,6 +22,9 @@ Cu.import("resource://gre/modules/ObjectWrapper.jsm");
 XPCOMUtils.defineLazyServiceGetter(this, "cpmm",
                                    "@mozilla.org/childprocessmessagemanager;1",
                                    "nsIMessageSender");
+XPCOMUtils.defineLazyServiceGetter(this, "mrm",
+                                   "@mozilla.org/memory-reporter-manager;1",
+                                   "nsIMemoryReporterManager");
 
 function SettingsLock(aSettingsManager) {
   this._open = true;
@@ -29,6 +32,13 @@ function SettingsLock(aSettingsManager) {
   this._requests = new Queue();
   this._settingsManager = aSettingsManager;
   this._transaction = null;
+
+  let closeHelper = function() {
+    if (DEBUG) debug("closing lock");
+    this._open = false;
+  }.bind(this);
+
+  Services.tm.currentThread.dispatch(closeHelper, Ci.nsIThread.DISPATCH_NORMAL);
 }
 
 SettingsLock.prototype = {
@@ -62,11 +72,13 @@ SettingsLock.prototype = {
           break;
         case "set":
           let keys = Object.getOwnPropertyNames(info.settings);
+          if (keys.length) {
+            lock._isBusy = true;
+          }
           for (let i = 0; i < keys.length; i++) {
             let key = keys[i];
             let last = i === keys.length - 1;
             if (DEBUG) debug("key: " + key + ", val: " + JSON.stringify(info.settings[key]) + ", type: " + typeof(info.settings[key]));
-            lock._isBusy = true;
             let checkKeyRequest = store.get(key);
 
             checkKeyRequest.onsuccess = function (event) {
@@ -84,15 +96,11 @@ SettingsLock.prototype = {
               let setReq = store.put(obj);
 
               setReq.onsuccess = function() {
-                lock._isBusy = false;
                 cpmm.sendAsyncMessage("Settings:Changed", { key: key, value: userValue });
                 if (last && !request.error) {
                   lock._open = true;
                   Services.DOMRequest.fireSuccess(request, 0);
                   lock._open = false;
-                  if (!lock._requests.isEmpty()) {
-                    lock.process();
-                  }
                 }
               };
 
@@ -101,6 +109,13 @@ SettingsLock.prototype = {
                   Services.DOMRequest.fireError(request, setReq.error.name)
                 }
               };
+
+              if (last) {
+                lock._isBusy = false;
+                if (!lock._requests.isEmpty()) {
+                  lock.process();
+                }
+              }
             };
             checkKeyRequest.onerror = function(event) {
               if (!request.error) {
@@ -108,7 +123,9 @@ SettingsLock.prototype = {
               }
             };
           }
-          break;
+          // Don't break here, instead return. Once the previous requests have
+          // finished this loop will start again.
+          return;
         case "get":
           let getReq = (info.name === "*") ? store.mozGetAll()
                                            : store.mozGetAll(info.name);
@@ -145,22 +162,20 @@ SettingsLock.prototype = {
   },
 
   createTransactionAndProcess: function() {
-    if (this._settingsManager._settingsDB._db) {
-      var lock;
-      while (lock = this._settingsManager._locks.dequeue()) {
-        if (!lock._transaction) {
-          let transactionType = this._settingsManager.hasWritePrivileges ? "readwrite" : "readonly";
-          lock._transaction = lock._settingsManager._settingsDB._db.transaction(SETTINGSSTORE_NAME, transactionType);
-        }
-        if (!lock._isBusy) {
-          lock.process();
-        } else {
-          this._settingsManager._locks.enqueue(lock);
-        }
-      }
-      if (!this._requests.isEmpty() && !this._isBusy) {
-        this.process();
-      }
+    if (DEBUG) debug("database opened, creating transaction");
+
+    let manager = this._settingsManager;
+    let transactionType = manager.hasWritePrivileges ? "readwrite" : "readonly";
+
+    this._transaction =
+      manager._settingsDB._db.transaction(SETTINGSSTORE_NAME, transactionType);
+
+    this.process();
+  },
+
+  maybeProcess: function() {
+    if (this._transaction && !this._isBusy) {
+      this.process();
     }
   },
 
@@ -173,7 +188,7 @@ SettingsLock.prototype = {
     if (this._settingsManager.hasReadPrivileges) {
       let req = Services.DOMRequest.createRequest(this._settingsManager._window);
       this._requests.enqueue({ request: req, intent:"get", name: aName });
-      this.createTransactionAndProcess();
+      this.maybeProcess();
       return req;
     } else {
       if (DEBUG) debug("get not allowed");
@@ -218,7 +233,7 @@ SettingsLock.prototype = {
       if (DEBUG) debug("send: " + JSON.stringify(aSettings));
       let settings = this._serializePreservingBinaries(aSettings);
       this._requests.enqueue({request: req, intent: "set", settings: settings});
-      this.createTransactionAndProcess();
+      this.maybeProcess();
       return req;
     } else {
       if (DEBUG) debug("set not allowed");
@@ -234,7 +249,7 @@ SettingsLock.prototype = {
     if (this._settingsManager.hasWritePrivileges) {
       let req = Services.DOMRequest.createRequest(this._settingsManager._window);
       this._requests.enqueue({ request: req, intent: "clear"});
-      this.createTransactionAndProcess();
+      this.maybeProcess();
       return req;
     } else {
       if (DEBUG) debug("clear not allowed");
@@ -248,7 +263,6 @@ SettingsLock.prototype = {
 };
 
 function SettingsManager() {
-  this._locks = new Queue();
   this._settingsDB = new SettingsDB();
   this._settingsDB.init();
 }
@@ -258,13 +272,6 @@ SettingsManager.prototype = {
 
   _wrap: function _wrap(obj) {
     return Cu.cloneInto(obj, this._window);
-  },
-
-  nextTick: function nextTick(aCallback, thisObj) {
-    if (thisObj)
-      aCallback = aCallback.bind(thisObj);
-
-    Services.tm.currentThread.dispatch(aCallback, Ci.nsIThread.DISPATCH_NORMAL);
   },
 
   set onsettingchange(aHandler) {
@@ -278,12 +285,10 @@ SettingsManager.prototype = {
   createLock: function() {
     if (DEBUG) debug("get lock!");
     var lock = new SettingsLock(this);
-    this._locks.enqueue(lock);
     this._settingsDB.ensureDB(
       function() { lock.createTransactionAndProcess(); },
       function() { dump("Cannot open Settings DB. Trying to open an old version?\n"); }
     );
-    this.nextTick(function() { this._open = false; }, lock);
     return lock;
   },
 
@@ -343,6 +348,7 @@ SettingsManager.prototype = {
   },
 
   init: function(aWindow) {
+    mrm.registerStrongReporter(this);
     cpmm.addMessageListener("Settings:Change:Return:OK", this);
     this._window = aWindow;
     Services.obs.addObserver(this, "inner-window-destroyed", false);
@@ -369,20 +375,50 @@ SettingsManager.prototype = {
     if (aTopic == "inner-window-destroyed") {
       let wId = aSubject.QueryInterface(Ci.nsISupportsPRUint64).data;
       if (wId == this.innerWindowID) {
-        Services.obs.removeObserver(this, "inner-window-destroyed");
-        cpmm.removeMessageListener("Settings:Change:Return:OK", this);
-        this._requests = null;
-        this._window = null;
-        this._innerWindowID = null;
-        this._settingsDB.close();
+        this.cleanup();
       }
     }
+  },
+
+  collectReports: function(aCallback, aData) {
+    for (var topic in this._callbacks) {
+      let length = this._callbacks[topic].length;
+      if (length == 0) {
+        continue;
+      }
+
+      let path;
+      if (length < 20) {
+        path = "settings-observers";
+      } else {
+        path = "settings-observers-suspect/referent(topic=" + topic + ")";
+      }
+
+      aCallback.callback("", path,
+                         Ci.nsIMemoryReporter.KIND_OTHER,
+                         Ci.nsIMemoryReporter.UNITS_COUNT,
+                         this._callbacks[topic].length,
+                         "The number of settings observers for this topic.",
+                         aData);
+    }
+  },
+
+  cleanup: function() {
+    Services.obs.removeObserver(this, "inner-window-destroyed");
+    cpmm.removeMessageListener("Settings:Change:Return:OK", this);
+    mrm.unregisterStrongReporter(this);
+    this._requests = null;
+    this._window = null;
+    this._innerWindowID = null;
+    this._settingsDB.close();
   },
 
   classID: Components.ID("{c40b1c70-00fb-11e2-a21f-0800200c9a66}"),
   contractID: "@mozilla.org/settingsManager;1",
   QueryInterface: XPCOMUtils.generateQI([Ci.nsISupports,
-                                         Ci.nsIDOMGlobalPropertyInitializer]),
+                                         Ci.nsIDOMGlobalPropertyInitializer,
+                                         Ci.nsIObserver,
+                                         Ci.nsIMemoryReporter]),
 };
 
 this.NSGetFactory = XPCOMUtils.generateNSGetFactory([SettingsManager, SettingsLock])

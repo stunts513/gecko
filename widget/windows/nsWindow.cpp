@@ -66,6 +66,7 @@
 
 #include <shellapi.h>
 #include <windows.h>
+#include <wtsapi32.h>
 #include <process.h>
 #include <commctrl.h>
 #include <unknwn.h>
@@ -605,6 +606,14 @@ nsWindow::Create(nsIWidget *aParent,
   }
 
   SubclassWindow(TRUE);
+
+  // Starting with Windows XP, a process always runs within a terminal services
+  // session. In order to play nicely with RDP, fast user switching, and the
+  // lock screen, we should be handling WM_WTSSESSION_CHANGE. We must register
+  // our HWND in order to receive this message.
+  DebugOnly<BOOL> wtsRegistered = ::WTSRegisterSessionNotification(mWnd,
+                                                       NOTIFY_FOR_THIS_SESSION);
+  NS_ASSERTION(wtsRegistered, "WTSRegisterSessionNotification failed!\n");
 
   IMEHandler::InitInputContext(this, mInputContext);
 
@@ -2248,10 +2257,16 @@ nsWindow::SetNonClientMargins(nsIntMargin &margins)
       margins.right == -1 && margins.bottom == -1) {
     mCustomNonClient = false;
     mNonClientMargins = margins;
-    RemovePropW(mWnd, kManageWindowInfoProperty);
     // Force a reflow of content based on the new client
     // dimensions.
     ResetLayout();
+
+    int windowStatus =
+      reinterpret_cast<LONG_PTR>(GetPropW(mWnd, kManageWindowInfoProperty));
+    if (windowStatus) {
+      ::SendMessageW(mWnd, WM_NCACTIVATE, 1 != windowStatus, 0);
+    }
+
     return NS_OK;
   }
 
@@ -4563,6 +4578,21 @@ nsWindow::ProcessMessage(UINT msg, WPARAM& wParam, LPARAM& lParam,
     }
     break;
 
+    case WM_WTSSESSION_CHANGE:
+    {
+      switch (wParam) {
+        case WTS_CONSOLE_CONNECT:
+        case WTS_REMOTE_CONNECT:
+        case WTS_SESSION_UNLOCK:
+          // When a session becomes visible, we should invalidate.
+          Invalidate(true, true, true);
+          break;
+        default:
+          break;
+      }
+    }
+    break;
+
     case WM_FONTCHANGE:
     {
       // We only handle this message for the hidden window,
@@ -4671,6 +4701,7 @@ nsWindow::ProcessMessage(UINT msg, WPARAM& wParam, LPARAM& lParam,
        * WM_NCACTIVATE paints nc areas. Avoid this and re-route painting
        * through WM_NCPAINT via InvalidateNonClientRegion.
        */
+      UpdateGetWindowInfoCaptionStatus(FALSE != wParam);
 
       if (!mCustomNonClient)
         break;
@@ -4683,7 +4714,6 @@ nsWindow::ProcessMessage(UINT msg, WPARAM& wParam, LPARAM& lParam,
         // going active
         *aRetValue = FALSE; // ignored
         result = true;
-        UpdateGetWindowInfoCaptionStatus(true);
         // invalidate to trigger a paint
         InvalidateNonClientRegion();
         break;
@@ -4691,7 +4721,6 @@ nsWindow::ProcessMessage(UINT msg, WPARAM& wParam, LPARAM& lParam,
         // going inactive
         *aRetValue = TRUE; // go ahead and deactive
         result = true;
-        UpdateGetWindowInfoCaptionStatus(false);
         // invalidate to trigger a paint
         InvalidateNonClientRegion();
         break;
@@ -5205,7 +5234,6 @@ nsWindow::ProcessMessage(UINT msg, WPARAM& wParam, LPARAM& lParam,
     nsUXThemeData::CheckForCompositor(true);
 
     UpdateNonClientMargins();
-    RemovePropW(mWnd, kManageWindowInfoProperty);
     BroadcastMsg(mWnd, WM_DWMCOMPOSITIONCHANGED);
     NotifyThemeChanged();
     UpdateGlass();
@@ -6397,6 +6425,9 @@ void nsWindow::OnDestroy()
   mWidgetListener = nullptr;
   mAttachedWidgetListener = nullptr;
 
+  // Unregister notifications from terminal services
+  ::WTSUnRegisterSessionNotification(mWnd);
+
   // Free our subclass and clear |this| stored in the window props. We will no longer
   // receive events from Windows after this point.
   SubclassWindow(FALSE);
@@ -7288,6 +7319,13 @@ nsWindow::DealWithPopups(HWND aWnd, UINT aMessage,
           if (deactiveWindow && deactiveWindow->IsPopup()) {
             return false;
           }
+        }
+      } else if (LOWORD(aWParam) == WA_CLICKACTIVE) {
+        // If the WM_ACTIVATE message is caused by a click in a popup,
+        // we should not rollup any popups.
+        if (EventIsInsideWindow(popupWindow) ||
+            !GetPopupsToRollup(rollupListener, &popupsToRollup)) {
+          return false;
         }
       }
       break;

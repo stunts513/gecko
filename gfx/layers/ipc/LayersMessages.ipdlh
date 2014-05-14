@@ -8,7 +8,6 @@
 include LayersSurfaces;
 include protocol PCompositable;
 include protocol PCompositor;
-include protocol PGrallocBuffer;
 include protocol PLayer;
 include protocol PRenderFrame;
 include protocol PTexture;
@@ -39,7 +38,9 @@ using mozilla::layers::ScaleMode from "mozilla/layers/LayersTypes.h";
 using mozilla::layers::EventRegions from "mozilla/layers/LayersTypes.h";
 using mozilla::layers::DiagnosticTypes from "mozilla/layers/CompositorTypes.h";
 using struct mozilla::layers::FrameMetrics from "FrameMetrics.h";
+using mozilla::layers::FrameMetrics::ViewID from "FrameMetrics.h";
 using struct mozilla::layers::FenceHandle from "mozilla/layers/FenceUtils.h";
+using mozilla::layers::TextureIdentifier from "mozilla/layers/CompositorTypes.h";
 
 namespace mozilla {
 namespace layers {
@@ -205,6 +206,8 @@ struct CommonLayerAttributes {
   LayerRect stickyScrollRangeInner;
   uint64_t scrollbarTargetContainerId;
   uint32_t scrollbarDirection;
+  int8_t mixBlendMode;
+  bool forceIsolatedGroup;
   nullable PLayer maskLayer;
   // Animated colors will only honored for ColorLayers.
   Animation[] animations;
@@ -216,6 +219,7 @@ struct ThebesLayerAttributes {
 };
 struct ContainerLayerAttributes {
   FrameMetrics metrics;
+  ViewID scrollParentId;
   float preXScale;
   float preYScale;
   float inheritedXScale;
@@ -309,7 +313,7 @@ struct OpPaintTextureRegion {
 
 struct OpPaintTextureIncremental {
   PCompositable compositable;
-  uint32_t textureId;
+  TextureIdentifier textureId;
   SurfaceDescriptor image;
   nsIntRegion updatedRegion;
   nsIntRect bufferRect;
@@ -325,6 +329,18 @@ struct OpUpdatePictureRect {
  * Tells the CompositableHost to remove the corresponding TextureHost
  */
 struct OpRemoveTexture {
+  PCompositable compositable;
+  PTexture texture;
+};
+
+struct OpRemoveTextureAsync {
+  uint64_t transactionId;
+  PCompositable compositable;
+  PTexture texture;
+};
+
+struct OpReplyRemoveTexture {
+  uint64_t transactionId;
   PCompositable compositable;
   PTexture texture;
 };
@@ -355,6 +371,16 @@ struct OpUpdateTexture {
   MaybeRegion region;
 };
 
+struct OpDeliverFence {
+  uint64_t transactionId;
+  PTexture texture;
+  FenceHandle fence;
+};
+
+struct OpReplyDeliverFence {
+  uint64_t transactionId;
+};
+
 union CompositableOperation {
   OpUpdatePictureRect;
 
@@ -366,6 +392,7 @@ union CompositableOperation {
   OpUseTiledLayerBuffer;
 
   OpRemoveTexture;
+  OpRemoveTextureAsync;
 
   OpUpdateTexture;
   OpUseTexture;
@@ -407,7 +434,7 @@ struct OpContentBufferSwap {
 
 struct OpTextureSwap {
   PCompositable compositable;
-  uint32_t textureId;
+  TextureIdentifier textureId;
   SurfaceDescriptor image;
 };
 
@@ -424,6 +451,15 @@ union EditReply {
   OpTextureSwap;
 
   ReturnReleaseFence;
+};
+
+union AsyncParentMessageData {
+  OpDeliverFence;
+  OpReplyRemoveTexture;
+};
+
+union AsyncChildMessageData {
+  OpReplyDeliverFence;
 };
 
 } // namespace

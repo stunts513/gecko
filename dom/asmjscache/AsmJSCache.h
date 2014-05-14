@@ -109,8 +109,7 @@ OpenEntryForRead(nsIPrincipal* aPrincipal,
                  const uint8_t** aMemory,
                  intptr_t *aHandle);
 void
-CloseEntryForRead(JS::Handle<JSObject*> aGlobal,
-                  size_t aSize,
+CloseEntryForRead(size_t aSize,
                   const uint8_t* aMemory,
                   intptr_t aHandle);
 bool
@@ -122,8 +121,7 @@ OpenEntryForWrite(nsIPrincipal* aPrincipal,
                   uint8_t** aMemory,
                   intptr_t* aHandle);
 void
-CloseEntryForWrite(JS::Handle<JSObject*> aGlobal,
-                   size_t aSize,
+CloseEntryForWrite(size_t aSize,
                    uint8_t* aMemory,
                    intptr_t aHandle);
 
@@ -157,9 +155,9 @@ namespace IPC {
 
 template <>
 struct ParamTraits<mozilla::dom::asmjscache::OpenMode> :
-  public EnumSerializer<mozilla::dom::asmjscache::OpenMode,
-                        mozilla::dom::asmjscache::eOpenForRead,
-                        mozilla::dom::asmjscache::NUM_OPEN_MODES>
+  public ContiguousEnumSerializer<mozilla::dom::asmjscache::OpenMode,
+                                  mozilla::dom::asmjscache::eOpenForRead,
+                                  mozilla::dom::asmjscache::NUM_OPEN_MODES>
 { };
 
 template <>

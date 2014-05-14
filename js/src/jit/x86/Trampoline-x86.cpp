@@ -9,7 +9,6 @@
 #include "assembler/assembler/MacroAssembler.h"
 #include "jit/Bailouts.h"
 #include "jit/BaselineJIT.h"
-#include "jit/ExecutionModeInlines.h"
 #include "jit/IonFrames.h"
 #include "jit/IonLinker.h"
 #include "jit/IonSpewer.h"
@@ -21,6 +20,8 @@
 #include "jit/x86/BaselineHelpers-x86.h"
 
 #include "jsscriptinlines.h"
+
+#include "jit/ExecutionMode-inl.h"
 
 using namespace js;
 using namespace js::jit;
@@ -200,9 +201,10 @@ JitRuntime::generateEnterJIT(JSContext *cx, EnterJitType type)
         // Enter exit frame.
         masm.addPtr(Imm32(BaselineFrame::Size() + BaselineFrame::FramePointerOffset), scratch);
         masm.makeFrameDescriptor(scratch, JitFrame_BaselineJS);
-        masm.push(scratch);
-        masm.push(Imm32(0)); // Fake return address.
-        masm.enterFakeExitFrame();
+        masm.push(scratch); // Fake return address.
+        masm.push(Imm32(0));
+        // No GC things to mark on the stack, push a bare token.
+        masm.enterFakeExitFrame(IonExitFrameLayout::BareToken());
 
         masm.push(framePtr);
         masm.push(jitcode);

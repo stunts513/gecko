@@ -797,7 +797,7 @@ nsImageFrame::GetIntrinsicRatio()
   return mIntrinsicRatio;
 }
 
-nsresult
+void
 nsImageFrame::Reflow(nsPresContext*          aPresContext,
                      nsHTMLReflowMetrics&     aMetrics,
                      const nsHTMLReflowState& aReflowState,
@@ -900,7 +900,6 @@ nsImageFrame::Reflow(nsPresContext*          aPresContext,
                   ("exit nsImageFrame::Reflow: size=%d,%d",
                   aMetrics.Width(), aMetrics.Height()));
   NS_FRAME_SET_TRUNCATION(aStatus, aReflowState, aMetrics);
-  return NS_OK;
 }
 
 bool
@@ -1157,7 +1156,7 @@ nsImageFrame::DisplayAltFeedback(nsRenderingContext& aRenderingContext,
     }
 
 
-    // If the image in question is loaded and decoded, draw it
+    // If the icon in question is loaded and decoded, draw it
     uint32_t imageStatus = 0;
     if (aRequest)
       aRequest->GetImageStatus(&imageStatus);
@@ -1782,6 +1781,10 @@ nsImageFrame::List(FILE* out, const char* aPrefix, uint32_t aFlags) const
 int
 nsImageFrame::GetLogicalSkipSides(const nsHTMLReflowState* aReflowState) const
 {
+  if (MOZ_UNLIKELY(StyleBorder()->mBoxDecorationBreak ==
+                     NS_STYLE_BOX_DECORATION_BREAK_CLONE)) {
+    return 0;
+  }
   int skip = 0;
   if (nullptr != GetPrevInFlow()) {
     skip |= LOGICAL_SIDE_B_START;
@@ -1842,6 +1845,7 @@ nsImageFrame::LoadIcon(const nsAString& aSpec,
                        loadFlags,
                        nullptr,
                        nullptr,      /* channel policy not needed */
+                       EmptyString(),
                        aRequest);
 }
 
@@ -1915,8 +1919,8 @@ nsresult nsImageFrame::LoadIcons(nsPresContext *aPresContext)
   return rv;
 }
 
-NS_IMPL_ISUPPORTS2(nsImageFrame::IconLoad, nsIObserver,
-                   imgINotificationObserver)
+NS_IMPL_ISUPPORTS(nsImageFrame::IconLoad, nsIObserver,
+                  imgINotificationObserver)
 
 static const char* kIconLoadPrefs[] = {
   "browser.display.force_inline_alttext",
@@ -1991,7 +1995,7 @@ nsImageFrame::IconLoad::Notify(imgIRequest *aRequest, int32_t aType, const nsInt
   return NS_OK;
 }
 
-NS_IMPL_ISUPPORTS1(nsImageListener, imgINotificationObserver)
+NS_IMPL_ISUPPORTS(nsImageListener, imgINotificationObserver)
 
 nsImageListener::nsImageListener(nsImageFrame *aFrame) :
   mFrame(aFrame)

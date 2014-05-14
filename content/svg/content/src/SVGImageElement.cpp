@@ -24,9 +24,9 @@ namespace mozilla {
 namespace dom {
 
 JSObject*
-SVGImageElement::WrapNode(JSContext *aCx, JS::Handle<JSObject*> aScope)
+SVGImageElement::WrapNode(JSContext *aCx)
 {
-  return SVGImageElementBinding::Wrap(aCx, aScope, this);
+  return SVGImageElementBinding::Wrap(aCx, this);
 }
 
 nsSVGElement::LengthInfo SVGImageElement::sLengthInfo[4] =
@@ -45,11 +45,11 @@ nsSVGElement::StringInfo SVGImageElement::sStringInfo[1] =
 //----------------------------------------------------------------------
 // nsISupports methods
 
-NS_IMPL_ISUPPORTS_INHERITED6(SVGImageElement, SVGImageElementBase,
-                             nsIDOMNode, nsIDOMElement,
-                             nsIDOMSVGElement,
-                             imgINotificationObserver,
-                             nsIImageLoadingContent, imgIOnloadBlocker)
+NS_IMPL_ISUPPORTS_INHERITED(SVGImageElement, SVGImageElementBase,
+                            nsIDOMNode, nsIDOMElement,
+                            nsIDOMSVGElement,
+                            imgINotificationObserver,
+                            nsIImageLoadingContent, imgIOnloadBlocker)
 
 //----------------------------------------------------------------------
 // Implementation

@@ -75,55 +75,100 @@ public:
       NS_ENSURE_SUCCESS(rv, rv);                                              \
     } while (0)
 
-    REPORT("explicit/images/chrome/used/raw",
+    REPORT("explicit/images/chrome/raster/used/raw",
            KIND_HEAP, chrome.mUsedRaw,
            "Memory used by in-use chrome images (compressed data).");
 
-    REPORT("explicit/images/chrome/used/uncompressed-heap",
+    REPORT("explicit/images/chrome/raster/used/uncompressed-heap",
            KIND_HEAP, chrome.mUsedUncompressedHeap,
            "Memory used by in-use chrome images (uncompressed data).");
 
-    REPORT("explicit/images/chrome/used/uncompressed-nonheap",
+    REPORT("explicit/images/chrome/raster/used/uncompressed-nonheap",
            KIND_NONHEAP, chrome.mUsedUncompressedNonheap,
            "Memory used by in-use chrome images (uncompressed data).");
 
-    REPORT("explicit/images/chrome/unused/raw",
+    REPORT("explicit/images/chrome/raster/unused/raw",
            KIND_HEAP, chrome.mUnusedRaw,
            "Memory used by not in-use chrome images (compressed data).");
 
-    REPORT("explicit/images/chrome/unused/uncompressed-heap",
+    REPORT("explicit/images/chrome/raster/unused/uncompressed-heap",
            KIND_HEAP, chrome.mUnusedUncompressedHeap,
            "Memory used by not in-use chrome images (uncompressed data).");
 
-    REPORT("explicit/images/chrome/unused/uncompressed-nonheap",
+    REPORT("explicit/images/chrome/raster/unused/uncompressed-nonheap",
            KIND_NONHEAP, chrome.mUnusedUncompressedNonheap,
            "Memory used by not in-use chrome images (uncompressed data).");
 
-    REPORT("explicit/images/content/used/raw",
+    REPORT("explicit/images/content/raster/used/raw",
            KIND_HEAP, content.mUsedRaw,
            "Memory used by in-use content images (compressed data).");
 
-    REPORT("explicit/images/content/used/uncompressed-heap",
+    REPORT("explicit/images/content/raster/used/uncompressed-heap",
            KIND_HEAP, content.mUsedUncompressedHeap,
            "Memory used by in-use content images (uncompressed data).");
 
-    REPORT("explicit/images/content/used/uncompressed-nonheap",
+    REPORT("explicit/images/content/raster/used/uncompressed-nonheap",
            KIND_NONHEAP, content.mUsedUncompressedNonheap,
            "Memory used by in-use content images (uncompressed data).");
 
-    REPORT("explicit/images/content/unused/raw",
+    REPORT("explicit/images/content/raster/unused/raw",
            KIND_HEAP, content.mUnusedRaw,
            "Memory used by not in-use content images (compressed data).");
 
-    REPORT("explicit/images/content/unused/uncompressed-heap",
+    REPORT("explicit/images/content/raster/unused/uncompressed-heap",
            KIND_HEAP, content.mUnusedUncompressedHeap,
            "Memory used by not in-use content images (uncompressed data).");
 
-    REPORT("explicit/images/content/unused/uncompressed-nonheap",
+    REPORT("explicit/images/content/raster/unused/uncompressed-nonheap",
            KIND_NONHEAP, content.mUnusedUncompressedNonheap,
            "Memory used by not in-use content images (uncompressed data).");
 
 #undef REPORT
+
+#define REPORT_VECTOR(_path, _uri, _amount, _desc)                            \
+    do {                                                                      \
+      nsAutoCString path(NS_LITERAL_CSTRING(_path));                          \
+      path.Append("/(");                                                      \
+      path.Append(_uri);                                                      \
+      path.Append(")");                                                       \
+      nsresult rv;                                                            \
+      rv = callback->Callback(EmptyCString(), path,                           \
+                              KIND_HEAP, UNITS_BYTES, _amount,                \
+                              NS_LITERAL_CSTRING(_desc), closure);            \
+      NS_ENSURE_SUCCESS(rv, rv);                                              \
+    } while (0)
+
+    for (uint32_t i = 0; i < chrome.mVectorImageDocInfo.Length(); i++) {
+      chrome.mVectorImageDocInfo[i].mURI.ReplaceChar('/', '\\');
+      if (chrome.mVectorImageDocInfo[i].mUsed) {
+        REPORT_VECTOR("explicit/images/chrome/vector/used/documents",
+                      chrome.mVectorImageDocInfo[i].mURI,
+                      chrome.mVectorImageDocInfo[i].mSize,
+                      "Memory used by in-use chrome vector images for their parsed vector documents.");
+      } else {
+        REPORT_VECTOR("explicit/images/chrome/vector/unused/documents",
+                      chrome.mVectorImageDocInfo[i].mURI,
+                      chrome.mVectorImageDocInfo[i].mSize,
+                      "Memory used by not in-use chrome vector images for their parsed vector documents.");
+      }
+    }
+
+    for (uint32_t i = 0; i < content.mVectorImageDocInfo.Length(); i++) {
+      content.mVectorImageDocInfo[i].mURI.ReplaceChar('/', '\\');
+      if (content.mVectorImageDocInfo[i].mUsed) {
+        REPORT_VECTOR("explicit/images/content/vector/used/documents",
+                      content.mVectorImageDocInfo[i].mURI,
+                      content.mVectorImageDocInfo[i].mSize,
+                      "Memory used by in-use content vector images for their parsed vector documents.");
+      } else {
+        REPORT_VECTOR("explicit/images/content/vector/unused/documents",
+                      content.mVectorImageDocInfo[i].mURI,
+                      content.mVectorImageDocInfo[i].mSize,
+                      "Memory used by not in-use content vector images for their parsed vector documents.");
+      }
+    }
+
+#undef REPORT_VECTOR
 
     return NS_OK;
   }
@@ -150,6 +195,12 @@ public:
 private:
   nsTArray<imgLoader*> mKnownLoaders;
 
+  struct VectorImageDocInfo {
+    size_t mSize;
+    bool mUsed;
+    nsCString mURI;
+  };
+
   struct AllSizes {
     size_t mUsedRaw;
     size_t mUsedUncompressedHeap;
@@ -157,10 +208,18 @@ private:
     size_t mUnusedRaw;
     size_t mUnusedUncompressedHeap;
     size_t mUnusedUncompressedNonheap;
+    // The size of VectorImages' documents are recorded individually so that we
+    // can report on each SVG-as-an-image individually.
+    nsTArray<VectorImageDocInfo> mVectorImageDocInfo;
 
-    AllSizes() {
-      memset(this, 0, sizeof(*this));
-    }
+    AllSizes()
+      : mUsedRaw(0)
+      , mUsedUncompressedHeap(0)
+      , mUsedUncompressedNonheap(0)
+      , mUnusedRaw(0)
+      , mUnusedUncompressedHeap(0)
+      , mUnusedUncompressedNonheap(0)
+    {}
   };
 
   static PLDHashOperator EntryAllSizes(const nsACString&,
@@ -183,6 +242,12 @@ private:
         sizes->mUsedUncompressedHeap +=
           image->HeapSizeOfDecodedWithComputedFallback(ImagesMallocSizeOf);
         sizes->mUsedUncompressedNonheap += image->NonHeapSizeOfDecoded();
+      }
+      VectorImageDocInfo vectInfo;
+      vectInfo.mSize = image->HeapSizeOfVectorImageDocument(&vectInfo.mURI);
+      if (!vectInfo.mURI.IsEmpty()) {
+        vectInfo.mUsed = !entry->HasNoProxies();
+        sizes->mVectorImageDocInfo.AppendElement(vectInfo);
       }
     }
 
@@ -212,12 +277,12 @@ private:
   }
 };
 
-NS_IMPL_ISUPPORTS1(imgMemoryReporter, nsIMemoryReporter)
+NS_IMPL_ISUPPORTS(imgMemoryReporter, nsIMemoryReporter)
 
-NS_IMPL_ISUPPORTS3(nsProgressNotificationProxy,
-                   nsIProgressEventSink,
-                   nsIChannelEventSink,
-                   nsIInterfaceRequestor)
+NS_IMPL_ISUPPORTS(nsProgressNotificationProxy,
+                  nsIProgressEventSink,
+                  nsIChannelEventSink,
+                  nsIInterfaceRequestor)
 
 NS_IMETHODIMP
 nsProgressNotificationProxy::OnProgress(nsIRequest* request,
@@ -672,7 +737,7 @@ public:
   NS_DECL_NSIOBSERVER
 };
 
-NS_IMPL_ISUPPORTS1(imgCacheObserver, nsIObserver)
+NS_IMPL_ISUPPORTS(imgCacheObserver, nsIObserver)
 
 NS_IMETHODIMP
 imgCacheObserver::Observe(nsISupports* aSubject, const char* aTopic, const char16_t* aSomeData)
@@ -729,7 +794,28 @@ double imgLoader::sCacheTimeWeight;
 uint32_t imgLoader::sCacheMaxSize;
 imgMemoryReporter* imgLoader::sMemReporter;
 
-NS_IMPL_ISUPPORTS5(imgLoader, imgILoader, nsIContentSniffer, imgICache, nsISupportsWeakReference, nsIObserver)
+NS_IMPL_ISUPPORTS(imgLoader, imgILoader, nsIContentSniffer, imgICache, nsISupportsWeakReference, nsIObserver)
+
+static imgLoader* gSingleton = nullptr;
+static imgLoader* gPBSingleton = nullptr;
+
+imgLoader*
+imgLoader::Singleton()
+{
+  if (!gSingleton)
+    gSingleton = imgLoader::Create();
+  return gSingleton;
+}
+
+imgLoader*
+imgLoader::PBSingleton()
+{
+  if (!gPBSingleton) {
+    gPBSingleton = imgLoader::Create();
+    gPBSingleton->RespectPrivacyNotifications();
+  }
+  return gPBSingleton;
+}
 
 imgLoader::imgLoader()
 : mRespectPrivacy(false)
@@ -957,6 +1043,8 @@ NS_IMETHODIMP imgLoader::FindEntryProperties(nsIURI *uri, nsIProperties **_retva
 
 void imgLoader::Shutdown()
 {
+  NS_IF_RELEASE(gSingleton);
+  NS_IF_RELEASE(gPBSingleton);
   NS_RELEASE(gCacheObserver);
 }
 
@@ -1539,6 +1627,7 @@ NS_IMETHODIMP imgLoader::LoadImageXPCOM(nsIURI *aURI,
                                 aLoadFlags,
                                 aCacheKey,
                                 aPolicy,
+                                EmptyString(),
                                 &proxy);
     *_retval = proxy;
     return result;
@@ -1558,6 +1647,7 @@ nsresult imgLoader::LoadImage(nsIURI *aURI,
 			      nsLoadFlags aLoadFlags,
 			      nsISupports *aCacheKey,
 			      nsIChannelPolicy *aPolicy,
+			      const nsAString& initiatorType,
 			      imgRequestProxy **_retval)
 {
 	VerifyCacheSizes();
@@ -1694,6 +1784,12 @@ nsresult imgLoader::LoadImage(nsIURI *aURI,
     newChannel->GetLoadGroup(getter_AddRefs(channelLoadGroup));
     request->Init(aURI, aURI, channelLoadGroup, newChannel, entry, aCX,
                   aLoadingPrincipal, corsmode);
+
+    // Add the initiator type for this image load
+    nsCOMPtr<nsITimedChannel> timedChannel = do_QueryInterface(newChannel);
+    if (timedChannel) {
+      timedChannel->SetInitiatorType(initiatorType);
+    }
 
     // Pass the inner window ID of the loading document, if possible.
     nsCOMPtr<nsIDocument> doc = do_QueryInterface(aCX);
@@ -2035,10 +2131,10 @@ nsresult imgLoader::GetMimeTypeFromContent(const char* aContents, uint32_t aLeng
 #include "nsIRequest.h"
 #include "nsIStreamConverterService.h"
 
-NS_IMPL_ISUPPORTS3(ProxyListener,
-                   nsIStreamListener,
-                   nsIThreadRetargetableStreamListener,
-                   nsIRequestObserver)
+NS_IMPL_ISUPPORTS(ProxyListener,
+                  nsIStreamListener,
+                  nsIThreadRetargetableStreamListener,
+                  nsIRequestObserver)
 
 ProxyListener::ProxyListener(nsIStreamListener *dest) :
   mDestListener(dest)
@@ -2137,10 +2233,10 @@ ProxyListener::CheckListenerChain()
  * http validate class.  check a channel for a 304
  */
 
-NS_IMPL_ISUPPORTS6(imgCacheValidator, nsIStreamListener, nsIRequestObserver,
-                   nsIThreadRetargetableStreamListener,
-                   nsIChannelEventSink, nsIInterfaceRequestor,
-                   nsIAsyncVerifyRedirectCallback)
+NS_IMPL_ISUPPORTS(imgCacheValidator, nsIStreamListener, nsIRequestObserver,
+                  nsIThreadRetargetableStreamListener,
+                  nsIChannelEventSink, nsIInterfaceRequestor,
+                  nsIAsyncVerifyRedirectCallback)
 
 imgCacheValidator::imgCacheValidator(nsProgressNotificationProxy* progress,
                                      imgLoader* loader, imgRequest *request,

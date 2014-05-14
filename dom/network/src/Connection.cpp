@@ -20,8 +20,8 @@ namespace mozilla {
 namespace dom {
 namespace network {
 
-NS_IMPL_QUERY_INTERFACE_INHERITED1(Connection, DOMEventTargetHelper,
-                                   nsINetworkProperties)
+NS_IMPL_QUERY_INTERFACE_INHERITED(Connection, DOMEventTargetHelper,
+                                  nsINetworkProperties)
 
 // Don't use |Connection| alone, since that confuses nsTraceRefcnt since
 // we're not the only class with that name.
@@ -92,9 +92,9 @@ Connection::Notify(const hal::NetworkInformation& aNetworkInfo)
 }
 
 JSObject*
-Connection::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+Connection::WrapObject(JSContext* aCx)
 {
-  return NetworkInformationBinding::Wrap(aCx, aScope, this);
+  return NetworkInformationBinding::Wrap(aCx, this);
 }
 
 } // namespace network

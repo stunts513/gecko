@@ -106,7 +106,7 @@ public:
 };
 
 #ifdef DEBUG
-NS_IMPL_ISUPPORTS_INHERITED1(GfxInfo, GfxInfoBase, nsIGfxInfoDebug)
+NS_IMPL_ISUPPORTS_INHERITED(GfxInfo, GfxInfoBase, nsIGfxInfoDebug)
 #endif
 
 GfxInfo::GfxInfo()
@@ -360,10 +360,10 @@ GfxInfo::GetGfxDriverInfo()
 }
 
 nsresult
-GfxInfo::GetFeatureStatusImpl(int32_t aFeature, 
-                              int32_t *aStatus, 
+GfxInfo::GetFeatureStatusImpl(int32_t aFeature,
+                              int32_t *aStatus,
                               nsAString & aSuggestedDriverVersion,
-                              const nsTArray<GfxDriverInfo>& aDriverInfo, 
+                              const nsTArray<GfxDriverInfo>& aDriverInfo,
                               OperatingSystem* aOS /* = nullptr */)
 {
   NS_ENSURE_ARG_POINTER(aStatus);

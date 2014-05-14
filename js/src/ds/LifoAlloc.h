@@ -141,18 +141,6 @@ class BumpChunk
         return aligned;
     }
 
-    void *allocInfallible(size_t n) {
-        void *result = tryAlloc(n);
-        JS_ASSERT(result);
-        return result;
-    }
-
-    void *peek(size_t n) {
-        if (bumpBase() - bump < ptrdiff_t(n))
-            return nullptr;
-        return bump - n;
-    }
-
     static BumpChunk *new_(size_t chunkSize);
     static void delete_(BumpChunk *chunk);
 };
@@ -275,19 +263,10 @@ class LifoAlloc
         if (!getOrCreateChunk(n))
             return nullptr;
 
-        return latest->allocInfallible(n);
-    }
-
-    MOZ_ALWAYS_INLINE
-    void *allocInfallible(size_t n) {
-        void *result;
-        if (latest && (result = latest->tryAlloc(n)))
-            return result;
-
-        mozilla::DebugOnly<BumpChunk *> chunk = getOrCreateChunk(n);
-        JS_ASSERT(chunk);
-
-        return latest->allocInfallible(n);
+        // Since we just created a large enough chunk, this can't fail.
+        result = latest->tryAlloc(n);
+        MOZ_ASSERT(result);
+        return result;
     }
 
     // Ensures that enough space exists to satisfy N bytes worth of
@@ -476,16 +455,6 @@ class LifoAlloc
             return Mark(chunk_, position_);
         }
     };
-
-    // Return a modifiable pointer to the most recently allocated bytes. The
-    // type of the thing must be known, so is only applicable to some special-
-    // purpose allocators. Will return a nullptr if nothing has been allocated.
-    template <typename T>
-    T *peek() {
-        if (!latest)
-            return nullptr;
-        return static_cast<T *>(latest->peek(sizeof(T)));
-    }
 };
 
 class LifoAllocScope

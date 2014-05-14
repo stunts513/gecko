@@ -85,6 +85,7 @@ nsFirstLetterFrame::SetInitialChildList(ChildListID  aListID,
   for (nsFrameList::Enumerator e(aChildList); !e.AtEnd(); e.Next()) {
     NS_ASSERTION(e.get()->GetParent() == this, "Unexpected parent");
     restyleManager->ReparentStyleContext(e.get());
+    nsLayoutUtils::MarkDescendantsDirty(e.get());
   }
 
   mFrames.SetFrames(aChildList);
@@ -153,7 +154,7 @@ nsFirstLetterFrame::ComputeSize(nsRenderingContext *aRenderingContext,
       aCBSize, aAvailableWidth, aMargin, aBorder, aPadding, aFlags);
 }
 
-nsresult
+void
 nsFirstLetterFrame::Reflow(nsPresContext*          aPresContext,
                            nsHTMLReflowMetrics&     aMetrics,
                            const nsHTMLReflowState& aReflowState,
@@ -255,7 +256,7 @@ nsFirstLetterFrame::Reflow(nsPresContext*          aPresContext,
         nsIFrame* nextInFlow;
         rv = CreateNextInFlow(kid, nextInFlow);
         if (NS_FAILED(rv)) {
-          return rv;
+          return;
         }
     
         // And then push it to our overflow list
@@ -268,8 +269,8 @@ nsFirstLetterFrame::Reflow(nsPresContext*          aPresContext,
         // created for us) we need to put the continuation with the rest of the
         // text that the first letter frame was made out of.
         nsIFrame* continuation;
-        rv = CreateContinuationForFloatingParent(aPresContext, kid,
-                                                 &continuation, true);
+        CreateContinuationForFloatingParent(aPresContext, kid,
+                                            &continuation, true);
       }
     }
   }
@@ -277,7 +278,6 @@ nsFirstLetterFrame::Reflow(nsPresContext*          aPresContext,
   FinishAndStoreOverflow(&aMetrics);
 
   NS_FRAME_SET_TRUNCATION(aReflowStatus, aReflowState, aMetrics);
-  return rv;
 }
 
 /* virtual */ bool
@@ -316,6 +316,7 @@ nsFirstLetterFrame::CreateContinuationForFloatingParent(nsPresContext* aPresCont
     nsRefPtr<nsStyleContext> newSC;
     newSC = presShell->StyleSet()->ResolveStyleForNonElement(parentSC);
     continuation->SetStyleContext(newSC);
+    nsLayoutUtils::MarkDescendantsDirty(continuation);
   }
 
   //XXX Bidi may not be involved but we have to use the list name
@@ -369,6 +370,7 @@ nsFirstLetterFrame::DrainOverflowFrames(nsPresContext* aPresContext)
                                               mStyleContext;
       sc = aPresContext->StyleSet()->ResolveStyleForNonElement(parentSC);
       kid->SetStyleContext(sc);
+      nsLayoutUtils::MarkDescendantsDirty(kid);
     }
   }
 }

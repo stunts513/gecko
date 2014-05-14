@@ -271,9 +271,9 @@ EventSource::Init(nsISupports* aOwner,
 }
 
 /* virtual */ JSObject*
-EventSource::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+EventSource::WrapObject(JSContext* aCx)
 {
-  return EventSourceBinding::Wrap(aCx, aScope, this);
+  return EventSourceBinding::Wrap(aCx, this);
 }
 
 /* static */ already_AddRefed<EventSource>
@@ -521,7 +521,7 @@ private:
   nsRefPtr<EventSource> mEventSource;
 };
 
-NS_IMPL_CYCLE_COLLECTION_1(AsyncVerifyRedirectCallbackFwr, mEventSource)
+NS_IMPL_CYCLE_COLLECTION(AsyncVerifyRedirectCallbackFwr, mEventSource)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(AsyncVerifyRedirectCallbackFwr)
   NS_INTERFACE_MAP_ENTRY(nsISupports)

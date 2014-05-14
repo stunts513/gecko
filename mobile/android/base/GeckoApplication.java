@@ -6,7 +6,7 @@ package org.mozilla.gecko;
 
 import org.mozilla.gecko.db.BrowserContract;
 import org.mozilla.gecko.db.BrowserDB;
-import org.mozilla.gecko.home.HomeConfigInvalidator;
+import org.mozilla.gecko.home.HomePanelsManager;
 import org.mozilla.gecko.mozglue.GeckoLoader;
 import org.mozilla.gecko.util.Clipboard;
 import org.mozilla.gecko.util.HardwareUtils;
@@ -67,9 +67,9 @@ public class GeckoApplication extends Application
         // Otherwise, correct the locale. This catches some cases that GeckoApp
         // doesn't get a chance to.
         try {
-            LocaleManager.correctLocale(this, getResources(), config);
+            BrowserLocaleManager.getInstance().correctLocale(this, getResources(), config);
         } catch (IllegalStateException ex) {
-            // GeckoApp hasn't started, so we have no ContextGetter in LocaleManager.
+            // GeckoApp hasn't started, so we have no ContextGetter in BrowserLocaleManager.
             Log.w(LOG_TAG, "Couldn't correct locale.", ex);
         }
 
@@ -121,7 +121,7 @@ public class GeckoApplication extends Application
         Clipboard.init(getApplicationContext());
         FilePicker.init(getApplicationContext());
         GeckoLoader.loadMozGlue();
-        HomeConfigInvalidator.getInstance().init(getApplicationContext());
+        HomePanelsManager.getInstance().init(getApplicationContext());
         super.onCreate();
     }
 

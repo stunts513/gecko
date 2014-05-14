@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: sw=2 ts=8 et :
- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11,17 +10,19 @@
 
 #include "nsCollationCID.h"
 #include "nsJSUtils.h"
-#include "nsICharsetConverterManager.h"
 #include "nsIPlatformCharset.h"
 #include "nsILocaleService.h"
 #include "nsICollation.h"
 #include "nsUnicharUtils.h"
 #include "nsComponentManagerUtils.h"
 #include "nsServiceManagerUtils.h"
+#include "mozilla/dom/EncodingUtils.h"
+#include "nsIUnicodeDecoder.h"
 
 #include "xpcpublic.h"
 
 using namespace JS;
+using mozilla::dom::EncodingUtils;
 
 /**
  * JS locale callbacks implemented by XPCOM modules.  These are theoretically
@@ -191,11 +192,7 @@ private:
             nsAutoCString charset;
             rv = platformCharset->GetDefaultCharsetForLocale(localeStr, charset);
             if (NS_SUCCEEDED(rv)) {
-              // get/create unicode decoder for charset
-              nsCOMPtr<nsICharsetConverterManager> ccm =
-                do_GetService(NS_CHARSETCONVERTERMANAGER_CONTRACTID, &rv);
-              if (NS_SUCCEEDED(rv))
-                ccm->GetUnicodeDecoder(charset.get(), getter_AddRefs(mDecoder));
+              mDecoder = EncodingUtils::DecoderForEncoding(charset);
             }
           }
         }

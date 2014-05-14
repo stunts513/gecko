@@ -1257,9 +1257,9 @@ Parser<ParseHandler>::newFunction(GenericParseContext *pc, HandleAtom atom,
                               : (kind == Arrow)
                                 ? JSFunction::INTERPRETED_LAMBDA_ARROW
                                 : JSFunction::INTERPRETED;
-    gc::AllocKind allocKind = (kind == Arrow)
-                              ? JSFunction::ExtendedFinalizeKind
-                              : JSFunction::FinalizeKind;
+    gc::AllocKind allocKind = JSFunction::FinalizeKind;
+    if (kind == Arrow)
+        allocKind = JSFunction::ExtendedFinalizeKind;
     fun = NewFunctionWithProto(context, NullPtr(), nullptr, 0, flags, NullPtr(), atom, proto,
                                allocKind, MaybeSingletonObject);
     if (!fun)
@@ -2125,7 +2125,8 @@ Parser<FullParseHandler>::functionArgsAndBody(ParseNode *pn, HandleFunction fun,
             // Move the syntax parser to the current position in the stream.
             TokenStream::Position position(keepAtoms);
             tokenStream.tell(&position);
-            parser->tokenStream.seek(position, tokenStream);
+            if (!parser->tokenStream.seek(position, tokenStream))
+                return false;
 
             ParseContext<SyntaxParseHandler> funpc(parser, outerpc, SyntaxParseHandler::null(), funbox,
                                                    newDirectives, outerpc->staticLevel + 1,
@@ -2149,7 +2150,8 @@ Parser<FullParseHandler>::functionArgsAndBody(ParseNode *pn, HandleFunction fun,
 
             // Advance this parser over tokens processed by the syntax parser.
             parser->tokenStream.tell(&position);
-            tokenStream.seek(position, parser->tokenStream);
+            if (!tokenStream.seek(position, parser->tokenStream))
+                return false;
 
             // Update the end position of the parse node.
             pn->pn_pos.end = tokenStream.currentToken().pos.end;
@@ -3992,20 +3994,12 @@ Parser<ParseHandler>::doWhileStatement()
         return null();
     PopStatementPC(tokenStream, pc);
 
-    if (versionNumber() == JSVERSION_ECMA_3) {
-        // Pedantically require a semicolon or line break, following ES3.
-        // Bug 880329 proposes removing this case.
-        if (!MatchOrInsertSemicolon(tokenStream))
-            return null();
-    } else {
-        // The semicolon after do-while is even more optional than most
-        // semicolons in JS.  Web compat required this by 2004:
-        //   http://bugzilla.mozilla.org/show_bug.cgi?id=238945
-        // ES3 and ES5 disagreed, but ES6 conforms to Web reality:
-        //   https://bugs.ecmascript.org/show_bug.cgi?id=157
-        (void) tokenStream.matchToken(TOK_SEMI);
-    }
-
+    // The semicolon after do-while is even more optional than most
+    // semicolons in JS.  Web compat required this by 2004:
+    //   http://bugzilla.mozilla.org/show_bug.cgi?id=238945
+    // ES3 and ES5 disagreed, but ES6 conforms to Web reality:
+    //   https://bugs.ecmascript.org/show_bug.cgi?id=157
+    tokenStream.matchToken(TOK_SEMI);
     return handler.newDoWhileStatement(body, cond, TokenPos(begin, pos().end));
 }
 
@@ -6916,11 +6910,11 @@ Parser<ParseHandler>::newRegExp()
     RegExpFlag flags = tokenStream.currentToken().regExpFlags();
 
     Rooted<RegExpObject*> reobj(context);
-    if (RegExpStatics *res = context->global()->getRegExpStatics())
-        reobj = RegExpObject::create(context, res, chars, length, flags, &tokenStream);
-    else
-        reobj = RegExpObject::createNoStatics(context, chars, length, flags, &tokenStream);
+    RegExpStatics *res = context->global()->getRegExpStatics(context);
+    if (!res)
+        return null();
 
+    reobj = RegExpObject::create(context, res, chars, length, flags, &tokenStream);
     if (!reobj)
         return null();
 

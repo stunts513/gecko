@@ -261,8 +261,7 @@ public:
 
 
   // nsINode
-  virtual JSObject* WrapNode(JSContext* aCx,
-                             JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapNode(JSContext* aCx) MOZ_OVERRIDE;
 
   // nsIContent
   virtual nsresult PreHandleEvent(EventChainPreVisitor& aVisitor) MOZ_OVERRIDE;
@@ -396,6 +395,7 @@ public:
   nsresult GetValidationMessage(nsAString& aValidationMessage,
                                 ValidityStateType aType) MOZ_OVERRIDE;
 
+  void UpdateValueMissingValidityState();
   /**
    * Insert aElement before the node given by aBefore
    */
@@ -512,7 +512,6 @@ protected:
   // nsIConstraintValidation
   void UpdateBarredFromConstraintValidation();
   bool IsValueMissing();
-  void UpdateValueMissingValidityState();
 
   /**
    * Find out how deep this content is from the select (1=direct child)

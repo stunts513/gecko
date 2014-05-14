@@ -9,14 +9,22 @@ import socket
 import sys
 import time
 import traceback
+import base64
 
 from application_cache import ApplicationCache
-from client import MarionetteClient
 from decorators import do_crash_check
 from emulator import Emulator
 from emulator_screen import EmulatorScreen
-from errors import *
+from errors import (
+        ErrorCodes, MarionetteException, InstallGeckoError, TimeoutException, InvalidResponseException,
+        JavascriptException, NoSuchElementException, XPathLookupException, NoSuchWindowException,
+        StaleElementException, ScriptTimeoutException, ElementNotVisibleException,
+        NoSuchFrameException, InvalidElementStateException, NoAlertPresentException,
+        InvalidCookieDomainException, UnableToSetCookieException, InvalidSelectorException,
+        MoveTargetOutOfBoundsException, FrameSendNotInitializedError, FrameSendFailureError
+        )
 from keys import Keys
+from marionette_transport import MarionetteTransport
 
 import geckoinstance
 
@@ -511,7 +519,7 @@ class Marionette(object):
             self.port = self.emulator.setup_port_forwarding(self.port)
             assert(self.emulator.wait_for_port()), "Timed out waiting for port!"
 
-        self.client = MarionetteClient(self.host, self.port)
+        self.client = MarionetteTransport(self.host, self.port)
 
         if emulator:
             self.emulator.setup(self,
@@ -522,7 +530,7 @@ class Marionette(object):
         if self.session:
             try:
                 self.delete_session()
-            except (MarionetteException, socket.error):
+            except (MarionetteException, socket.error, IOError):
                 # These exceptions get thrown if the Marionette server
                 # hit an exception/died or the connection died. We can
                 # do no further server-side cleanup in this case.
@@ -1375,11 +1383,11 @@ class Marionette(object):
     def application_cache(self):
         return ApplicationCache(self)
 
-    def screenshot(self, element=None, highlights=None):
+    def screenshot(self, element=None, highlights=None, format="base64"):
         """Takes a screenshot of a web element or the current frame.
 
         The screen capture is returned as a lossless PNG image encoded
-        as a base 64 string.  If the `element` argument is defined the
+        as a base 64 string by default. If the `element` argument is defined the
         capture area will be limited to the bounding box of that
         element.  Otherwise, the capture area will be the bounding box
         of the current frame.
@@ -1389,6 +1397,10 @@ class Marionette(object):
 
         :param highlights: A list of HTMLElement objects to draw a red
             box around in the returned screenshot.
+        
+        :param format: if "base64" (the default), returns the screenshot
+            as a base64-string. If "binary", the data is decoded and
+            returned as raw binary.
 
         """
 
@@ -1397,8 +1409,15 @@ class Marionette(object):
         lights = None
         if highlights:
             lights = [highlight.id for highlight in highlights]
-        return self._send_message("takeScreenshot", "value",
+        screenshot_data = self._send_message("takeScreenshot", "value",
                                   id=element, highlights=lights)
+        if format == 'base64':
+            return screenshot_data
+        elif format == 'binary':
+            return base64.b64decode(screenshot_data.encode('ascii'))
+        else:
+            raise ValueError("format parameter must be either 'base64'"
+                             " or 'binary', not {0}".format(repr(format)))
 
     @property
     def orientation(self):

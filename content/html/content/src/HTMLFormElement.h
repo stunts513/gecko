@@ -395,7 +395,9 @@ public:
   already_AddRefed<nsISupports>
   NamedGetter(const nsAString& aName, bool &aFound);
 
-  void GetSupportedNames(nsTArray<nsString >& aRetval);
+  bool NameIsEnumerable(const nsAString& aName);
+
+  void GetSupportedNames(unsigned, nsTArray<nsString >& aRetval);
 
   static int32_t
   CompareFormControlPosition(Element* aElement1, Element* aElement2,
@@ -409,8 +411,7 @@ public:
   js::ExpandoAndGeneration mExpandoAndGeneration;
 
 protected:
-  virtual JSObject* WrapNode(JSContext* aCx,
-                             JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapNode(JSContext* aCx) MOZ_OVERRIDE;
 
   void PostPasswordEvent();
   void EventHandled() { mFormPasswordEventDispatcher = nullptr; }

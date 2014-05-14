@@ -453,7 +453,7 @@ static BOOL IsActive(nsIFrame* aFrame, BOOL aIsToolbarControl)
   return FrameIsInActiveWindow(aFrame);
 }
 
-NS_IMPL_ISUPPORTS_INHERITED1(nsNativeThemeCocoa, nsNativeTheme, nsITheme)
+NS_IMPL_ISUPPORTS_INHERITED(nsNativeThemeCocoa, nsNativeTheme, nsITheme)
 
 
 nsNativeThemeCocoa::nsNativeThemeCocoa()
@@ -2398,13 +2398,20 @@ nsNativeThemeCocoa::DrawWidgetBackground(nsRenderingContext* aContext,
       break;
 
     case NS_THEME_PROGRESSBAR:
-      if (!QueueAnimatedContentForRefresh(aFrame->GetContent(), 30)) {
-        NS_WARNING("Unable to animate progressbar!");
+    {
+      double value = GetProgressValue(aFrame);
+      double maxValue = GetProgressMaxValue(aFrame);
+      // Don't request repaints for scrollbars at 100% because those don't animate.
+      if (value < maxValue) {
+        if (!QueueAnimatedContentForRefresh(aFrame->GetContent(), 30)) {
+          NS_WARNING("Unable to animate progressbar!");
+        }
       }
       DrawProgress(cgContext, macRect, IsIndeterminateProgress(aFrame, eventState),
                    aFrame->StyleDisplay()->mOrient != NS_STYLE_ORIENT_VERTICAL,
-		   GetProgressValue(aFrame), GetProgressMaxValue(aFrame), aFrame);
+                   value, maxValue, aFrame);
       break;
+    }
 
     case NS_THEME_PROGRESSBAR_VERTICAL:
       DrawProgress(cgContext, macRect, IsIndeterminateProgress(aFrame, eventState),

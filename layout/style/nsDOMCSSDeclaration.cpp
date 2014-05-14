@@ -26,15 +26,15 @@ nsDOMCSSDeclaration::~nsDOMCSSDeclaration()
 }
 
 /* virtual */ JSObject*
-nsDOMCSSDeclaration::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+nsDOMCSSDeclaration::WrapObject(JSContext* aCx)
 {
-  return dom::CSS2PropertiesBinding::Wrap(aCx, aScope, this);
+  return dom::CSS2PropertiesBinding::Wrap(aCx, this);
 }
 
 NS_INTERFACE_TABLE_HEAD(nsDOMCSSDeclaration)
-  NS_INTERFACE_TABLE2(nsDOMCSSDeclaration,
-                      nsICSSDeclaration,
-                      nsIDOMCSSStyleDeclaration)
+  NS_INTERFACE_TABLE(nsDOMCSSDeclaration,
+                     nsICSSDeclaration,
+                     nsIDOMCSSStyleDeclaration)
   NS_INTERFACE_TABLE_TO_MAP_SEGUE
 NS_INTERFACE_MAP_END
 

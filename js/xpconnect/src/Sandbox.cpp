@@ -30,6 +30,7 @@
 #include "XPCWrapper.h"
 #include "XrayWrapper.h"
 #include "mozilla/dom/BindingUtils.h"
+#include "mozilla/dom/CSSBinding.h"
 #include "mozilla/dom/indexedDB/IndexedDatabaseManager.h"
 #include "mozilla/dom/PromiseBinding.h"
 #include "mozilla/dom/TextDecoderBinding.h"
@@ -199,14 +200,6 @@ CreateXMLHttpRequest(JSContext *cx, unsigned argc, jsval *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
-    nsIScriptSecurityManager *ssm = XPCWrapper::GetSecurityManager();
-    if (!ssm)
-        return false;
-
-    nsIPrincipal *subjectPrincipal = ssm->GetCxSubjectPrincipal(cx);
-    if (!subjectPrincipal)
-        return false;
-
     RootedObject global(cx, JS::CurrentGlobalOrNull(cx));
     MOZ_ASSERT(global);
 
@@ -215,11 +208,12 @@ CreateXMLHttpRequest(JSContext *cx, unsigned argc, jsval *vp)
     nsCOMPtr<nsIGlobalObject> iglobal = do_QueryInterface(sop);
 
     nsCOMPtr<nsIXMLHttpRequest> xhr = new nsXMLHttpRequest();
-    nsresult rv = xhr->Init(subjectPrincipal, nullptr, iglobal, nullptr);
+    nsresult rv = xhr->Init(nsContentUtils::GetSubjectPrincipal(), nullptr,
+                            iglobal, nullptr);
     if (NS_FAILED(rv))
         return false;
 
-    rv = nsContentUtils::WrapNative(cx, global, xhr, args.rval());
+    rv = nsContentUtils::WrapNative(cx, xhr, args.rval());
     if (NS_FAILED(rv))
         return false;
 
@@ -321,9 +315,8 @@ ExportFunction(JSContext *cx, HandleValue vfunction, HandleValue vscope, HandleV
         // defineAs was set, we also need to define it as a property on
         // the target.
         if (!JSID_IS_VOID(options.defineAs)) {
-            if (!JS_DefinePropertyById(cx, targetScope, id, rval,
-                                       JS_PropertyStub, JS_StrictPropertyStub,
-                                       JSPROP_ENUMERATE)) {
+            if (!JS_DefinePropertyById(cx, targetScope, id, rval, JSPROP_ENUMERATE,
+                                       JS_PropertyStub, JS_StrictPropertyStub)) {
                 return false;
             }
         }
@@ -391,7 +384,7 @@ CloneNonReflectorsRead(JSContext *cx, JSStructuredCloneReader *reader, uint32_t 
 
         size_t idx;
         if (JS_ReadBytes(reader, &idx, sizeof(size_t))) {
-            RootedObject reflector(cx, reflectors->handleAt(idx));
+            RootedObject reflector(cx, (*reflectors)[idx]);
             MOZ_ASSERT(reflector, "No object pointer?");
             MOZ_ASSERT(IsReflector(reflector), "Object pointer must be a reflector!");
 
@@ -435,6 +428,9 @@ CloneNonReflectorsWrite(JSContext *cx, JSStructuredCloneWriter *writer,
 static const JSStructuredCloneCallbacks gForwarderStructuredCloneCallbacks = {
     CloneNonReflectorsRead,
     CloneNonReflectorsWrite,
+    nullptr,
+    nullptr,
+    nullptr,
     nullptr
 };
 
@@ -685,7 +681,7 @@ static const JSClass SandboxClass = {
     XPCONNECT_GLOBAL_FLAGS_WITH_EXTRA_SLOTS(1),
     JS_PropertyStub,   JS_DeletePropertyStub, JS_PropertyStub, JS_StrictPropertyStub,
     sandbox_enumerate, sandbox_resolve, sandbox_convert,  sandbox_finalize,
-    nullptr, nullptr, nullptr, TraceXPCGlobal
+    nullptr, nullptr, nullptr, JS_GlobalObjectTraceHook
 };
 
 static const JSFunctionSpec SandboxFunctions[] = {
@@ -854,14 +850,12 @@ bool
 xpc::SandboxProxyHandler::getPropertyDescriptor(JSContext *cx,
                                                 JS::Handle<JSObject*> proxy,
                                                 JS::Handle<jsid> id,
-                                                JS::MutableHandle<JSPropertyDescriptor> desc,
-                                                unsigned flags)
+                                                JS::MutableHandle<JSPropertyDescriptor> desc)
 {
     JS::RootedObject obj(cx, wrappedObject(proxy));
 
     MOZ_ASSERT(js::GetObjectCompartment(obj) == js::GetObjectCompartment(proxy));
-    if (!JS_GetPropertyDescriptorById(cx, obj, id,
-                                      flags, desc))
+    if (!JS_GetPropertyDescriptorById(cx, obj, id, desc))
         return false;
 
     if (!desc.object())
@@ -902,10 +896,9 @@ bool
 xpc::SandboxProxyHandler::getOwnPropertyDescriptor(JSContext *cx,
                                                    JS::Handle<JSObject*> proxy,
                                                    JS::Handle<jsid> id,
-                                                   JS::MutableHandle<JSPropertyDescriptor> desc,
-                                                   unsigned flags)
+                                                   JS::MutableHandle<JSPropertyDescriptor> desc)
 {
-    if (!getPropertyDescriptor(cx, proxy, id, desc, flags))
+    if (!getPropertyDescriptor(cx, proxy, id, desc))
         return false;
 
     if (desc.object() != wrappedObject(proxy))
@@ -986,6 +979,8 @@ xpc::GlobalProperties::Parse(JSContext *cx, JS::HandleObject obj)
         NS_ENSURE_TRUE(name, false);
         if (promise && !strcmp(name.ptr(), "-Promise")) {
             Promise = false;
+        } else if (!strcmp(name.ptr(), "CSS")) {
+            CSS = true;
         } else if (!strcmp(name.ptr(), "indexedDB")) {
             indexedDB = true;
         } else if (!strcmp(name.ptr(), "XMLHttpRequest")) {
@@ -1011,6 +1006,9 @@ xpc::GlobalProperties::Parse(JSContext *cx, JS::HandleObject obj)
 bool
 xpc::GlobalProperties::Define(JSContext *cx, JS::HandleObject obj)
 {
+    if (CSS && !dom::CSSBinding::GetConstructorObject(cx, obj))
+        return false;
+
     if (Promise && !dom::PromiseBinding::GetConstructorObject(cx, obj))
         return false;
 
@@ -1051,10 +1049,6 @@ xpc::CreateSandboxObject(JSContext *cx, MutableHandleValue vp, nsISupports *prin
 {
     // Create the sandbox global object
     nsresult rv;
-    nsCOMPtr<nsIXPConnect> xpc(do_GetService(nsIXPConnect::GetCID(), &rv));
-    if (NS_FAILED(rv))
-        return NS_ERROR_XPC_UNEXPECTED;
-
     nsCOMPtr<nsIPrincipal> principal = do_QueryInterface(prinOrSop);
     if (!principal) {
         nsCOMPtr<nsIScriptObjectPrincipal> sop = do_QueryInterface(prinOrSop);
@@ -1081,7 +1075,9 @@ xpc::CreateSandboxObject(JSContext *cx, MutableHandleValue vp, nsISupports *prin
     else
         compartmentOptions.setZone(JS::SystemZone);
 
-    compartmentOptions.setInvisibleToDebugger(options.invisibleToDebugger);
+    compartmentOptions.setInvisibleToDebugger(options.invisibleToDebugger)
+                      .setDiscardSource(options.discardSource)
+                      .setTrace(TraceXPCGlobal);
 
     RootedObject sandbox(cx, xpc::CreateGlobalObject(cx, &SandboxClass,
                                                      principal, compartmentOptions));
@@ -1296,8 +1292,6 @@ GetExpandedPrincipal(JSContext *cx, HandleObject arrayObj, nsIExpandedPrincipal 
 
     nsTArray< nsCOMPtr<nsIPrincipal> > allowedDomains(length);
     allowedDomains.SetLength(length);
-    nsIScriptSecurityManager *ssm = XPCWrapper::GetSecurityManager();
-    NS_ENSURE_TRUE(ssm, false);
 
     for (uint32_t i = 0; i < length; ++i) {
         RootedValue allowed(cx);
@@ -1328,7 +1322,7 @@ GetExpandedPrincipal(JSContext *cx, HandleObject arrayObj, nsIExpandedPrincipal 
 
         // We do not allow ExpandedPrincipals to contain any system principals.
         bool isSystem;
-        rv = ssm->IsSystemPrincipal(principal, &isSystem);
+        rv = nsXPConnect::SecurityManager()->IsSystemPrincipal(principal, &isSystem);
         NS_ENSURE_SUCCESS(rv, false);
         if (isSystem) {
             JS_ReportError(cx, "System principal is not allowed in an expanded principal");
@@ -1514,6 +1508,7 @@ SandboxOptions::Parse()
            ParseString("sandboxName", sandboxName) &&
            ParseObject("sameZoneAs", &sameZoneAs) &&
            ParseBoolean("invisibleToDebugger", &invisibleToDebugger) &&
+           ParseBoolean("discardSource", &discardSource) &&
            ParseGlobalProperties() &&
            ParseValue("metadata", &metadata);
 }
@@ -1537,13 +1532,13 @@ AssembleSandboxMemoryReporterName(JSContext *cx, nsCString &sandboxName)
 
     // Append the caller's location information.
     if (frame) {
-        nsCString location;
+        nsString location;
         int32_t lineNumber = 0;
         frame->GetFilename(location);
         frame->GetLineNumber(&lineNumber);
 
         sandboxName.AppendLiteral(" (from: ");
-        sandboxName.Append(location);
+        sandboxName.Append(NS_ConvertUTF16toUTF8(location));
         sandboxName.AppendLiteral(":");
         sandboxName.AppendInt(lineNumber);
         sandboxName.AppendLiteral(")");
@@ -1639,7 +1634,7 @@ private:
     nsCOMPtr<nsIPrincipal> mPrincipal;
 };
 
-NS_IMPL_ISUPPORTS1(ContextHolder, nsIScriptObjectPrincipal)
+NS_IMPL_ISUPPORTS(ContextHolder, nsIScriptObjectPrincipal)
 
 ContextHolder::ContextHolder(JSContext *aOuterCx,
                              HandleObject aSandbox,
@@ -1649,7 +1644,7 @@ ContextHolder::ContextHolder(JSContext *aOuterCx,
 {
     if (mJSContext) {
         bool isChrome;
-        DebugOnly<nsresult> rv = XPCWrapper::GetSecurityManager()->
+        DebugOnly<nsresult> rv = nsXPConnect::SecurityManager()->
                                    IsSystemPrincipal(mPrincipal, &isChrome);
         MOZ_ASSERT(NS_SUCCEEDED(rv));
 

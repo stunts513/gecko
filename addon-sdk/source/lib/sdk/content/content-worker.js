@@ -107,7 +107,9 @@ const ContentWorker = Object.freeze({
       error: pipe.emit.bind(null, "console", "error"),
       debug: pipe.emit.bind(null, "console", "debug"),
       exception: pipe.emit.bind(null, "console", "exception"),
-      trace: pipe.emit.bind(null, "console", "trace")
+      trace: pipe.emit.bind(null, "console", "trace"),
+      time: pipe.emit.bind(null, "console", "time"),
+      timeEnd: pipe.emit.bind(null, "console", "timeEnd")
     });
   },
 
@@ -284,24 +286,13 @@ const ContentWorker = Object.freeze({
       value: self
     });
 
-    // Deprecated use of on/postMessage from globals
-    exports.postMessage = function deprecatedPostMessage() {
-      console.error("DEPRECATED: The global `postMessage()` function in " +
-                    "content scripts is deprecated in favor of the " +
-                    "`self.postMessage()` function, which works the same. " +
-                    "Replace calls to `postMessage()` with calls to " +
-                    "`self.postMessage()`." +
-                    "For more info on `self.on`, see " +
-                    "<https://addons.mozilla.org/en-US/developers/docs/sdk/latest/dev-guide/addon-development/web-content.html>.");
-      return self.postMessage.apply(null, arguments);
-    };
     exports.on = function deprecatedOn() {
       console.error("DEPRECATED: The global `on()` function in content " +
                     "scripts is deprecated in favor of the `self.on()` " +
                     "function, which works the same. Replace calls to `on()` " +
                     "with calls to `self.on()`" +
                     "For more info on `self.on`, see " +
-                    "<https://addons.mozilla.org/en-US/developers/docs/sdk/latest/dev-guide/addon-development/web-content.html>.");
+                    "<https://developer.mozilla.org/en-US/Add-ons/SDK/Guides/Content_Scripts/using_postMessage>.");
       return self.on.apply(null, arguments);
     };
 
@@ -318,7 +309,7 @@ const ContentWorker = Object.freeze({
                       "definitions with calls to `self.on('message', " +
                       "function (data){})`. " +
                       "For more info on `self.on`, see " +
-                      "<https://addons.mozilla.org/en-US/developers/docs/sdk/latest/dev-guide/addon-development/web-content.html>.");
+                      "<https://developer.mozilla.org/en-US/Add-ons/SDK/Guides/Content_Scripts/using_postMessage>.");
         onMessage = v;
         if (typeof onMessage == "function")
           self.on("message", onMessage);

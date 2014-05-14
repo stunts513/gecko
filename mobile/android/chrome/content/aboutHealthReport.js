@@ -27,7 +27,7 @@ const EVENT_HEALTH_RESPONSE = "HealthReport:Response";
 
 // about:healthreport prefs are stored in Firefox's default Android
 // SharedPreferences.
-let sharedPrefs = new SharedPreferences();
+let sharedPrefs = SharedPreferences.forApp();
 
 let healthReportWrapper = {
   init: function () {
@@ -188,3 +188,6 @@ let healthReportWrapper = {
     healthReportWrapper.reportFailure(healthReportWrapper.ERROR_PAYLOAD_FAILED);
   },
 };
+
+window.addEventListener("load", healthReportWrapper.init.bind(healthReportWrapper), false);
+window.addEventListener("unload", healthReportWrapper.uninit.bind(healthReportWrapper), false);

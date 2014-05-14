@@ -26,6 +26,7 @@
 #include "gfxPlatformMac.h"
 #endif
 #include "gfxRect.h"                    // for gfxRect
+#include "gfxUtils.h"                   // for frame color util
 #include "mozilla/Assertions.h"         // for MOZ_ASSERT, etc
 #include "mozilla/RefPtr.h"             // for RefPtr, TemporaryRef
 #include "mozilla/gfx/2D.h"             // for DrawTarget
@@ -53,7 +54,6 @@
 #include "GeckoProfiler.h"
 #include "TextRenderer.h"               // for TextRenderer
 
-class gfxASurface;
 class gfxContext;
 struct nsIntSize;
 
@@ -104,6 +104,7 @@ LayerManagerComposite::LayerManagerComposite(Compositor* aCompositor)
 , mInTransaction(false)
 , mIsCompositorReady(false)
 , mDebugOverlayWantsNextFrame(false)
+, mGeometryChanged(true)
 {
   mTextRenderer = new TextRenderer(aCompositor);
   MOZ_ASSERT(aCompositor);
@@ -155,7 +156,8 @@ LayerManagerComposite::BeginTransaction()
   
   mIsCompositorReady = true;
 
-  if (Compositor::GetBackend() == LayersBackend::LAYERS_BASIC) {
+  if (Compositor::GetBackend() == LayersBackend::LAYERS_OPENGL ||
+      Compositor::GetBackend() == LayersBackend::LAYERS_BASIC) {
     mClonedLayerTreeProperties = LayerProperties::CloneFrom(GetRoot());
   }
 }
@@ -223,7 +225,8 @@ LayerManagerComposite::EndTransaction(DrawThebesLayerCallback aCallback,
   }
 
   if (mRoot && mClonedLayerTreeProperties) {
-    nsIntRegion invalid = mClonedLayerTreeProperties->ComputeDifferences(mRoot, nullptr);
+    nsIntRegion invalid =
+      mClonedLayerTreeProperties->ComputeDifferences(mRoot, nullptr, &mGeometryChanged);
     mClonedLayerTreeProperties = nullptr;
 
     mInvalidRegion.Or(mInvalidRegion, invalid);
@@ -243,6 +246,7 @@ LayerManagerComposite::EndTransaction(DrawThebesLayerCallback aCallback,
     mRoot->ComputeEffectiveTransforms(gfx::Matrix4x4());
 
     Render();
+    mGeometryChanged = false;
   }
 
   mCompositor->SetTargetContext(nullptr);
@@ -254,8 +258,8 @@ LayerManagerComposite::EndTransaction(DrawThebesLayerCallback aCallback,
 #endif
 }
 
-already_AddRefed<gfxASurface>
-LayerManagerComposite::CreateOptimalMaskSurface(const IntSize &aSize)
+TemporaryRef<DrawTarget>
+LayerManagerComposite::CreateOptimalMaskDrawTarget(const IntSize &aSize)
 {
   NS_RUNTIMEABORT("Should only be called on the drawing side");
   return nullptr;
@@ -307,104 +311,38 @@ LayerManagerComposite::RootLayer() const
   return ToLayerComposite(mRoot);
 }
 
-// Size of the builtin font.
-static const float FontHeight = 7.f;
-static const float FontWidth = 4.f;
-static const float FontStride = 4.f;
-
-// Scale the font when drawing it to the viewport for better readability.
-static const float FontScaleX = 2.f;
-static const float FontScaleY = 3.f;
-
-static void DrawDigits(unsigned int aValue,
-		       int aOffsetX, int aOffsetY,
-                       Compositor* aCompositor,
-		       EffectChain& aEffectChain)
-{
-  if (aValue > 999) {
-    aValue = 999;
-  }
-
-  unsigned int divisor = 100;
-  float textureWidth = FontWidth * 10;
-  gfx::Float opacity = 1;
-  gfx::Matrix4x4 transform;
-  transform.Scale(FontScaleX, FontScaleY, 1);
-
-  for (size_t n = 0; n < 3; ++n) {
-    unsigned int digit = aValue % (divisor * 10) / divisor;
-    divisor /= 10;
-
-    RefPtr<TexturedEffect> texturedEffect = static_cast<TexturedEffect*>(aEffectChain.mPrimaryEffect.get());
-    texturedEffect->mTextureCoords = Rect(float(digit * FontWidth) / textureWidth, 0, FontWidth / textureWidth, 1.0f);
-
-    Rect drawRect = Rect(aOffsetX + n * FontWidth, aOffsetY, FontWidth, FontHeight);
-    Rect clipRect = Rect(0, 0, 300, 100);
-    aCompositor->DrawQuad(drawRect, clipRect,
-	aEffectChain, opacity, transform);
-  }
-}
-
-void FPSState::DrawFPS(TimeStamp aNow,
-                       unsigned int aFillRatio,
-                       Compositor* aCompositor)
-{
-  if (!mFPSTextureSource) {
-    const char *text =
-      "                                        "
-      " XXX XX  XXX XXX X X XXX XXX XXX XXX XXX"
-      " X X  X    X   X X X X   X     X X X X X"
-      " X X  X  XXX XXX XXX XXX XXX   X XXX XXX"
-      " X X  X  X     X   X   X X X   X X X   X"
-      " XXX XXX XXX XXX   X XXX XXX   X XXX   X"
-      "                                        ";
-
-    // Convert the text encoding above to RGBA.
-    int w = FontWidth * 10;
-    int h = FontHeight;
-    uint32_t* buf = (uint32_t *) malloc(w * h * sizeof(uint32_t));
-    for (int i = 0; i < h; i++) {
-      for (int j = 0; j < w; j++) {
-        uint32_t purple = 0xfff000ff;
-        uint32_t white  = 0xffffffff;
-        buf[i * w + j] = (text[i * w + j] == ' ') ? purple : white;
-      }
-    }
-
-   int bytesPerPixel = 4;
-    RefPtr<DataSourceSurface> fpsSurface = Factory::CreateWrappingDataSourceSurface(
-      reinterpret_cast<uint8_t*>(buf), w * bytesPerPixel, IntSize(w, h), SurfaceFormat::B8G8R8A8);
-    mFPSTextureSource = aCompositor->CreateDataTextureSource();
-    mFPSTextureSource->Update(fpsSurface);
-  }
-
-  EffectChain effectChain;
-  effectChain.mPrimaryEffect = CreateTexturedEffect(SurfaceFormat::B8G8R8A8, mFPSTextureSource, Filter::POINT);
-
-  unsigned int fps = unsigned(mCompositionFps.AddFrameAndGetFps(aNow));
-  unsigned int txnFps = unsigned(mTransactionFps.GetFpsAt(aNow));
-
-  DrawDigits(fps, 0, 0, aCompositor, effectChain);
-  DrawDigits(txnFps, FontWidth * 4, 0, aCompositor, effectChain);
-  DrawDigits(aFillRatio, FontWidth * 8, 0, aCompositor, effectChain);
-}
-
 static uint16_t sFrameCount = 0;
 void
 LayerManagerComposite::RenderDebugOverlay(const Rect& aBounds)
 {
-  if (gfxPrefs::LayersDrawFPS()) {
+  bool drawFps = gfxPrefs::LayersDrawFPS();
+  bool drawFrameCounter = gfxPrefs::DrawFrameCounter();
+  bool drawFrameColorBars = gfxPrefs::CompositorDrawColorBars();
+
+  if (drawFps) {
     if (!mFPS) {
       mFPS = new FPSState();
     }
 
     float fillRatio = mCompositor->GetFillRatio();
-    mFPS->DrawFPS(TimeStamp::Now(), unsigned(fillRatio), mCompositor);
+    mFPS->DrawFPS(TimeStamp::Now(), drawFrameColorBars ? 10 : 0, 0, unsigned(fillRatio), mCompositor);
   } else {
     mFPS = nullptr;
   }
 
-  if (gfxPrefs::DrawFrameCounter()) {
+  if (drawFrameColorBars) {
+    gfx::Rect sideRect(0, 0, 10, aBounds.height);
+
+    EffectChain effects;
+    effects.mPrimaryEffect = new EffectSolidColor(gfxUtils::GetColorForFrameNumber(sFrameCount));
+    mCompositor->DrawQuad(sideRect,
+                          sideRect,
+                          effects,
+                          1.0,
+                          gfx::Matrix4x4());
+  }
+
+  if (drawFrameCounter) {
     profiler_set_frame_number(sFrameCount);
 
     uint16_t frameNumber = sFrameCount;
@@ -427,6 +365,9 @@ LayerManagerComposite::RenderDebugOverlay(const Rect& aBounds)
                             opacity,
                             gfx::Matrix4x4());
     }
+  }
+
+  if (drawFrameColorBars || drawFrameCounter) {
     // We intentionally overflow at 2^16.
     sFrameCount++;
   }
@@ -448,7 +389,7 @@ LayerManagerComposite::Render()
   /** Our more efficient but less powerful alter ego, if one is available. */
   nsRefPtr<Composer2D> composer2D = mCompositor->GetWidget()->GetComposer2D();
 
-  if (!mTarget && composer2D && composer2D->TryRender(mRoot, mWorldMatrix)) {
+  if (!mTarget && composer2D && composer2D->TryRender(mRoot, mWorldMatrix, mGeometryChanged)) {
     if (mFPS) {
       double fps = mFPS->mCompositionFps.AddFrameAndGetFps(TimeStamp::Now());
       if (gfxPrefs::LayersDrawFPS()) {
@@ -888,6 +829,18 @@ LayerComposite::Destroy()
     mDestroyed = true;
     CleanupResources();
   }
+}
+
+void
+LayerComposite::AddBlendModeEffect(EffectChain& aEffectChain)
+{
+  gfx::CompositionOp blendMode = GetLayer()->GetEffectiveMixBlendMode();
+  if (blendMode == gfx::CompositionOp::OP_OVER) {
+    return;
+  }
+
+  aEffectChain.mSecondaryEffects[EffectTypes::BLEND_MODE] = new EffectBlendMode(blendMode);
+  return;
 }
 
 bool

@@ -209,7 +209,7 @@ $(OBJDIR)/.mozconfig.mk: $(FOUND_MOZCONFIG) $(call mkdir_deps,$(OBJDIR)) $(OBJDI
 # Include that makefile so that it is created. This should not actually change
 # the environment since MOZCONFIG_CONTENT, which MOZCONFIG_OUT_LINES derives
 # from, has already been eval'ed.
--include $(OBJDIR)/.mozconfig.mk
+include $(OBJDIR)/.mozconfig.mk
 endif
 
 # Print out any options loaded from mozconfig.
@@ -395,14 +395,14 @@ endif
 # Build it
 
 realbuild::  $(OBJDIR)/Makefile $(OBJDIR)/config.status
-	$(MOZ_MAKE)
+	+$(MOZ_MAKE)
 
 ####################################
 # Other targets
 
 # Pass these target onto the real build system
 $(OBJDIR_TARGETS):: $(OBJDIR)/Makefile $(OBJDIR)/config.status
-	$(MOZ_MAKE) $@
+	+$(MOZ_MAKE) $@
 
 ####################################
 # Postflight

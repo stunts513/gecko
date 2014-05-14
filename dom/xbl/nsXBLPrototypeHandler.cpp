@@ -305,7 +305,7 @@ nsXBLPrototypeHandler::ExecuteHandler(EventTarget* aTarget,
   // scope if one doesn't already exist, and potentially wraps it cross-
   // compartment into our scope (via aAllowWrapping=true).
   JS::Rooted<JS::Value> targetV(cx, JS::UndefinedValue());
-  rv = nsContentUtils::WrapNative(cx, scopeObject, scriptTarget, &targetV);
+  rv = nsContentUtils::WrapNative(cx, scriptTarget, &targetV);
   NS_ENSURE_SUCCESS(rv, rv);
 
   // Next, clone the generic handler to be parented to the target.
@@ -370,7 +370,7 @@ nsXBLPrototypeHandler::EnsureEventHandler(nsIScriptGlobalObject* aGlobal,
 
   uint32_t argCount;
   const char **argNames;
-  nsContentUtils::GetEventArgNames(kNameSpaceID_XBL, aName, &argCount,
+  nsContentUtils::GetEventArgNames(kNameSpaceID_XBL, aName, false, &argCount,
                                    &argNames);
 
   // Compile the event handler in the xbl scope.

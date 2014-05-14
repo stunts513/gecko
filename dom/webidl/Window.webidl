@@ -16,6 +16,7 @@
  */
 
 interface ApplicationCache;
+interface IID;
 interface MozFrameRequestCallback;
 interface nsIBrowserDOMWindow;
 interface nsIMessageBroadcaster;
@@ -30,7 +31,7 @@ typedef any Transferable;
    CrossOriginReadable] readonly attribute WindowProxy window;
   [Replaceable, Throws,
    CrossOriginReadable] readonly attribute WindowProxy self;
-  //[Unforgeable] readonly attribute Document? document;
+  [Unforgeable, StoreInSlot, Pure, Func="nsGlobalWindow::WindowOnWebIDL"] readonly attribute Document? document;
   [Throws] attribute DOMString name; 
   [PutForwards=href, Unforgeable, Throws,
    CrossOriginReadable, CrossOriginWritable] readonly attribute Location? location;
@@ -56,8 +57,8 @@ typedef any Transferable;
   //[Throws] readonly attribute WindowProxy parent;
   [Replaceable, Throws, CrossOriginReadable] readonly attribute WindowProxy? parent;
   [Throws] readonly attribute Element? frameElement;
-  //[Throws] WindowProxy open(optional DOMString url = "about:blank", optional DOMString target = "_blank", optional DOMString features = "", optional boolean replace = false);
-  [Throws] WindowProxy? open(optional DOMString url = "", optional DOMString target = "", optional DOMString features = "");
+  //[Throws] WindowProxy open(optional DOMString url = "about:blank", optional DOMString target = "_blank", [TreatNullAs=EmptyString] optional DOMString features = "", optional boolean replace = false);
+  [Throws] WindowProxy? open(optional DOMString url = "", optional DOMString target = "", [TreatNullAs=EmptyString] optional DOMString features = "");
   // We think the indexed getter is a bug in the spec, it actually needs to live
   // on the WindowProxy
   //getter WindowProxy (unsigned long index);
@@ -76,7 +77,7 @@ typedef any Transferable;
   [Throws] DOMString? prompt(optional DOMString message = "", optional DOMString default = "");
   [Throws] void print();
   //[Throws] any showModalDialog(DOMString url, optional any argument);
-  [Throws] any showModalDialog(DOMString url, any argument, optional DOMString options = "");
+  [Throws] any showModalDialog(DOMString url, optional any argument, optional DOMString options = "");
 
   [Throws, CrossOriginCallable] void postMessage(any message, DOMString targetOrigin, optional sequence<Transferable> transfer);
 
@@ -197,6 +198,17 @@ partial interface Window {
   [Throws] attribute long outerHeight;
 };
 
+/**
+ * Special function that gets the fill ratio from the compositor used for testing
+ * and is an indicator that we're layerizing correctly.
+ * This function will call the given callback current fill ratio for a
+ * composited frame. We don't guarantee which frame fill ratios will be returned.
+ */
+partial interface Window {
+  [ChromeOnly, Throws] void mozRequestOverfill(OverfillCallback callback);
+};
+callback OverfillCallback = void (unsigned long overfill);
+
 // https://dvcs.w3.org/hg/webperf/raw-file/tip/specs/RequestAnimationFrame/Overview.html
 partial interface Window {
   [Throws] long requestAnimationFrame(FrameRequestCallback callback);
@@ -224,6 +236,14 @@ interface SpeechSynthesisGetter {
 
 Window implements SpeechSynthesisGetter;
 #endif
+
+// http://www.whatwg.org/specs/web-apps/current-work/
+[NoInterfaceObject]
+interface WindowModal {
+  [Throws, Func="nsGlobalWindow::IsModalContentWindow"] readonly attribute any dialogArguments;
+  [Throws, Func="nsGlobalWindow::IsModalContentWindow"] attribute any returnValue;
+};
+Window implements WindowModal;
 
 // Mozilla-specific stuff
 partial interface Window {
@@ -341,6 +361,8 @@ partial interface Window {
   [Replaceable, Throws] readonly attribute object? content;
 
   [ChromeOnly, Throws] readonly attribute object? __content;
+
+  [Throws, ChromeOnly] any getInterface(IID iid);
 };
 
 Window implements TouchEventHandlers;
@@ -361,7 +383,8 @@ partial interface Window {
 };
 #endif
 
-[ChromeOnly] interface ChromeWindow {
+[Func="IsChromeOrXBL"]
+interface ChromeWindow {
   [Func="nsGlobalWindow::IsChromeWindow"]
   const unsigned short STATE_MAXIMIZED = 1;
   [Func="nsGlobalWindow::IsChromeWindow"]

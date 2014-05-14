@@ -31,6 +31,7 @@
 #include "nsCSSValue.h"                 // for nsCSSValue::Array, etc
 #include "nsPrintfCString.h"            // for nsPrintfCString
 #include "nsStyleStruct.h"              // for nsTimingFunction, etc
+#include "gfxPrefs.h"
 
 using namespace mozilla::layers;
 using namespace mozilla::gfx;
@@ -112,18 +113,18 @@ LayerManager::GetScrollableLayers(nsTArray<Layer*>& aArray)
   }
 }
 
-already_AddRefed<gfxASurface>
-LayerManager::CreateOptimalSurface(const gfx::IntSize &aSize,
-                                   gfxImageFormat aFormat)
+TemporaryRef<DrawTarget>
+LayerManager::CreateOptimalDrawTarget(const gfx::IntSize &aSize,
+                                      SurfaceFormat aFormat)
 {
-  return gfxPlatform::GetPlatform()->
-    CreateOffscreenSurface(aSize, gfxASurface::ContentFromFormat(aFormat));
+  return gfxPlatform::GetPlatform()->CreateOffscreenContentDrawTarget(aSize,
+                                                                      aFormat);
 }
 
-already_AddRefed<gfxASurface>
-LayerManager::CreateOptimalMaskSurface(const gfx::IntSize &aSize)
+TemporaryRef<DrawTarget>
+LayerManager::CreateOptimalMaskDrawTarget(const gfx::IntSize &aSize)
 {
-  return CreateOptimalSurface(aSize, gfxImageFormat::A8);
+  return CreateOptimalDrawTarget(aSize, SurfaceFormat::A8);
 }
 
 TemporaryRef<DrawTarget>
@@ -733,6 +734,7 @@ ContainerLayer::ContainerLayer(LayerManager* aManager, void* aImplData)
   : Layer(aManager, aImplData),
     mFirstChild(nullptr),
     mLastChild(nullptr),
+    mScrollHandoffParentId(FrameMetrics::NULL_SCROLL_ID),
     mPreXScale(1.0f),
     mPreYScale(1.0f),
     mInheritedXScale(1.0f),
@@ -893,7 +895,8 @@ ContainerLayer::RepositionChild(Layer* aChild, Layer* aAfter)
 void
 ContainerLayer::FillSpecificAttributes(SpecificLayerAttributes& aAttrs)
 {
-  aAttrs = ContainerLayerAttributes(GetFrameMetrics(), mPreXScale, mPreYScale,
+  aAttrs = ContainerLayerAttributes(GetFrameMetrics(), mScrollHandoffParentId,
+                                    mPreXScale, mPreYScale,
                                     mInheritedXScale, mInheritedYScale);
 }
 
@@ -947,7 +950,8 @@ ContainerLayer::DefaultComputeEffectiveTransforms(const Matrix4x4& aTransformToS
   mEffectiveTransform = SnapTransformTranslation(idealTransform, &residual);
 
   bool useIntermediateSurface;
-  if (GetMaskLayer()) {
+  if (GetMaskLayer() ||
+      GetForceIsolatedGroup()) {
     useIntermediateSurface = true;
 #ifdef MOZ_DUMP_PAINTING
   } else if (gfxUtils::sDumpPainting) {
@@ -955,7 +959,8 @@ ContainerLayer::DefaultComputeEffectiveTransforms(const Matrix4x4& aTransformToS
 #endif
   } else {
     float opacity = GetEffectiveOpacity();
-    if (opacity != 1.0f && HasMultipleChildren()) {
+    CompositionOp blendMode = GetEffectiveMixBlendMode();
+    if ((opacity != 1.0f || blendMode != CompositionOp::OP_OVER) && HasMultipleChildren()) {
       useIntermediateSurface = true;
     } else {
       useIntermediateSurface = false;
@@ -994,6 +999,40 @@ ContainerLayer::DefaultComputeEffectiveTransforms(const Matrix4x4& aTransformToS
     ComputeEffectiveTransformForMaskLayer(aTransformToSurface);
   } else {
     ComputeEffectiveTransformForMaskLayer(Matrix4x4());
+  }
+}
+
+void
+ContainerLayer::DefaultComputeSupportsComponentAlphaChildren(bool* aNeedsSurfaceCopy)
+{
+  bool supportsComponentAlphaChildren = false;
+  bool needsSurfaceCopy = false;
+  CompositionOp blendMode = GetEffectiveMixBlendMode();
+  if (UseIntermediateSurface()) {
+    if (GetEffectiveVisibleRegion().GetNumRects() == 1 &&
+        (GetContentFlags() & Layer::CONTENT_OPAQUE))
+    {
+      supportsComponentAlphaChildren = true;
+    } else {
+      gfx::Matrix transform;
+      if (HasOpaqueAncestorLayer(this) &&
+          GetEffectiveTransform().Is2D(&transform) &&
+          !gfx::ThebesMatrix(transform).HasNonIntegerTranslation() &&
+          blendMode == gfx::CompositionOp::OP_OVER) {
+        supportsComponentAlphaChildren = true;
+        needsSurfaceCopy = true;
+      }
+    }
+  } else if (blendMode == gfx::CompositionOp::OP_OVER) {
+    supportsComponentAlphaChildren =
+      (GetContentFlags() & Layer::CONTENT_OPAQUE) ||
+      (GetParent() && GetParent()->SupportsComponentAlphaChildren());
+  }
+
+  mSupportsComponentAlphaChildren = supportsComponentAlphaChildren &&
+                                    gfxPrefs::ComponentAlphaEnabled();
+  if (aNeedsSurfaceCopy) {
+    *aNeedsSurfaceCopy = mSupportsComponentAlphaChildren && needsSurfaceCopy;
   }
 }
 
@@ -1380,6 +1419,9 @@ ContainerLayer::PrintInfo(nsACString& aTo, const char* aPrefix)
   Layer::PrintInfo(aTo, aPrefix);
   if (!mFrameMetrics.IsDefault()) {
     AppendToString(aTo, mFrameMetrics, " [metrics=", "]");
+  }
+  if (mScrollHandoffParentId != FrameMetrics::NULL_SCROLL_ID) {
+    aTo.AppendPrintf(" [scrollParent=%llu]", mScrollHandoffParentId);
   }
   if (UseIntermediateSurface()) {
     aTo += " [usesTmpSurf]";

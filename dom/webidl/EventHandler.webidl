@@ -105,6 +105,10 @@ interface GlobalEventHandlers {
            attribute EventHandler onpointerenter;
            [Pref="dom.w3c_pointer_events.enabled"]
            attribute EventHandler onpointerleave;
+           [Pref="dom.w3c_pointer_events.enabled"]
+           attribute EventHandler ongotpointercapture;
+           [Pref="dom.w3c_pointer_events.enabled"]
+           attribute EventHandler onlostpointercapture;
 
            // Mozilla-specific handlers
            attribute EventHandler onmozfullscreenchange;
@@ -119,6 +123,7 @@ interface WindowEventHandlers {
            attribute EventHandler onbeforeprint;
            attribute OnBeforeUnloadEventHandler onbeforeunload;
            attribute EventHandler onhashchange;
+           attribute EventHandler onlanguagechange;
            attribute EventHandler onmessage;
            attribute EventHandler onoffline;
            attribute EventHandler ononline;

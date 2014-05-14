@@ -362,6 +362,12 @@ bool OmxDecoder::Init(sp<MediaExtractor>& extractor) {
 
   if (audioTrackIndex != -1) {
     mAudioTrack = extractor->getTrack(audioTrackIndex);
+
+#ifdef MOZ_AUDIO_OFFLOAD
+    // mAudioTrack is be used by OMXCodec. For offloaded audio track, using same
+    // object gives undetermined behavior. So get a new track
+    mAudioOffloadTrack = extractor->getTrack(audioTrackIndex);
+#endif
   }
   return true;
 }
@@ -418,18 +424,6 @@ bool OmxDecoder::TryLoad() {
 
   // read audio metadata
   if (mAudioSource.get()) {
-    // For RTSP, we don't read the audio source for now.
-    // The metadata of RTSP will be obtained through SDP at connection time.
-    if (mResource->GetRtspPointer()) {
-      sp<MetaData> meta = mAudioSource->getFormat();
-      if (!meta->findInt32(kKeyChannelCount, &mAudioChannels) ||
-          !meta->findInt32(kKeySampleRate, &mAudioSampleRate)) {
-        NS_WARNING("Couldn't get audio metadata from OMX decoder");
-        return false;
-      }
-      return true;
-    }
-
     // To reliably get the channel and sample rate data we need to read from the
     // audio source until we get a INFO_FORMAT_CHANGE status
     status_t err = mAudioSource->read(&mAudioBuffer);
@@ -500,7 +494,11 @@ bool OmxDecoder::AllocateMediaResources()
     // is currently used, and for formats this code is currently used
     // for (h.264).  So if we don't get a hardware decoder, just give
     // up.
+#ifdef MOZ_OMX_WEBM_DECODER
+    int flags = 0;//fallback to omx sw decoder if there is no hw decoder
+#else
     int flags = kHardwareCodecsOnly;
+#endif//MOZ_OMX_WEBM_DECODER
 
     if (isInEmulator()) {
       // If we are in emulator, allow to fall back to software.
@@ -619,6 +617,20 @@ bool OmxDecoder::SetVideoFormat() {
   if (!mVideoSource->getFormat()->findInt32(kKeySliceHeight, &mVideoSliceHeight)) {
     mVideoSliceHeight = mVideoHeight;
     NS_WARNING("slice height not available, assuming height");
+  }
+
+  // Since ICS, valid video side is caluculated from kKeyCropRect.
+  // kKeyWidth means decoded video buffer width.
+  // kKeyHeight means decoded video buffer height.
+  // On some hardwares, decoded video buffer and valid video size are different.
+  int32_t crop_left, crop_top, crop_right, crop_bottom;
+  if (mVideoSource->getFormat()->findRect(kKeyCropRect,
+                                          &crop_left,
+                                          &crop_top,
+                                          &crop_right,
+                                          &crop_bottom)) {
+    mVideoWidth = crop_right - crop_left + 1;
+    mVideoHeight = crop_bottom - crop_top + 1;
   }
 
   if (!mVideoSource->getFormat()->findInt32(kKeyRotation, &mVideoRotation)) {

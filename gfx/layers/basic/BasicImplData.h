@@ -11,8 +11,6 @@
 #include "nsISupportsImpl.h"            // for MOZ_COUNT_CTOR, etc
 #include "mozilla/gfx/Types.h"
 
-class gfxASurface;
-
 namespace mozilla {
 namespace layers {
 
@@ -61,7 +59,9 @@ public:
    * set up to account for all the properties of the layer (transform,
    * opacity, etc).
    */
-  virtual void Paint(gfx::DrawTarget* aDT, Layer* aMaskLayer) {}
+  virtual void Paint(gfx::DrawTarget* aDT,
+                     const gfx::Point& aDeviceOffset,
+                     Layer* aMaskLayer) {}
 
   /**
    * Like Paint() but called for ThebesLayers with the additional parameters
@@ -72,11 +72,11 @@ public:
   virtual void PaintThebes(gfxContext* aContext,
                            Layer* aMasklayer,
                            LayerManager::DrawThebesLayerCallback aCallback,
-                           void* aCallbackData,
-                           ReadbackProcessor* aReadback) {}
+                           void* aCallbackData) {}
 
   virtual void Validate(LayerManager::DrawThebesLayerCallback aCallback,
-                        void* aCallbackData) {}
+                        void* aCallbackData,
+                        ReadbackProcessor* aReadback) {}
 
   /**
    * Layers will get this call when their layer manager is destroyed, this
@@ -117,9 +117,6 @@ public:
    * return false if a surface cannot be created.  If true is
    * returned, only one of |aSurface| or |aDescriptor| is valid.
    */
-  virtual bool GetAsSurface(gfxASurface** aSurface,
-                            SurfaceDescriptor* aDescriptor)
-  { return false; }
   virtual TemporaryRef<gfx::SourceSurface> GetAsSourceSurface() { return nullptr; }
 
   bool GetClipToVisibleRegion() { return mClipToVisibleRegion; }

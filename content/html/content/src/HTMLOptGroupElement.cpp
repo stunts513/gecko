@@ -36,8 +36,8 @@ HTMLOptGroupElement::~HTMLOptGroupElement()
 }
 
 
-NS_IMPL_ISUPPORTS_INHERITED1(HTMLOptGroupElement, nsGenericHTMLElement,
-                             nsIDOMHTMLOptGroupElement)
+NS_IMPL_ISUPPORTS_INHERITED(HTMLOptGroupElement, nsGenericHTMLElement,
+                            nsIDOMHTMLOptGroupElement)
 
 NS_IMPL_ELEMENT_CLONE(HTMLOptGroupElement)
 
@@ -142,9 +142,9 @@ HTMLOptGroupElement::IntrinsicState() const
 }
 
 JSObject*
-HTMLOptGroupElement::WrapNode(JSContext* aCx, JS::Handle<JSObject*> aScope)
+HTMLOptGroupElement::WrapNode(JSContext* aCx)
 {
-  return HTMLOptGroupElementBinding::Wrap(aCx, aScope, this);
+  return HTMLOptGroupElementBinding::Wrap(aCx, this);
 }
 
 } // namespace dom

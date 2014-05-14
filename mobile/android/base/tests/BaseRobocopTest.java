@@ -6,7 +6,6 @@ package org.mozilla.gecko.tests;
 
 import java.util.Map;
 
-import org.mozilla.gecko.AppConstants;
 import org.mozilla.gecko.Assert;
 import org.mozilla.gecko.FennecInstrumentationTestRunner;
 import org.mozilla.gecko.FennecMochitestAssert;
@@ -15,12 +14,15 @@ import org.mozilla.gecko.FennecTalosAssert;
 
 import android.app.Activity;
 import android.test.ActivityInstrumentationTestCase2;
+import android.util.Log;
 
 public abstract class BaseRobocopTest extends ActivityInstrumentationTestCase2<Activity> {
     public enum Type {
         MOCHITEST,
         TALOS
     }
+
+    private static final String DEFAULT_ROOT_PATH = "/mnt/sdcard/tests";
 
     protected Assert mAsserter;
     protected String mLogFile;
@@ -39,7 +41,7 @@ public abstract class BaseRobocopTest extends ActivityInstrumentationTestCase2<A
      */
     @SuppressWarnings("unchecked")
     public BaseRobocopTest() {
-        this((Class<Activity>) AppConstants.BROWSER_INTENT_CLASS);
+        this((Class<Activity>) TestConstants.BROWSER_INTENT_CLASS);
     }
 
     /**
@@ -67,6 +69,10 @@ public abstract class BaseRobocopTest extends ActivityInstrumentationTestCase2<A
     protected void setUp() throws Exception {
         // Load config file from root path (set up by Python script).
         mRootPath = FennecInstrumentationTestRunner.getFennecArguments().getString("deviceroot");
+        if (mRootPath == null) {
+            Log.w("Robocop", "Did not find deviceroot in arguments; falling back to: " + DEFAULT_ROOT_PATH);
+            mRootPath = DEFAULT_ROOT_PATH;
+        }
         String configFile = FennecNativeDriver.getFile(mRootPath + "/robotium.config");
         mConfig = FennecNativeDriver.convertTextToTable(configFile);
         mLogFile = (String) mConfig.get("logfile");

@@ -92,15 +92,15 @@ NS_IMPL_ADDREF_INHERITED(HTMLSharedObjectElement, Element)
 NS_IMPL_RELEASE_INHERITED(HTMLSharedObjectElement, Element)
 
 NS_INTERFACE_TABLE_HEAD_CYCLE_COLLECTION_INHERITED(HTMLSharedObjectElement)
-  NS_INTERFACE_TABLE_INHERITED8(HTMLSharedObjectElement,
-                                nsIRequestObserver,
-                                nsIStreamListener,
-                                nsIFrameLoaderOwner,
-                                nsIObjectLoadingContent,
-                                imgINotificationObserver,
-                                nsIImageLoadingContent,
-                                imgIOnloadBlocker,
-                                nsIChannelEventSink)
+  NS_INTERFACE_TABLE_INHERITED(HTMLSharedObjectElement,
+                               nsIRequestObserver,
+                               nsIStreamListener,
+                               nsIFrameLoaderOwner,
+                               nsIObjectLoadingContent,
+                               imgINotificationObserver,
+                               nsIImageLoadingContent,
+                               imgIOnloadBlocker,
+                               nsIChannelEventSink)
   NS_INTERFACE_TABLE_TO_MAP_SEGUE
   NS_INTERFACE_MAP_ENTRY_IF_TAG(nsIDOMHTMLAppletElement, applet)
   NS_INTERFACE_MAP_ENTRY_IF_TAG(nsIDOMHTMLEmbedElement, embed)
@@ -343,14 +343,14 @@ HTMLSharedObjectElement::CopyInnerTo(Element* aDest)
 }
 
 JSObject*
-HTMLSharedObjectElement::WrapNode(JSContext* aCx, JS::Handle<JSObject*> aScope)
+HTMLSharedObjectElement::WrapNode(JSContext* aCx)
 {
   JSObject* obj;
   if (mNodeInfo->Equals(nsGkAtoms::applet)) {
-    obj = HTMLAppletElementBinding::Wrap(aCx, aScope, this);
+    obj = HTMLAppletElementBinding::Wrap(aCx, this);
   } else {
     MOZ_ASSERT(mNodeInfo->Equals(nsGkAtoms::embed));
-    obj = HTMLEmbedElementBinding::Wrap(aCx, aScope, this);
+    obj = HTMLEmbedElementBinding::Wrap(aCx, this);
   }
   if (!obj) {
     return nullptr;

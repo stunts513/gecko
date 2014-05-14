@@ -269,6 +269,14 @@ class IDLScope(IDLObject):
                 % (identifier.name,
                     originalObject.location, newObject.location), [])
 
+        if (isinstance(originalObject, IDLDictionary) or
+            isinstance(newObject, IDLDictionary)):
+            raise WebIDLError(
+                "Name collision between dictionary declarations for "
+                "identifier '%s'.\n%s\n%s"
+                % (identifier.name,
+                   originalObject.location, newObject.location), [])
+
         # We do the merging of overloads here as opposed to in IDLInterface
         # because we need to merge overloads of NamedConstructors and we need to
         # detect conflicts in those across interfaces. See also the comment in
@@ -913,7 +921,7 @@ class IDLInterface(IDLObjectWithScope):
                 args = attr.args() if attr.hasArgs() else []
 
                 retType = IDLWrapperType(self.location, self)
-                
+
                 if identifier == "Constructor" or identifier == "ChromeConstructor":
                     name = "constructor"
                     allowForbidden = True
@@ -966,6 +974,14 @@ class IDLInterface(IDLObjectWithScope):
                                       [attr.location])
                 if self.parent:
                     raise WebIDLError("[ArrayClass] must not be specified on "
+                                      "an interface with inherited interfaces",
+                                      [attr.location, self.location])
+            elif (identifier == "ExceptionClass"):
+                if not attr.noArguments():
+                    raise WebIDLError("[ExceptionClass] must take no arguments",
+                                      [attr.location])
+                if self.parent:
+                    raise WebIDLError("[ExceptionClass] must not be specified on "
                                       "an interface with inherited interfaces",
                                       [attr.location, self.location])
             elif identifier == "Global":
@@ -1444,7 +1460,7 @@ class IDLType(IDLObject):
 
 class IDLUnresolvedType(IDLType):
     """
-        Unresolved types are interface types 
+        Unresolved types are interface types
     """
 
     def __init__(self, location, name):
@@ -2944,16 +2960,8 @@ class IDLArgument(IDLObjectWithIdentifier):
         elif self.type.isAny():
             assert (self.defaultValue is None or
                     isinstance(self.defaultValue, IDLNullValue))
-            if (self.optional and not self.variadic and
-                not self.dictionaryMember and not self.defaultValue):
-                raise WebIDLError("Arguments of type 'any' are always optional "
-                                  "and shouldn't have the 'optional' keyword "
-                                  "unless they're being given a default value "
-                                  "of 'null'",
-                                  [self.location])
-            # 'any' values are always optional.
-            self.optional = True
-            if not self.defaultValue and not self.variadic:
+            # optional 'any' values always have a default value
+            if self.optional and not self.defaultValue and not self.variadic:
                 # Set the default value to undefined, for simplicity, so the
                 # codegen doesn't have to special-case this.
                 self.defaultValue = IDLUndefinedValue(self.location)
@@ -3667,7 +3675,7 @@ class Parser(Tokenizer):
     # The p_Foo functions here must match the WebIDL spec's grammar.
     # It's acceptable to split things at '|' boundaries.
     def p_Definitions(self, p):
-        """ 
+        """
             Definitions : ExtendedAttributeList Definition Definitions
         """
         if p[2]:
@@ -4355,9 +4363,9 @@ class Parser(Tokenizer):
             raise WebIDLError("Mandatory arguments can't have a default value.",
                               [self.getLocation(p, 6)])
 
-        # We can't test t.isAny() here and force optional to true, since at this
-        # point t is not a fully resolved type yet (e.g. it might be a typedef).
-        # We'll handle the 'any' case in IDLArgument.complete.
+        # We can't test t.isAny() here and give it a default value as needed,
+        # since at this point t is not a fully resolved type yet (e.g. it might
+        # be a typedef).  We'll handle the 'any' case in IDLArgument.complete.
 
         if variadic:
             if optional:
@@ -4595,7 +4603,7 @@ class Parser(Tokenizer):
 
     def p_UnionMemberTypesEmpty(self, p):
         """
-            UnionMemberTypes : 
+            UnionMemberTypes :
         """
         p[0] = []
 

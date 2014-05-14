@@ -45,6 +45,10 @@ class ImageContainer;
 } //namepsace
 } //namepsace
 
+// A set of blend modes, that never includes OP_OVER (since it's
+// considered the default, rather than a specific blend mode).
+typedef mozilla::EnumSet<mozilla::gfx::CompositionOp> BlendModeSet;
+
 /*
  * An nsIFrame can have many different visual parts. For example an image frame
  * can have a background, border, and outline, the image itself, and a
@@ -114,6 +118,7 @@ public:
   typedef mozilla::DisplayListClipState DisplayListClipState;
   typedef nsIWidget::ThemeGeometry ThemeGeometry;
   typedef mozilla::layers::Layer Layer;
+  typedef mozilla::layers::FrameMetrics::ViewID ViewID;
 
   /**
    * @param aReferenceFrame the frame at the root of the subtree; its origin
@@ -249,6 +254,10 @@ public:
    */
   nsIFrame* GetIgnoreScrollFrame() { return mIgnoreScrollFrame; }
   /**
+   * Get the ViewID of the nearest scrolling ancestor frame.
+   */
+  ViewID GetCurrentScrollParentId() const { return mCurrentScrollParentId; }
+  /**
    * Calling this setter makes us include all out-of-flow descendant
    * frames in the display list, wherever they may be positioned (even
    * outside the dirty rects).
@@ -316,6 +325,9 @@ public:
   {
     mAncestorHasTouchEventHandler = aValue;
   }
+
+  bool HaveScrollableDisplayPort() const { return mHaveScrollableDisplayPort; }
+  void SetHaveScrollableDisplayPort() { mHaveScrollableDisplayPort = true; }
 
   bool SetIsCompositingCheap(bool aCompositingCheap) { 
     bool temp = mIsCompositingCheap; 
@@ -599,6 +611,25 @@ public:
     bool                  mOldValue;
   };
 
+  /**
+   * A helper class to temporarily set the value of mCurrentScrollParentId.
+   */
+  class AutoCurrentScrollParentIdSetter;
+  friend class AutoCurrentScrollParentIdSetter;
+  class AutoCurrentScrollParentIdSetter {
+  public:
+    AutoCurrentScrollParentIdSetter(nsDisplayListBuilder* aBuilder, ViewID aScrollId)
+      : mBuilder(aBuilder), mOldValue(aBuilder->mCurrentScrollParentId) {
+      aBuilder->mCurrentScrollParentId = aScrollId;
+    }
+    ~AutoCurrentScrollParentIdSetter() {
+      mBuilder->mCurrentScrollParentId = mOldValue;
+    }
+  private:
+    nsDisplayListBuilder* mBuilder;
+    ViewID                mOldValue;
+  };
+
   // Helpers for tables
   nsDisplayTableItem* GetCurrentTableItem() { return mCurrentTableItem; }
   void SetCurrentTableItem(nsDisplayTableItem* aTableItem) { mCurrentTableItem = aTableItem; }
@@ -661,8 +692,14 @@ public:
    * has a blend mode attached. We do this so we can insert a 
    * nsDisplayBlendContainer in the parent stacking context.
    */
-  void SetContainsBlendMode(bool aContainsBlendMode) { mContainsBlendMode = aContainsBlendMode; }
-  bool ContainsBlendMode() const { return mContainsBlendMode; }
+  void SetContainsBlendMode(uint8_t aBlendMode);
+  void SetContainsBlendModes(const BlendModeSet& aModes) {
+    mContainedBlendModes = aModes;
+  }
+  bool ContainsBlendMode() const { return !mContainedBlendModes.isEmpty(); }
+  BlendModeSet& ContainedBlendModes() {
+    return mContainedBlendModes;
+  }
 
   DisplayListClipState& ClipState() { return mClipState; }
 
@@ -703,6 +740,8 @@ private:
   nsDisplayItem*                 mGlassDisplayItem;
   nsTArray<DisplayItemClip*>     mDisplayItemClipsToDestroy;
   Mode                           mMode;
+  ViewID                         mCurrentScrollParentId;
+  BlendModeSet                   mContainedBlendModes;
   bool                           mBuildCaret;
   bool                           mIgnoreSuppression;
   bool                           mHadToIgnoreSuppression;
@@ -721,8 +760,11 @@ private:
   bool                           mIsPaintingToWindow;
   bool                           mIsCompositingCheap;
   bool                           mContainsPluginItem;
-  bool                           mContainsBlendMode;
   bool                           mAncestorHasTouchEventHandler;
+  // True when the first async-scrollable scroll frame for which we build a
+  // display list has a display port. An async-scrollable scroll frame is one
+  // which WantsAsyncScroll().
+  bool                           mHaveScrollableDisplayPort;
 };
 
 class nsDisplayItem;
@@ -1206,7 +1248,11 @@ public:
    * Stores the given opacity value to be applied when drawing. Returns
    * false if this isn't supported for this display item.
    */
-  virtual bool ApplyOpacity(float aOpacity) { return false; }
+  virtual bool ApplyOpacity(nsDisplayListBuilder* aBuilder,
+                            float aOpacity,
+                            const DisplayItemClip* aClip) {
+    return false;
+  }
   
 #ifdef MOZ_DUMP_PAINTING
   /**
@@ -1280,6 +1326,17 @@ public:
       return;
     }
     mClip = aBuilder->AllocateDisplayItemClip(aClip);
+  }
+
+  void IntersectClip(nsDisplayListBuilder* aBuilder, const DisplayItemClip& aClip)
+  {
+    if (mClip) {
+      DisplayItemClip temp = *mClip;
+      temp.IntersectWith(aClip);
+      SetClip(aBuilder, temp);
+    } else {
+      SetClip(aBuilder, aClip);
+    }
   }
 
   // If we return false here it means that if this item creates a layer then
@@ -2296,9 +2353,14 @@ public:
                                          const nsDisplayItemGeometry* aGeometry,
                                          nsRegion* aInvalidRegion) MOZ_OVERRIDE;
   
-  virtual bool ApplyOpacity(float aOpacity) MOZ_OVERRIDE
+  virtual bool ApplyOpacity(nsDisplayListBuilder* aBuilder,
+                            float aOpacity,
+                            const DisplayItemClip* aClip) MOZ_OVERRIDE
   {
     mOpacity = aOpacity;
+    if (aClip) {
+      IntersectClip(aBuilder, *aClip);
+    }
     return true;
   }
 
@@ -2566,17 +2628,6 @@ public:
     return nullptr;
   }
 
-  /**
-   * Returns true if all descendant display items can be placed in the same
-   * ThebesLayer --- GetLayerState returns LAYER_INACTIVE or LAYER_NONE,
-   * and they all have the given aAnimatedGeometryRoot.
-   */
-  static LayerState RequiredLayerStateForChildren(nsDisplayListBuilder* aBuilder,
-                                                  LayerManager* aManager,
-                                                  const ContainerLayerParameters& aParameters,
-                                                  const nsDisplayList& aList,
-                                                  nsIFrame* aItemFrame);
-
 protected:
   nsDisplayWrapList() {}
 
@@ -2689,10 +2740,7 @@ public:
   }
   virtual LayerState GetLayerState(nsDisplayListBuilder* aBuilder,
                                    LayerManager* aManager,
-                                   const ContainerLayerParameters& aParameters) MOZ_OVERRIDE
-  {
-    return mozilla::LAYER_INACTIVE;
-  }
+                                   const ContainerLayerParameters& aParameters) MOZ_OVERRIDE;
   virtual bool ComputeVisibility(nsDisplayListBuilder* aBuilder,
                                  nsRegion* aVisibleRegion,
                                  const nsRect& aAllowVisibleRegionExpansion) MOZ_OVERRIDE;
@@ -2703,7 +2751,10 @@ public:
 class nsDisplayBlendContainer : public nsDisplayWrapList {
 public:
     nsDisplayBlendContainer(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
-                          nsDisplayList* aList, uint32_t aFlags = 0);
+                            nsDisplayList* aList,
+                            BlendModeSet& aContainedBlendModes);
+    nsDisplayBlendContainer(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
+                            nsDisplayList* aList);
 #ifdef NS_BUILD_REFCNT_LOGGING
     virtual ~nsDisplayBlendContainer();
 #endif
@@ -2715,10 +2766,20 @@ public:
                                      LayerManager* aManager,
                                      const ContainerLayerParameters& aParameters) MOZ_OVERRIDE
     {
-        return mozilla::LAYER_INACTIVE;
+      if (mCanBeActive && aManager->SupportsMixBlendModes(mContainedBlendModes)) {
+        return mozilla::LAYER_ACTIVE;
+      }
+      return mozilla::LAYER_INACTIVE;
     }
     virtual bool TryMerge(nsDisplayListBuilder* aBuilder, nsDisplayItem* aItem) MOZ_OVERRIDE;
     NS_DISPLAY_DECL_NAME("BlendContainer", TYPE_BLEND_CONTAINER)
+
+private:
+    // The set of all blend modes used by nsDisplayMixBlendMode descendents of this container.
+    BlendModeSet mContainedBlendModes;
+    // If this is true, then we should make the layer active if all contained blend
+    // modes can be supported by the current layer manager.
+    bool mCanBeActive;
 };
 
 /**
@@ -2807,6 +2868,8 @@ public:
   virtual nsRegion GetOpaqueRegion(nsDisplayListBuilder* aBuilder, bool* aSnap) MOZ_OVERRIDE;
 
   NS_DISPLAY_DECL_NAME("SubDocument", TYPE_SUBDOCUMENT)
+protected:
+  ViewID mScrollParentId;
 };
 
 /**
@@ -2944,6 +3007,7 @@ public:
 protected:
   nsIFrame* mScrollFrame;
   nsIFrame* mScrolledFrame;
+  ViewID mScrollParentId;
 };
 
 /**
@@ -3214,6 +3278,12 @@ public:
   /* UntransformRect is like TransformRect, except that it inverts the
    * transform.
    */
+  static bool UntransformRect(const nsRect &aTransformedBounds,
+                              const nsRect &aChildBounds,
+                              const nsIFrame* aFrame,
+                              const nsPoint &aOrigin,
+                              nsRect *aOutRect);
+
   bool UntransformVisibleRect(nsDisplayListBuilder* aBuilder,
                               nsRect* aOutRect);
 
@@ -3275,12 +3345,15 @@ public:
    *        for the frame's bounding rectangle. Otherwise, it will use the
    *        value of aBoundsOverride.  This is mostly for internal use and in
    *        most cases you will not need to specify a value.
+   * @param aOffsetByOrigin If true, the resulting matrix will be translated
+   *        by aOrigin. This translation is applied *before* the CSS transform.
    */
   static gfx3DMatrix GetResultingTransformMatrix(const nsIFrame* aFrame,
                                                  const nsPoint& aOrigin,
                                                  float aAppUnitsPerPixel,
                                                  const nsRect* aBoundsOverride = nullptr,
-                                                 nsIFrame** aOutAncestor = nullptr);
+                                                 nsIFrame** aOutAncestor = nullptr,
+                                                 bool aOffsetByOrigin = false);
   static gfx3DMatrix GetResultingTransformMatrix(const FrameTransformProperties& aProperties,
                                                  const nsPoint& aOrigin,
                                                  float aAppUnitsPerPixel,
@@ -3302,7 +3375,8 @@ private:
                                                          const nsPoint& aOrigin,
                                                          float aAppUnitsPerPixel,
                                                          const nsRect* aBoundsOverride,
-                                                         nsIFrame** aOutAncestor);
+                                                         nsIFrame** aOutAncestor,
+                                                         bool aOffsetByOrigin);
 
   nsDisplayWrapList mStoredList;
   gfx3DMatrix mTransform;

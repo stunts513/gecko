@@ -47,7 +47,7 @@ NS_QUERYFRAME_HEAD(nsLegendFrame)
   NS_QUERYFRAME_ENTRY(nsLegendFrame)
 NS_QUERYFRAME_TAIL_INHERITING(nsBlockFrame)
 
-nsresult 
+void
 nsLegendFrame::Reflow(nsPresContext*          aPresContext,
                      nsHTMLReflowMetrics&     aDesiredSize,
                      const nsHTMLReflowState& aReflowState,
@@ -66,11 +66,9 @@ nsLegendFrame::Reflow(nsPresContext*          aPresContext,
 int32_t nsLegendFrame::GetAlign()
 {
   int32_t intValue = NS_STYLE_TEXT_ALIGN_LEFT;
-#ifdef IBMBIDI
   if (mParent && NS_STYLE_DIRECTION_RTL == mParent->StyleVisibility()->mDirection) {
     intValue = NS_STYLE_TEXT_ALIGN_RIGHT;
   }
-#endif // IBMBIDI
 
   nsGenericHTMLElement *content = nsGenericHTMLElement::FromContent(mContent);
 

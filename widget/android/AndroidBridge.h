@@ -28,6 +28,7 @@
 #include "mozilla/StaticPtr.h"
 #include "mozilla/layers/GeckoContentController.h"
 #include "mozilla/TimeStamp.h"
+#include "mozilla/Types.h"
 
 // Some debug #defines
 // #define DEBUG_ANDROID_EVENTS
@@ -38,7 +39,7 @@ class nsIDOMMozSmsMessage;
 class nsIObserver;
 
 /* See the comment in AndroidBridge about this function before using it */
-extern "C" JNIEnv * GetJNIForThread();
+extern "C" MOZ_EXPORT JNIEnv * GetJNIForThread();
 
 extern bool mozilla_AndroidBridge_SetMainThread(pthread_t);
 
@@ -195,7 +196,7 @@ public:
     bool GetThreadNameJavaProfiling(uint32_t aThreadId, nsCString & aResult);
     bool GetFrameNameJavaProfiling(uint32_t aThreadId, uint32_t aSampleId, uint32_t aFrameId, nsCString & aResult);
 
-    nsresult CaptureThumbnail(nsIDOMWindow *window, int32_t bufW, int32_t bufH, int32_t tabId, jobject buffer);
+    nsresult CaptureThumbnail(nsIDOMWindow *window, int32_t bufW, int32_t bufH, int32_t tabId, jobject buffer, bool &shouldStore);
     void GetDisplayPort(bool aPageSizeUpdate, bool aIsBrowserContentDisplayed, int32_t tabId, nsIAndroidViewport* metrics, nsIAndroidDisplayport** displayPort);
     void ContentDocumentChanged();
     bool IsContentDocumentDisplayed();
@@ -279,8 +280,8 @@ public:
 
     bool LockWindow(void *window, unsigned char **bits, int *width, int *height, int *format, int *stride);
     bool UnlockWindow(void *window);
-    
-    void HandleGeckoMessage(const nsAString& message);
+
+    void HandleGeckoMessage(JSContext* cx, JS::HandleObject message);
 
     bool InitCamera(const nsCString& contentType, uint32_t camera, uint32_t *width, uint32_t *height, uint32_t *fps);
 

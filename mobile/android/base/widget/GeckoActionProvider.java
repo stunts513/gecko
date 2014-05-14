@@ -5,6 +5,9 @@
 
 package org.mozilla.gecko.widget;
 
+import org.mozilla.gecko.GeckoAppShell;
+import org.mozilla.gecko.Telemetry;
+import org.mozilla.gecko.TelemetryContract;
 import org.mozilla.gecko.menu.MenuItemActionView;
 
 import android.content.Context;
@@ -51,19 +54,10 @@ public class GeckoActionProvider {
 
     private static String getFilenameFromMimeType(String mimeType) {
         String[] mime = mimeType.split("/");
-        if (mime.length == 1) {
-            return "history-" + mime[0] + ".xml";
-        }
 
-        // Separate out tel and mailto for their own media types
+        // All text mimetypes use the default provider
         if ("text".equals(mime[0])) {
-            if ("tel".equals(mime[1])) {
-                return "history-phone.xml";
-            } else if ("mailto".equals(mime[1])) {
-                return "history-email.xml";
-            } else if ("html".equals(mime[1])) {
-                return DEFAULT_HISTORY_FILE_NAME;
-            }
+            return DEFAULT_HISTORY_FILE_NAME;
         }
 
         return "history-" + mime[0] + ".xml";
@@ -191,6 +185,12 @@ public class GeckoActionProvider {
             ActivityChooserModel dataModel = ActivityChooserModel.get(mContext, mHistoryFileName);
             Intent launchIntent = dataModel.chooseActivity(index);
             if (launchIntent != null) {
+                // Share image syncrhonously downloads the image before sharing it.
+                String type = launchIntent.getType();
+                if (Intent.ACTION_SEND.equals(launchIntent.getAction()) && type != null && type.startsWith("image/")) {
+                    GeckoAppShell.downloadImageForIntent(launchIntent);
+                }
+
                 launchIntent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_WHEN_TASK_RESET);
                 mContext.startActivity(launchIntent);
             }
@@ -203,6 +203,9 @@ public class GeckoActionProvider {
         @Override
         public boolean onMenuItemClick(MenuItem item) {
             chooseActivity(item.getItemId());
+
+            // Context: Sharing via chrome mainmenu list (no explicit session is active)
+            Telemetry.sendUIEvent(TelemetryContract.Event.SHARE, TelemetryContract.Method.LIST);
             return true;
         }
 
@@ -210,6 +213,9 @@ public class GeckoActionProvider {
         public void onClick(View view) {
             Integer index = (Integer) view.getTag();
             chooseActivity(index);
+
+            // Context: Sharing via chrome mainmenu and content contextmenu quickshare (no explicit session is active)
+            Telemetry.sendUIEvent(TelemetryContract.Event.SHARE, TelemetryContract.Method.BUTTON);
         }
     }
 }

@@ -9,13 +9,6 @@
 #include "Layers.h"                     // for Layer (ptr only), etc
 #include "basic/BasicImplData.h"        // for BasicImplData
 #include "basic/BasicLayers.h"          // for BasicLayerManager
-#include "gfxASurface.h"                // for gfxASurface, etc
-#include "gfxContext.h"                 // for gfxContext
-#include "gfxPattern.h"                 // for gfxPattern, etc
-#include "gfxUtils.h"                   // for gfxUtils
-#ifdef MOZ_X11
-#include "gfxXlibSurface.h"             // for gfxXlibSurface
-#endif
 #include "mozilla/mozalloc.h"           // for operator new
 #include "nsAutoPtr.h"                  // for nsRefPtr, getter_AddRefs, etc
 #include "nsCOMPtr.h"                   // for already_AddRefed
@@ -51,10 +44,10 @@ public:
     ImageLayer::SetVisibleRegion(aRegion);
   }
 
-  virtual void Paint(DrawTarget* aDT, Layer* aMaskLayer) MOZ_OVERRIDE;
+  virtual void Paint(DrawTarget* aDT,
+                     const gfx::Point& aDeviceOffset,
+                     Layer* aMaskLayer) MOZ_OVERRIDE;
 
-  virtual bool GetAsSurface(gfxASurface** aSurface,
-                            SurfaceDescriptor* aDescriptor);
   virtual TemporaryRef<SourceSurface> GetAsSourceSurface() MOZ_OVERRIDE;
 
 protected:
@@ -73,7 +66,9 @@ protected:
 };
 
 void
-BasicImageLayer::Paint(DrawTarget* aDT, Layer* aMaskLayer)
+BasicImageLayer::Paint(DrawTarget* aDT,
+                       const gfx::Point& aDeviceOffset,
+                       Layer* aMaskLayer)
 {
   if (IsHidden() || !mContainer) {
     return;
@@ -90,7 +85,8 @@ BasicImageLayer::Paint(DrawTarget* aDT, Layer* aMaskLayer)
     return;
   }
 
-  FillRectWithMask(aDT, Rect(0, 0, size.width, size.height), surface, ToFilter(mFilter),
+  FillRectWithMask(aDT, aDeviceOffset, Rect(0, 0, size.width, size.height), 
+                   surface, ToFilter(mFilter),
                    DrawOptions(GetEffectiveOpacity(), GetEffectiveOperator(this)),
                    aMaskLayer);
 
@@ -131,20 +127,6 @@ BasicImageLayer::GetAndPaintCurrentImage(DrawTarget* aTarget,
   }
 
   mContainer->UnlockCurrentImage();
-}
-
-bool
-BasicImageLayer::GetAsSurface(gfxASurface** aSurface,
-                              SurfaceDescriptor* aDescriptor)
-{
-  if (!mContainer) {
-    return false;
-  }
-
-  gfx::IntSize dontCare;
-  nsRefPtr<gfxASurface> surface = mContainer->DeprecatedGetCurrentAsSurface(&dontCare);
-  surface.forget(aSurface);
-  return true;
 }
 
 TemporaryRef<SourceSurface>

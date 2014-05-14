@@ -49,6 +49,7 @@ class nsIScrollableFrame;
 class nsAttrValueOrString;
 class ContentUnbinder;
 class nsContentList;
+class nsDOMSettableTokenList;
 class nsDOMTokenList;
 struct nsRect;
 class nsFocusManager;
@@ -632,6 +633,32 @@ public:
     GetElementsByClassName(const nsAString& aClassNames);
   bool MozMatchesSelector(const nsAString& aSelector,
                           ErrorResult& aError);
+  void SetPointerCapture(int32_t aPointerId, ErrorResult& aError)
+  {
+    bool activeState = false;
+    if (!nsIPresShell::GetPointerInfo(aPointerId, activeState)) {
+      aError.Throw(NS_ERROR_DOM_INVALID_POINTER_ERR);
+      return;
+    }
+    if (!activeState) {
+      return;
+    }
+    nsIPresShell::SetPointerCapturingContent(aPointerId, this);
+  }
+  void ReleasePointerCapture(int32_t aPointerId, ErrorResult& aError)
+  {
+    bool activeState = false;
+    if (!nsIPresShell::GetPointerInfo(aPointerId, activeState)) {
+      aError.Throw(NS_ERROR_DOM_INVALID_POINTER_ERR);
+      return;
+    }
+
+    // Ignoring ReleasePointerCapture call on incorrect element (on element
+    // that didn't have capture before).
+    if (nsIPresShell::GetPointerCapturingContent(aPointerId) == this) {
+      nsIPresShell::ReleasePointerCapturingContent(aPointerId, this);
+    }
+  }
   void SetCapture(bool aRetargetToElement)
   {
     // If there is already an active capture, ignore this request. This would
@@ -900,8 +927,7 @@ public:
                            nsIDOMHTMLCollection** aResult);
   void GetClassList(nsISupports** aClassList);
 
-  virtual JSObject* WrapObject(JSContext *aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_FINAL MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext *aCx) MOZ_FINAL MOZ_OVERRIDE;
 
   /**
    * Locate an nsIEditor rooted at this content node, if there is one.
@@ -1138,6 +1164,10 @@ protected:
    * (e.g. _blank).
    */
   virtual void GetLinkTarget(nsAString& aTarget);
+
+  nsDOMSettableTokenList* GetTokenList(nsIAtom* aAtom);
+  void GetTokenList(nsIAtom* aAtom, nsIVariant** aResult);
+  nsresult SetTokenList(nsIAtom* aAtom, nsIVariant* aValue);
 
 private:
   /**

@@ -117,7 +117,7 @@ nsSimplePageSequenceFrame::SetDesiredSize(nsHTMLReflowMetrics& aDesiredSize,
                                  nscoord(aHeight * PresContext()->GetPrintPreviewScale()));
 }
 
-nsresult
+void
 nsSimplePageSequenceFrame::Reflow(nsPresContext*          aPresContext,
                                   nsHTMLReflowMetrics&     aDesiredSize,
                                   const nsHTMLReflowState& aReflowState,
@@ -138,7 +138,7 @@ nsSimplePageSequenceFrame::Reflow(nsPresContext*          aPresContext,
     SetDesiredSize(aDesiredSize, aReflowState, mSize.width, mSize.height);
     aDesiredSize.SetOverflowAreasToDesiredBounds();
     FinishAndStoreOverflow(&aDesiredSize);
-    return NS_OK;
+    return;
   }
 
   // See if we can get a Print Settings from the Context
@@ -266,11 +266,12 @@ nsSimplePageSequenceFrame::Reflow(nsPresContext*          aPresContext,
   }
 
   // Create current Date/Time String
-  if (!mDateFormatter)
+  if (!mDateFormatter) {
     mDateFormatter = do_CreateInstance(NS_DATETIMEFORMAT_CONTRACTID);
-
-  NS_ENSURE_TRUE(mDateFormatter, NS_ERROR_FAILURE);
-
+  }
+  if (!mDateFormatter) {
+    return;
+  }
   nsAutoString formattedDateString;
   time_t ltime;
   time( &ltime );
@@ -297,7 +298,6 @@ nsSimplePageSequenceFrame::Reflow(nsPresContext*          aPresContext,
 
   NS_FRAME_TRACE_REFLOW_OUT("nsSimplePageSequeceFrame::Reflow", aStatus);
   NS_FRAME_SET_TRUNCATION(aStatus, aReflowState, aDesiredSize);
-  return NS_OK;
 }
 
 //----------------------------------------------------------------------
@@ -591,9 +591,8 @@ nsSimplePageSequenceFrame::PrePrintNextPage(nsITimerCallback* aCallback, bool* a
 
       mCalledBeginPage = true;
       
-      nsRefPtr<nsRenderingContext> renderingContext;
-      dc->CreateRenderingContext(*getter_AddRefs(renderingContext));
-      NS_ENSURE_TRUE(renderingContext, NS_ERROR_OUT_OF_MEMORY);
+      nsRefPtr<nsRenderingContext> renderingContext =
+        dc->CreateRenderingContext();
 
       nsRefPtr<gfxASurface> renderingSurface =
           renderingContext->ThebesContext()->CurrentSurface();
@@ -722,9 +721,8 @@ nsSimplePageSequenceFrame::PrintNextPage()
 
       PR_PL(("SeqFr::PrintNextPage -> %p PageNo: %d", pf, mPageNum));
 
-      nsRefPtr<nsRenderingContext> renderingContext;
-      dc->CreateRenderingContext(*getter_AddRefs(renderingContext));
-      NS_ENSURE_TRUE(renderingContext, NS_ERROR_OUT_OF_MEMORY);
+      nsRefPtr<nsRenderingContext> renderingContext =
+        dc->CreateRenderingContext();
 
       nsRect drawingRect(nsPoint(0, 0), currentPage->GetSize());
       nsRegion drawingRegion(drawingRect);

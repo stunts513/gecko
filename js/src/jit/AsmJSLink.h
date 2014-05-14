@@ -9,7 +9,32 @@
 
 #include "NamespaceImports.h"
 
+class JSAtom;
+
 namespace js {
+
+class AsmJSActivation;
+class AsmJSModule;
+namespace jit { class CallSite; }
+
+// Iterates over the frames of a single AsmJSActivation.
+class AsmJSFrameIterator
+{
+    const AsmJSModule *module_;
+    const jit::CallSite *callsite_;
+    uint8_t *sp_;
+    uint8_t *returnAddress_;
+
+    void popFrame();
+    void settle();
+
+  public:
+    AsmJSFrameIterator(const AsmJSActivation *activation);
+    void operator++() { popFrame(); settle(); }
+    bool done() const { return !callsite_; }
+    JSAtom *functionDisplayAtom() const;
+    unsigned computeLine(uint32_t *column) const;
+};
 
 #ifdef JS_ION
 
@@ -56,18 +81,6 @@ IsAsmJSModuleNative(JSNative native)
 }
 
 inline bool
-IsAsmJSModuleNative(HandleFunction fun)
-{
-    return false;
-}
-
-inline JSString*
-AsmJSModuleToString(JSContext *cx, HandleFunction fun, bool addParenToLambda)
-{
-    return nullptr;
-}
-
-inline bool
 IsAsmJSFunction(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -76,11 +89,35 @@ IsAsmJSFunction(JSContext *cx, unsigned argc, Value *vp)
 }
 
 inline bool
+IsAsmJSFunction(HandleFunction fun)
+{
+    return false;
+}
+
+inline JSString *
+AsmJSFunctionToString(JSContext *cx, HandleFunction fun)
+{
+    return nullptr;
+}
+
+inline bool
 IsAsmJSModule(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
     args.rval().set(BooleanValue(false));
     return true;
+}
+
+inline bool
+IsAsmJSModule(HandleFunction fun)
+{
+    return false;
+}
+
+inline JSString*
+AsmJSModuleToString(JSContext *cx, HandleFunction fun, bool addParenToLambda)
+{
+    return nullptr;
 }
 
 inline bool

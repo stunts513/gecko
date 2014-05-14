@@ -66,7 +66,7 @@ nsXULPopupListener::~nsXULPopupListener(void)
   ClosePopup();
 }
 
-NS_IMPL_CYCLE_COLLECTION_2(nsXULPopupListener, mElement, mPopupContent)
+NS_IMPL_CYCLE_COLLECTION(nsXULPopupListener, mElement, mPopupContent)
 NS_IMPL_CYCLE_COLLECTING_ADDREF(nsXULPopupListener)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(nsXULPopupListener)
 
@@ -297,7 +297,7 @@ nsXULPopupListener::ClosePopup()
     // fire events during destruction.  
     nsXULPopupManager* pm = nsXULPopupManager::GetInstance();
     if (pm)
-      pm->HidePopup(mPopupContent, false, true, true);
+      pm->HidePopup(mPopupContent, false, true, true, false);
     mPopupContent = nullptr;  // release the popup
   }
 } // ClosePopup

@@ -39,9 +39,9 @@ using namespace mozilla::services;
 namespace mozilla {
 namespace system {
 
-NS_IMPL_ISUPPORTS2(nsVolumeService,
-                   nsIVolumeService,
-                   nsIDOMMozWakeLockListener)
+NS_IMPL_ISUPPORTS(nsVolumeService,
+                  nsIVolumeService,
+                  nsIDOMMozWakeLockListener)
 
 StaticRefPtr<nsVolumeService> nsVolumeService::sSingleton;
 
@@ -249,7 +249,8 @@ nsVolumeService::CreateOrGetVolumeByPath(const nsAString& aPath, nsIVolume** aRe
                                          -1    /* generation */,
                                          true  /* isMediaPresent*/,
                                          false /* isSharing */,
-                                         false /* isFormatting */);
+                                         false /* isFormatting */,
+                                         true  /* isFake */);
   vol.forget(aResult);
   return NS_OK;
 }
@@ -382,8 +383,8 @@ nsVolumeService::CreateFakeVolume(const nsAString& name, const nsAString& path)
                                           -1    /* mountGeneration */,
                                           true  /* isMediaPresent */,
                                           false /* isSharing */,
-                                          false /* isFormatting */);
-    vol->SetIsFake(true);
+                                          false /* isFormatting */,
+                                          true  /* isFake */);
     vol->LogState();
     UpdateVolume(vol.get());
     return NS_OK;

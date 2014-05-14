@@ -12,6 +12,7 @@
 #include "mozilla/MiscEvents.h"
 #include "mozilla/MathAlgorithms.h"
 #include "mozilla/MouseEvents.h"
+#include "mozilla/TextComposition.h"
 #include "mozilla/TextEvents.h"
 #include "mozilla/TouchEvents.h"
 #include "mozilla/dom/Event.h"
@@ -19,6 +20,7 @@
 #include "mozilla/dom/UIEvent.h"
 
 #include "ContentEventHandler.h"
+#include "IMEContentObserver.h"
 #include "WheelHandlingHelper.h"
 
 #include "nsCOMPtr.h"
@@ -201,7 +203,7 @@ private:
   uint32_t mPreviousCount;
 };
 
-NS_IMPL_ISUPPORTS1(UITimerCallback, nsITimerCallback)
+NS_IMPL_ISUPPORTS(UITimerCallback, nsITimerCallback)
 
 // If aTimer is nullptr, this method always sends "user-interaction-inactive"
 // notification.
@@ -240,10 +242,10 @@ OverOutElementsWrapper::~OverOutElementsWrapper()
 {
 }
 
-NS_IMPL_CYCLE_COLLECTION_3(OverOutElementsWrapper,
-                           mLastOverElement,
-                           mFirstOverEventElement,
-                           mFirstOutEventElement)
+NS_IMPL_CYCLE_COLLECTION(OverOutElementsWrapper,
+                         mLastOverElement,
+                         mFirstOverEventElement,
+                         mFirstOutEventElement)
 NS_IMPL_CYCLE_COLLECTING_ADDREF(OverOutElementsWrapper)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(OverOutElementsWrapper)
 
@@ -336,6 +338,8 @@ EventStateManager::Init()
 
 EventStateManager::~EventStateManager()
 {
+  ReleaseCurrentIMEContentObserver();
+
   if (sActiveESM == this) {
     sActiveESM = nullptr;
   }
@@ -409,23 +413,50 @@ NS_INTERFACE_MAP_END
 NS_IMPL_CYCLE_COLLECTING_ADDREF(EventStateManager)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(EventStateManager)
 
-NS_IMPL_CYCLE_COLLECTION_16(EventStateManager,
-                            mCurrentTargetContent,
-                            mGestureDownContent,
-                            mGestureDownFrameOwner,
-                            mLastLeftMouseDownContent,
-                            mLastLeftMouseDownContentParent,
-                            mLastMiddleMouseDownContent,
-                            mLastMiddleMouseDownContentParent,
-                            mLastRightMouseDownContent,
-                            mLastRightMouseDownContentParent,
-                            mActiveContent,
-                            mHoverContent,
-                            mURLTargetContent,
-                            mMouseEnterLeaveHelper,
-                            mPointersEnterLeaveHelper,
-                            mDocument,
-                            mAccessKeys)
+NS_IMPL_CYCLE_COLLECTION(EventStateManager,
+                         mCurrentTargetContent,
+                         mGestureDownContent,
+                         mGestureDownFrameOwner,
+                         mLastLeftMouseDownContent,
+                         mLastLeftMouseDownContentParent,
+                         mLastMiddleMouseDownContent,
+                         mLastMiddleMouseDownContentParent,
+                         mLastRightMouseDownContent,
+                         mLastRightMouseDownContentParent,
+                         mActiveContent,
+                         mHoverContent,
+                         mURLTargetContent,
+                         mMouseEnterLeaveHelper,
+                         mPointersEnterLeaveHelper,
+                         mDocument,
+                         mIMEContentObserver,
+                         mAccessKeys)
+
+void
+EventStateManager::ReleaseCurrentIMEContentObserver()
+{
+  if (mIMEContentObserver) {
+    mIMEContentObserver->DisconnectFromEventStateManager();
+  }
+  mIMEContentObserver = nullptr;
+}
+
+void
+EventStateManager::OnStartToObserveContent(
+                     IMEContentObserver* aIMEContentObserver)
+{
+  ReleaseCurrentIMEContentObserver();
+  mIMEContentObserver = aIMEContentObserver;
+}
+
+void
+EventStateManager::OnStopObservingContent(
+                     IMEContentObserver* aIMEContentObserver)
+{
+  aIMEContentObserver->DisconnectFromEventStateManager();
+  NS_ENSURE_TRUE_VOID(mIMEContentObserver == aIMEContentObserver);
+  mIMEContentObserver = nullptr;
+}
 
 nsresult
 EventStateManager::PreHandleEvent(nsPresContext* aPresContext,
@@ -526,11 +557,6 @@ EventStateManager::PreHandleEvent(nsPresContext* aPresContext,
     }
     break;
   }
-  case NS_POINTER_CANCEL:
-  {
-    GenerateMouseEnterExit(mouseEvent);
-    break;
-  }
   case NS_MOUSE_EXIT:
     // If the event is not a top-level window exit, then it's not
     // really an exit --- we may have traversed widget boundaries but
@@ -609,6 +635,16 @@ EventStateManager::PreHandleEvent(nsPresContext* aPresContext,
       nsIContent* content = GetFocusedContent();
       if (content)
         mCurrentTargetContent = content;
+
+      // NOTE: Don't refer TextComposition::IsComposing() since DOM Level 3
+      //       Events defines that KeyboardEvent.isComposing is true when it's
+      //       dispatched after compositionstart and compositionend.
+      //       TextComposition::IsComposing() is false even before
+      //       compositionend if there is no composing string.
+      WidgetKeyboardEvent* keyEvent = aEvent->AsKeyboardEvent();
+      nsRefPtr<TextComposition> composition =
+        IMEStateManager::GetTextCompositionFor(keyEvent);
+      keyEvent->mIsComposing = !!composition;
     }
     break;
   case NS_WHEEL_WHEEL:
@@ -2823,13 +2859,22 @@ EventStateManager::PostHandleEvent(nsPresContext* aPresContext,
       SetActiveManager(this, activeContent);
     }
     break;
-  case NS_POINTER_CANCEL:
+  case NS_POINTER_CANCEL: {
+    if(WidgetMouseEvent* mouseEvent = aEvent->AsMouseEvent()) {
+      GenerateMouseEnterExit(mouseEvent);
+    }
+    // This break was commented specially
+    // break;
+  }
   case NS_POINTER_UP: {
     WidgetPointerEvent* pointerEvent = aEvent->AsPointerEvent();
     // After UP/Cancel Touch pointers become invalid so we can remove relevant helper from Table
     // Mouse/Pen pointers are valid all the time (not only between down/up)
     if (pointerEvent->inputSource == nsIDOMMouseEvent::MOZ_SOURCE_TOUCH) {
       mPointersEnterLeaveHelper.Remove(pointerEvent->pointerId);
+    }
+    if (pointerEvent->inputSource != nsIDOMMouseEvent::MOZ_SOURCE_MOUSE) {
+      GenerateMouseEnterExit(pointerEvent);
     }
     break;
   }
@@ -3523,12 +3568,11 @@ EventStateManager::DispatchMouseOrPointerEvent(WidgetMouseEvent* aMouseEvent,
   }
 
   nsEventStatus status = nsEventStatus_eIgnore;
-  nsAutoPtr<WidgetPointerEvent> newPointerEvent;
-  nsAutoPtr<WidgetMouseEvent> newMouseEvent;
-  WidgetMouseEvent* event = nullptr;
+  nsAutoPtr<WidgetMouseEvent> event;
   WidgetPointerEvent* sourcePointer = aMouseEvent->AsPointerEvent();
   if (sourcePointer) {
     PROFILER_LABEL("Input", "DispatchPointerEvent");
+    nsAutoPtr<WidgetPointerEvent> newPointerEvent;
     newPointerEvent =
       new WidgetPointerEvent(aMouseEvent->mFlags.mIsTrusted, aMessage,
                              aMouseEvent->widget);
@@ -3537,20 +3581,23 @@ EventStateManager::DispatchMouseOrPointerEvent(WidgetMouseEvent* aMouseEvent,
     newPointerEvent->width = sourcePointer->width;
     newPointerEvent->height = sourcePointer->height;
     newPointerEvent->inputSource = sourcePointer->inputSource;
-    event = newPointerEvent.get();
+    newPointerEvent->relatedTarget = nsIPresShell::GetPointerCapturingContent(sourcePointer->pointerId)
+                                       ? nullptr
+                                       : aRelatedContent;
+    event = newPointerEvent.forget();
   } else {
     PROFILER_LABEL("Input", "DispatchMouseEvent");
-    newMouseEvent =
+    event =
       new WidgetMouseEvent(aMouseEvent->mFlags.mIsTrusted, aMessage,
                            aMouseEvent->widget, WidgetMouseEvent::eReal);
-    event = newMouseEvent.get();
+    event->relatedTarget = aRelatedContent;
   }
   event->refPoint = aMouseEvent->refPoint;
   event->modifiers = aMouseEvent->modifiers;
   event->button = aMouseEvent->button;
   event->buttons = aMouseEvent->buttons;
+  event->pressure = aMouseEvent->pressure;
   event->pluginEvent = aMouseEvent->pluginEvent;
-  event->relatedTarget = aRelatedContent;
   event->inputSource = aMouseEvent->inputSource;
 
   nsWeakFrame previousTarget = mCurrentTarget;
@@ -3882,6 +3929,25 @@ EventStateManager::GenerateMouseEnterExit(WidgetMouseEvent* aMouseEvent)
       }
       if (targetElement) {
         NotifyMouseOver(aMouseEvent, targetElement);
+      }
+    }
+    break;
+  case NS_POINTER_UP:
+    {
+      // Get the target content target (mousemove target == mouseover target)
+      nsCOMPtr<nsIContent> targetElement = GetEventTargetContent(aMouseEvent);
+      if (!targetElement) {
+        // We're always over the document root, even if we're only
+        // over dead space in a page (whose frame is not associated with
+        // any content) or in print preview dead space
+        targetElement = mDocument->GetRootElement();
+      }
+      if (targetElement) {
+        OverOutElementsWrapper* helper = GetWrapperByEventID(aMouseEvent);
+        if (helper) {
+          helper->mLastOverElement = targetElement;
+        }
+        NotifyMouseOut(aMouseEvent, nullptr);
       }
     }
     break;

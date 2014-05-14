@@ -41,6 +41,8 @@
 #include "nsDOMCSSAttrDeclaration.h"
 #include "nsNameSpaceManager.h"
 #include "nsContentList.h"
+#include "nsVariant.h"
+#include "nsDOMSettableTokenList.h"
 #include "nsDOMTokenList.h"
 #include "nsXBLPrototypeBinding.h"
 #include "nsError.h"
@@ -127,6 +129,7 @@
 #include "nsStyledElement.h"
 #include "nsXBLService.h"
 #include "nsITextControlElement.h"
+#include "nsITextControlFrame.h"
 #include "nsISupportsImpl.h"
 #include "mozilla/dom/DocumentFragment.h"
 #include "mozilla/IntegerPrintfMacros.h"
@@ -201,7 +204,28 @@ nsIContent::UpdateEditableState(bool aNotify)
   NS_ASSERTION(!IsElement(), "What happened here?");
   nsIContent *parent = GetParent();
 
-  SetEditableFlag(parent && parent->HasFlag(NODE_IS_EDITABLE));
+  // Skip over unknown native anonymous content to avoid setting a flag we
+  // can't clear later
+  bool isUnknownNativeAnon = false;
+  if (IsInNativeAnonymousSubtree()) {
+    isUnknownNativeAnon = true;
+    nsCOMPtr<nsIContent> root = this;
+    while (root && !root->IsRootOfNativeAnonymousSubtree()) {
+      root = root->GetParent();
+    }
+    // root should always be true here, but isn't -- bug 999416
+    if (root) {
+      nsIFrame* rootFrame = root->GetPrimaryFrame();
+      if (rootFrame) {
+        nsIFrame* parentFrame = rootFrame->GetParent();
+        nsITextControlFrame* textCtrl = do_QueryFrame(parentFrame);
+        isUnknownNativeAnon = !textCtrl;
+      }
+    }
+  }
+
+  SetEditableFlag(parent && parent->HasFlag(NODE_IS_EDITABLE) &&
+                  !isUnknownNativeAnon);
 }
 
 void
@@ -350,9 +374,9 @@ Element::GetBindingURL(nsIDocument *aDocument, css::URLValue **aResult)
 }
 
 JSObject*
-Element::WrapObject(JSContext *aCx, JS::Handle<JSObject*> aScope)
+Element::WrapObject(JSContext *aCx)
 {
-  JS::Rooted<JSObject*> obj(aCx, nsINode::WrapObject(aCx, aScope));
+  JS::Rooted<JSObject*> obj(aCx, nsINode::WrapObject(aCx));
   if (!obj) {
     return nullptr;
   }
@@ -1102,13 +1126,13 @@ Element::BindToTree(nsIDocument* aDocument, nsIContent* aParent,
     }
   }
   NS_ASSERTION(!aBindingParent || IsRootOfNativeAnonymousSubtree() ||
-               !HasFlag(NODE_IS_IN_ANONYMOUS_SUBTREE) ||
+               !HasFlag(NODE_IS_IN_NATIVE_ANONYMOUS_SUBTREE) ||
                (aParent && aParent->IsInNativeAnonymousSubtree()),
                "Trying to re-bind content from native anonymous subtree to "
                "non-native anonymous parent!");
   if (aParent) {
     if (aParent->IsInNativeAnonymousSubtree()) {
-      SetFlags(NODE_IS_IN_ANONYMOUS_SUBTREE);
+      SetFlags(NODE_IS_IN_NATIVE_ANONYMOUS_SUBTREE);
     }
     if (aParent->HasFlag(NODE_CHROME_ONLY_ACCESS)) {
       SetFlags(NODE_CHROME_ONLY_ACCESS);
@@ -2502,6 +2526,81 @@ void
 Element::GetLinkTarget(nsAString& aTarget)
 {
   aTarget.Truncate();
+}
+
+static void
+nsDOMSettableTokenListPropertyDestructor(void *aObject, nsIAtom *aProperty,
+                                         void *aPropertyValue, void *aData)
+{
+  nsDOMSettableTokenList* list =
+    static_cast<nsDOMSettableTokenList*>(aPropertyValue);
+  NS_RELEASE(list);
+}
+
+static nsIAtom** sPropertiesToTraverseAndUnlink[] =
+  {
+    &nsGkAtoms::microdataProperties,
+    &nsGkAtoms::itemtype,
+    &nsGkAtoms::itemref,
+    &nsGkAtoms::itemprop,
+    &nsGkAtoms::sandbox,
+    &nsGkAtoms::sizes,
+    nullptr
+  };
+
+// static
+nsIAtom***
+nsGenericHTMLElement::PropertiesToTraverseAndUnlink()
+{
+  return sPropertiesToTraverseAndUnlink;
+}
+
+nsDOMSettableTokenList*
+Element::GetTokenList(nsIAtom* aAtom)
+{
+#ifdef DEBUG
+  nsIAtom*** props =
+    nsGenericHTMLElement::PropertiesToTraverseAndUnlink();
+  bool found = false;
+  for (uint32_t i = 0; props[i]; ++i) {
+    if (*props[i] == aAtom) {
+      found = true;
+      break;
+    }
+  }
+  MOZ_ASSERT(found, "Trying to use an unknown tokenlist!");
+#endif
+
+  nsDOMSettableTokenList* list = nullptr;
+  if (HasProperties()) {
+    list = static_cast<nsDOMSettableTokenList*>(GetProperty(aAtom));
+  }
+  if (!list) {
+    list = new nsDOMSettableTokenList(this, aAtom);
+    NS_ADDREF(list);
+    SetProperty(aAtom, list, nsDOMSettableTokenListPropertyDestructor);
+  }
+  return list;
+}
+
+void
+Element::GetTokenList(nsIAtom* aAtom, nsIVariant** aResult)
+{
+  nsISupports* itemType = GetTokenList(aAtom);
+  nsCOMPtr<nsIWritableVariant> out = new nsVariant();
+  out->SetAsInterface(NS_GET_IID(nsISupports), itemType);
+  out.forget(aResult);
+}
+
+nsresult
+Element::SetTokenList(nsIAtom* aAtom, nsIVariant* aValue)
+{
+  nsDOMSettableTokenList* itemType = GetTokenList(aAtom);
+  nsAutoString string;
+  aValue->GetAsAString(string);
+  ErrorResult rv;
+  itemType->SetValue(string, rv);
+  return rv.ErrorCode();
 }
 
 bool

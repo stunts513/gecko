@@ -7,7 +7,7 @@
 #include "nsStreamUtils.h"
 #include <algorithm>
 
-NS_IMPL_ISUPPORTS1(nsTemporaryFileInputStream, nsIInputStream)
+NS_IMPL_ISUPPORTS(nsTemporaryFileInputStream, nsIInputStream)
 
 nsTemporaryFileInputStream::nsTemporaryFileInputStream(FileDescOwner* aFileDescOwner, uint64_t aStartPos, uint64_t aEndPos)
   : mFileDescOwner(aFileDescOwner),
@@ -74,10 +74,9 @@ nsTemporaryFileInputStream::ReadSegments(nsWriteSegmentFun writer,
     nsresult rv = writer(this, closure, buf,
                          count - remainBufCount, bufCount, &write_result);
     remainBufCount -= bufCount;
-    if (NS_SUCCEEDED(rv)) {
-      NS_ASSERTION(write_result <= bufCount,
-                   "writer should not write more than we asked it to write");
-    }
+    NS_ENSURE_SUCCESS(rv, rv);
+    NS_ASSERTION(write_result <= bufCount,
+                 "writer should not write more than we asked it to write");
     mStartPos += bufCount;
   }
   *result = count;

@@ -125,10 +125,6 @@ function test()
     if (Services.prefs.prefHasUserValue(kPrefName_AutoScroll))
       Services.prefs.clearUserPref(kPrefName_AutoScroll);
 
-    // cleaning-up
-    gBrowser.addTab().linkedBrowser.stop();
-    gBrowser.removeCurrentTab();
-
     finish();
   }
 }

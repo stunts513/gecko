@@ -20,8 +20,6 @@
 #include "nsISupportsImpl.h"            // for Image::AddRef
 #include "mozilla/ipc/Shmem.h"
 
-class gfxASurface;
-
 namespace mozilla {
 namespace layers {
 
@@ -68,16 +66,6 @@ SharedPlanarYCbCrImage::GetBuffer()
   return mTextureClient->GetBuffer();
 }
 
-already_AddRefed<gfxASurface>
-SharedPlanarYCbCrImage::DeprecatedGetAsSurface()
-{
-  if (!mTextureClient->IsAllocated()) {
-    NS_WARNING("Can't get as surface");
-    return nullptr;
-  }
-  return PlanarYCbCrImage::DeprecatedGetAsSurface();
-}
-
 TemporaryRef<gfx::SourceSurface>
 SharedPlanarYCbCrImage::GetAsSourceSurface()
 {
@@ -103,7 +91,7 @@ SharedPlanarYCbCrImage::SetData(const PlanarYCbCrData& aData)
   }
 
   MOZ_ASSERT(mTextureClient->AsTextureClientYCbCr());
-  if (!mTextureClient->Lock(OPEN_WRITE_ONLY)) {
+  if (!mTextureClient->Lock(OpenMode::OPEN_WRITE_ONLY)) {
     MOZ_ASSERT(false, "Failed to lock the texture.");
     return;
   }

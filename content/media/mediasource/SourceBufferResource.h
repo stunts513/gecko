@@ -120,6 +120,7 @@ private:
     // no such resource exists, returns GetSize() and aOffset is
     // untouched.
     inline uint32_t GetAtOffset(uint64_t aOffset, uint32_t *aResourceOffset) {
+      MOZ_ASSERT(aOffset >= mOffset);
       uint64_t offset = mOffset;
       for (uint32_t i = 0; i < GetSize(); ++i) {
         ResourceItem* item = ResourceAt(i);
@@ -143,7 +144,7 @@ private:
       uint32_t end = std::min(GetAtOffset(aOffset + aCount, nullptr) + 1, GetSize());
       for (uint32_t i = start; i < end; ++i) {
         ResourceItem* item = ResourceAt(i);
-        uint32_t bytes = std::min(aCount, item->mData.Length() - offset);
+        uint32_t bytes = std::min(aCount, uint32_t(item->mData.Length() - offset));
         if (bytes != 0) {
           memcpy(aDest, &item->mData[offset], bytes);
           offset = 0;
@@ -282,7 +283,7 @@ public:
 
 private:
   nsCOMPtr<nsIPrincipal> mPrincipal;
-  const nsAutoCString mType;
+  const nsCString mType;
 
   // Provides synchronization between SourceBuffers and InputAdapters.
   // Protects all of the member variables below.  Read() will await a

@@ -16,8 +16,8 @@
 namespace mozilla {
 namespace dom {
 
-NS_IMPL_CYCLE_COLLECTION_INHERITED_1(DelayNode, AudioNode,
-                                     mDelay)
+NS_IMPL_CYCLE_COLLECTION_INHERITED(DelayNode, AudioNode,
+                                   mDelay)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION_INHERITED(DelayNode)
 NS_INTERFACE_MAP_END_INHERITING(AudioNode)
@@ -159,6 +159,22 @@ public:
     }
   }
 
+  virtual size_t SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const MOZ_OVERRIDE
+  {
+    size_t amount = AudioNodeEngine::SizeOfExcludingThis(aMallocSizeOf);
+    // Not owned:
+    // - mSource - probably not owned
+    // - mDestination - probably not owned
+    // - mDelay - shares ref with AudioNode, don't count
+    amount += mBuffer.SizeOfExcludingThis(aMallocSizeOf);
+    return amount;
+  }
+
+  virtual size_t SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const MOZ_OVERRIDE
+  {
+    return aMallocSizeOf(this) + SizeOfExcludingThis(aMallocSizeOf);
+  }
+
   AudioNodeStream* mSource;
   AudioNodeStream* mDestination;
   AudioParamTimeline mDelay;
@@ -185,10 +201,24 @@ DelayNode::DelayNode(AudioContext* aContext, double aMaxDelay)
   engine->SetSourceStream(static_cast<AudioNodeStream*> (mStream.get()));
 }
 
-JSObject*
-DelayNode::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+size_t
+DelayNode::SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const
 {
-  return DelayNodeBinding::Wrap(aCx, aScope, this);
+  size_t amount = AudioNode::SizeOfExcludingThis(aMallocSizeOf);
+  amount += mDelay->SizeOfIncludingThis(aMallocSizeOf);
+  return amount;
+}
+
+size_t
+DelayNode::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const
+{
+  return aMallocSizeOf(this) + SizeOfExcludingThis(aMallocSizeOf);
+}
+
+JSObject*
+DelayNode::WrapObject(JSContext* aCx)
+{
+  return DelayNodeBinding::Wrap(aCx, this);
 }
 
 void

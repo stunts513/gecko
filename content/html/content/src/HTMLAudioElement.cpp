@@ -29,8 +29,8 @@ namespace dom {
 
 extern bool IsAudioAPIEnabled();
 
-NS_IMPL_ISUPPORTS_INHERITED2(HTMLAudioElement, HTMLMediaElement,
-                             nsIDOMHTMLMediaElement, nsIDOMHTMLAudioElement)
+NS_IMPL_ISUPPORTS_INHERITED(HTMLAudioElement, HTMLMediaElement,
+                            nsIDOMHTMLMediaElement, nsIDOMHTMLAudioElement)
 
 NS_IMPL_ELEMENT_CLONE(HTMLAudioElement)
 
@@ -95,9 +95,9 @@ nsresult HTMLAudioElement::SetAcceptHeader(nsIHttpChannel* aChannel)
 }
 
 JSObject*
-HTMLAudioElement::WrapNode(JSContext* aCx, JS::Handle<JSObject*> aScope)
+HTMLAudioElement::WrapNode(JSContext* aCx)
 {
-  return HTMLAudioElementBinding::Wrap(aCx, aScope, this);
+  return HTMLAudioElementBinding::Wrap(aCx, this);
 }
 
 } // namespace dom

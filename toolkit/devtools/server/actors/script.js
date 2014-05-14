@@ -3,7 +3,21 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 "use strict";
+
+const Debugger = require("Debugger");
+const Services = require("Services");
+const { Cc, Ci, Cu, components } = require("chrome");
+const { ActorPool } = require("devtools/server/actors/common");
+const { DebuggerServer } = require("devtools/server/main");
+const DevToolsUtils = require("devtools/toolkit/DevToolsUtils");
+const { dbg_assert, dumpn, update } = DevToolsUtils;
+const { SourceMapConsumer, SourceMapGenerator } = require("source-map");
+const { defer, resolve, reject, all } = require("devtools/toolkit/deprecated-sync-thenables");
+const {CssLogic} = require("devtools/styleinspector/css-logic");
+
+Cu.import("resource://gre/modules/NetUtil.jsm");
 
 let B2G_ID = "{3c2e2abc-06d4-11e1-ac3b-374f68613e61}";
 
@@ -24,8 +38,9 @@ let addonManager = null;
  * about them.
  */
 function mapURIToAddonID(uri, id) {
-  if (Services.appinfo.ID == B2G_ID)
+  if ((Services.appinfo.ID || undefined) == B2G_ID) {
     return false;
+  }
 
   if (!addonManager) {
     addonManager = Cc["@mozilla.org/addons/integration;1"].
@@ -36,7 +51,7 @@ function mapURIToAddonID(uri, id) {
     return addonManager.mapURIToAddonID(uri, id);
   }
   catch (e) {
-    DevtoolsUtils.reportException("mapURIToAddonID", e);
+    DevToolsUtils.reportException("mapURIToAddonID", e);
     return false;
   }
 }
@@ -91,6 +106,7 @@ BreakpointStore.prototype = {
    */
   addBreakpoint: function (aBreakpoint) {
     let { url, line, column } = aBreakpoint;
+    let updating = false;
 
     if (column != null) {
       if (!this._breakpoints[url]) {
@@ -301,6 +317,8 @@ BreakpointStore.prototype = {
     }
   },
 };
+
+exports.BreakpointStore = BreakpointStore;
 
 /**
  * Manages pushing event loops and automatically pops and exits them in the
@@ -544,7 +562,7 @@ ThreadActor.prototype = {
       this._prettyPrintWorker.addEventListener(
         "error", this._onPrettyPrintError, false);
 
-      if (wantLogging) {
+      if (dumpn.wantLogging) {
         this._prettyPrintWorker.addEventListener("message", this._onPrettyPrintMsg, false);
 
         const postMsg = this._prettyPrintWorker.postMessage;
@@ -1786,7 +1804,7 @@ ThreadActor.prototype = {
         }
 
         // There will be no tagName if the event listener is set on the window.
-        let selector = node.tagName ? findCssSelector(node) : "window";
+        let selector = node.tagName ? CssLogic.findCssSelector(node) : "window";
         let nodeDO = this.globalDebugObject.makeDebuggeeValue(node);
         listenerForm.node = {
           selector: selector,
@@ -2387,6 +2405,7 @@ ThreadActor.prototype.requestTypes = {
   "prototypesAndProperties": ThreadActor.prototype.onPrototypesAndProperties
 };
 
+exports.ThreadActor = ThreadActor;
 
 /**
  * Creates a PauseActor.
@@ -3015,6 +3034,7 @@ let stringifiers = {
  */
 function ObjectActor(aObj, aThreadActor)
 {
+  dbg_assert(!aObj.optimizedOut, "Should not create object actors for optimized out values!");
   this.obj = aObj;
   this.threadActor = aThreadActor;
 }
@@ -3450,6 +3470,7 @@ ObjectActor.prototype.requestTypes = {
   "scope": ObjectActor.prototype.onScope,
 };
 
+exports.ObjectActor = ObjectActor;
 
 /**
  * Functions for adding information to ObjectActor grips for the purpose of
@@ -4225,6 +4246,7 @@ LongStringActor.prototype.requestTypes = {
   "release": LongStringActor.prototype.onRelease
 };
 
+exports.LongStringActor = LongStringActor;
 
 /**
  * Creates an actor for the specified stack frame.
@@ -4377,6 +4399,13 @@ BreakpointActor.prototype = {
     this.scripts = [];
   },
 
+  /**
+   * Check if this breakpoint has a condition that doesn't error and
+   * evaluates to true in aFrame
+   *
+   * @param aFrame Debugger.Frame
+   *        The frame to evaluate the condition in
+   */
   isValidCondition: function(aFrame) {
     if(!this.condition) {
       return true;
@@ -4517,10 +4546,18 @@ EnvironmentActor.prototype = {
     }
     for each (let name in parameterNames) {
       let arg = {};
+
+      let value = this.obj.getVariable(name);
+      // The slot is optimized out.
+      // FIXME: Need actual UI, bug 941287.
+      if (value && value.optimizedOut) {
+        continue;
+      }
+
       // TODO: this part should be removed in favor of the commented-out part
       // below when getVariableDescriptor lands (bug 725815).
       let desc = {
-        value: this.obj.getVariable(name),
+        value: value,
         configurable: false,
         writable: true,
         enumerable: true
@@ -4549,22 +4586,22 @@ EnvironmentActor.prototype = {
         continue;
       }
 
+      let value = this.obj.getVariable(name);
+      // The slot is optimized out or arguments on a dead scope.
+      // FIXME: Need actual UI, bug 941287.
+      if (value && (value.optimizedOut || value.missingArguments)) {
+        continue;
+      }
+
       // TODO: this part should be removed in favor of the commented-out part
       // below when getVariableDescriptor lands.
       let desc = {
+        value: value,
         configurable: false,
         writable: true,
         enumerable: true
       };
-      try {
-        desc.value = this.obj.getVariable(name);
-      } catch (e) {
-        // Avoid "Debugger scope is not live" errors for |arguments|, introduced
-        // in bug 746601.
-        if (name != "arguments") {
-          throw e;
-        }
-      }
+
       //let desc = this.obj.getVariableDescriptor(name);
       let descForm = {
         enumerable: true,
@@ -4628,6 +4665,8 @@ EnvironmentActor.prototype.requestTypes = {
   "assign": EnvironmentActor.prototype.onAssign,
   "bindings": EnvironmentActor.prototype.onBindings
 };
+
+exports.EnvironmentActor = EnvironmentActor;
 
 /**
  * Override the toString method in order to get more meaningful script output
@@ -4730,6 +4769,8 @@ update(ChromeDebuggerActor.prototype, {
   }
 });
 
+exports.ChromeDebuggerActor = ChromeDebuggerActor;
+
 /**
  * Creates an actor for handling add-on debugging. AddonThreadActor is
  * a thin wrapper over ThreadActor.
@@ -4768,12 +4809,14 @@ update(AddonThreadActor.prototype, {
    */
   _allowSource: function(aSourceURL) {
     // Hide eval scripts
-    if (!aSourceURL)
+    if (!aSourceURL) {
       return false;
+    }
 
     // XPIProvider.jsm evals some code in every add-on's bootstrap.js. Hide it
-    if (aSourceURL == "resource://gre/modules/addons/XPIProvider.jsm")
+    if (aSourceURL == "resource://gre/modules/addons/XPIProvider.jsm") {
       return false;
+    }
 
     return true;
   },
@@ -4820,33 +4863,58 @@ update(AddonThreadActor.prototype, {
    * @param aGlobal Debugger.Object
    */
   _checkGlobal: function ADA_checkGlobal(aGlobal) {
+    let obj = null;
+    try {
+      obj = aGlobal.unsafeDereference();
+    }
+    catch (e) {
+      // Because of bug 991399 we sometimes get bad objects here. If we can't
+      // dereference them then they won't be useful to us
+      return false;
+    }
+
     try {
       // This will fail for non-Sandbox objects, hence the try-catch block.
-      let metadata = Cu.getSandboxMetadata(aGlobal.unsafeDereference());
-      if (metadata)
+      let metadata = Cu.getSandboxMetadata(obj);
+      if (metadata) {
         return metadata.addonID === this.addonID;
+      }
     } catch (e) {
+    }
+
+    if (obj instanceof Ci.nsIDOMWindow) {
+      let id = {};
+      if (mapURIToAddonID(obj.document.documentURIObject, id)) {
+        return id.value === this.addonID;
+      }
+      return false;
     }
 
     // Check the global for a __URI__ property and then try to map that to an
     // add-on
     let uridescriptor = aGlobal.getOwnPropertyDescriptor("__URI__");
-    if (uridescriptor && "value" in uridescriptor) {
+    if (uridescriptor && "value" in uridescriptor && uridescriptor.value) {
+      let uri;
       try {
-        let uri = Services.io.newURI(uridescriptor.value, null, null);
-        let id = {};
-        if (mapURIToAddonID(uri, id)) {
-          return id.value === this.addonID;
-        }
+        uri = Services.io.newURI(uridescriptor.value, null, null);
       }
       catch (e) {
-        DevToolsUtils.reportException("AddonThreadActor.prototype._checkGlobal", e);
+        DevToolsUtils.reportException("AddonThreadActor.prototype._checkGlobal",
+                                      new Error("Invalid URI: " + uridescriptor.value));
+        return false;
+      }
+
+      let id = {};
+      if (mapURIToAddonID(uri, id)) {
+        return id.value === this.addonID;
       }
     }
 
     return false;
   }
 });
+
+exports.AddonThreadActor = AddonThreadActor;
 
 /**
  * Manages the sources for a thread. Handles source maps, locations in the
@@ -5210,6 +5278,8 @@ ThreadSources.prototype = {
   }
 };
 
+exports.ThreadSources = ThreadSources;
+
 // Utility functions.
 
 // TODO bug 863089: use Debugger.Script.prototype.getOffsetColumn when it is
@@ -5258,25 +5328,6 @@ function getFrameLocation(aFrame) {
 }
 
 /**
- * Utility function for updating an object with the properties of another
- * object.
- *
- * @param aTarget Object
- *        The object being updated.
- * @param aNewAttrs Object
- *        The new attributes being set on the target.
- */
-function update(aTarget, aNewAttrs) {
-  for (let key in aNewAttrs) {
-    let desc = Object.getOwnPropertyDescriptor(aNewAttrs, key);
-
-    if (desc) {
-      Object.defineProperty(aTarget, key, desc);
-    }
-  }
-}
-
-/**
  * Returns true if its argument is not null.
  */
 function isNotNull(aThing) {
@@ -5318,7 +5369,7 @@ function fetch(aURL, aOptions={ loadFromCache: true }) {
     case "resource":
       try {
         NetUtil.asyncFetch(url, function onFetch(aStream, aStatus, aRequest) {
-          if (!Components.isSuccessCode(aStatus)) {
+          if (!components.isSuccessCode(aStatus)) {
             deferred.reject(new Error("Request failed with status code = "
                                       + aStatus
                                       + " after NetUtil.asyncFetch for url = "
@@ -5349,7 +5400,7 @@ function fetch(aURL, aOptions={ loadFromCache: true }) {
       let chunks = [];
       let streamListener = {
         onStartRequest: function(aRequest, aContext, aStatusCode) {
-          if (!Components.isSuccessCode(aStatusCode)) {
+          if (!components.isSuccessCode(aStatusCode)) {
             deferred.reject(new Error("Request failed with status code = "
                                       + aStatusCode
                                       + " in onStartRequest handler for url = "
@@ -5360,7 +5411,7 @@ function fetch(aURL, aOptions={ loadFromCache: true }) {
           chunks.push(NetUtil.readInputStreamToString(aStream, aCount));
         },
         onStopRequest: function(aRequest, aContext, aStatusCode) {
-          if (!Components.isSuccessCode(aStatusCode)) {
+          if (!components.isSuccessCode(aStatusCode)) {
             deferred.reject(new Error("Request failed with status code = "
                                       + aStatusCode
                                       + " in onStopRequest handler for url = "
@@ -5424,83 +5475,6 @@ function reportError(aError, aPrefix="") {
   dumpn(msg);
 }
 
-// The following are copied here verbatim from css-logic.js, until we create a
-// server-friendly helper module.
-
-/**
- * Find a unique CSS selector for a given element
- * @returns a string such that ele.ownerDocument.querySelector(reply) === ele
- * and ele.ownerDocument.querySelectorAll(reply).length === 1
- */
-function findCssSelector(ele) {
-  var document = ele.ownerDocument;
-  if (ele.id && document.getElementById(ele.id) === ele) {
-    return '#' + ele.id;
-  }
-
-  // Inherently unique by tag name
-  var tagName = ele.tagName.toLowerCase();
-  if (tagName === 'html') {
-    return 'html';
-  }
-  if (tagName === 'head') {
-    return 'head';
-  }
-  if (tagName === 'body') {
-    return 'body';
-  }
-
-  if (ele.parentNode == null) {
-    console.log('danger: ' + tagName);
-  }
-
-  // We might be able to find a unique class name
-  var selector, index, matches;
-  if (ele.classList.length > 0) {
-    for (var i = 0; i < ele.classList.length; i++) {
-      // Is this className unique by itself?
-      selector = '.' + ele.classList.item(i);
-      matches = document.querySelectorAll(selector);
-      if (matches.length === 1) {
-        return selector;
-      }
-      // Maybe it's unique with a tag name?
-      selector = tagName + selector;
-      matches = document.querySelectorAll(selector);
-      if (matches.length === 1) {
-        return selector;
-      }
-      // Maybe it's unique using a tag name and nth-child
-      index = positionInNodeList(ele, ele.parentNode.children) + 1;
-      selector = selector + ':nth-child(' + index + ')';
-      matches = document.querySelectorAll(selector);
-      if (matches.length === 1) {
-        return selector;
-      }
-    }
-  }
-
-  // So we can be unique w.r.t. our parent, and use recursion
-  index = positionInNodeList(ele, ele.parentNode.children) + 1;
-  selector = findCssSelector(ele.parentNode) + ' > ' +
-          tagName + ':nth-child(' + index + ')';
-
-  return selector;
-};
-
-/**
- * Find the position of [element] in [nodeList].
- * @returns an index of the match, or -1 if there is no match
- */
-function positionInNodeList(element, nodeList) {
-  for (var i = 0; i < nodeList.length; i++) {
-    if (element === nodeList[i]) {
-      return i;
-    }
-  }
-  return -1;
-}
-
 /**
  * Make a debuggee value for the given object, if needed. Primitive values
  * are left the same.
@@ -5524,4 +5498,16 @@ function makeDebuggeeValueIfNeeded(obj, value) {
 function getInnerId(window) {
   return window.QueryInterface(Ci.nsIInterfaceRequestor).
                 getInterface(Ci.nsIDOMWindowUtils).currentInnerWindowID;
+};
+
+exports.register = function(handle) {
+  ThreadActor.breakpointStore = new BreakpointStore();
+  ThreadSources._blackBoxedSources = new Set(["self-hosted"]);
+  ThreadSources._prettyPrintedSources = new Map();
+};
+
+exports.unregister = function(handle) {
+  ThreadActor.breakpointStore = null;
+  ThreadSources._blackBoxedSources.clear();
+  ThreadSources._prettyPrintedSources.clear();
 };

@@ -648,6 +648,24 @@ SimpleTest.expectAssertions = function(min, max) {
     }
 }
 
+/**
+ * Request the framework to allow usage of setTimeout(func, timeout)
+ * where |timeout > 0|.  This is required to note that the author of
+ * the test is aware of the inherent flakiness in the test caused by
+ * that, and asserts that there is no way around using the magic timeout
+ * value number for some reason.
+ *
+ * The reason parameter should be a string representation of the
+ * reason why using such flaky timeouts.
+ *
+ * Use of this function is STRONGLY discouraged.  Think twice before
+ * using it.  Such magic timeout values could result in intermittent
+ * failures in your test, and are almost never necessary!
+ */
+SimpleTest.requestFlakyTimeout = function (reason) {
+    // TODO: This will get implemented in bug 649012.
+}
+
 SimpleTest.waitForFocus_started = false;
 SimpleTest.waitForFocus_loaded = false;
 SimpleTest.waitForFocus_focused = false;
@@ -723,8 +741,9 @@ SimpleTest.waitForFocus = function (callback, targetWindow, expectBlankPage) {
     // to load its content, and we want to skip over any intermediate blank
     // pages that load. This issue is described in bug 554873.
     SimpleTest.waitForFocus_loaded =
-        (expectBlankPage == (getHref(targetWindow) == "about:blank")) &&
-        targetWindow.document.readyState == "complete";
+        expectBlankPage ?
+            getHref(targetWindow) == "about:blank" :
+            getHref(targetWindow) != "about:blank" && targetWindow.document.readyState == "complete";
     if (!SimpleTest.waitForFocus_loaded) {
         info("must wait for load");
         targetWindow.addEventListener("load", waitForEvent, true);
@@ -846,57 +865,62 @@ SimpleTest.registerCleanupFunction = function(aFunc) {
  * Finishes the tests. This is automatically called, except when
  * SimpleTest.waitForExplicitFinish() has been invoked.
 **/
-SimpleTest.finish = function () {
+SimpleTest.finish = function() {
+    var Task = SpecialPowers.Cu.import("resource://gre/modules/Task.jsm").Task;
+
     if (SimpleTest._alreadyFinished) {
         SimpleTest.ok(false, "[SimpleTest.finish()] this test already called finish!");
     }
 
     SimpleTest._alreadyFinished = true;
 
-    // Execute all of our cleanup functions.
-    var func;
-    while ((func = SimpleTest._cleanupFunctions.pop())) {
-      try {
-        func();
-      }
-      catch (ex) {
-        SimpleTest.ok(false, "Cleanup function threw exception: " + ex);
-      }
-    }
+    Task.spawn(function*() {
+        // Execute all of our cleanup functions.
+        var func;
+        while ((func = SimpleTest._cleanupFunctions.pop())) {
+          try {
+            yield func();
+          }
+          catch (ex) {
+            SimpleTest.ok(false, "Cleanup function threw exception: " + ex);
+          }
+        }
 
-    if (SpecialPowers.DOMWindowUtils.isTestControllingRefreshes) {
-        SimpleTest.ok(false, "test left refresh driver under test control");
-        SpecialPowers.DOMWindowUtils.restoreNormalRefresh();
-    }
-    if (SimpleTest._expectingUncaughtException) {
-        SimpleTest.ok(false, "expectUncaughtException was called but no uncaught exception was detected!");
-    }
-    if (SimpleTest._pendingWaitForFocusCount != 0) {
-        SimpleTest.is(SimpleTest._pendingWaitForFocusCount, 0,
-                      "[SimpleTest.finish()] waitForFocus() was called a "
-                      + "different number of times from the number of "
-                      + "callbacks run.  Maybe the test terminated "
-                      + "prematurely -- be sure to use "
-                      + "SimpleTest.waitForExplicitFinish().");
-    }
-    if (SimpleTest._tests.length == 0) {
-        SimpleTest.ok(false, "[SimpleTest.finish()] No checks actually run. "
-                           + "(You need to call ok(), is(), or similar "
-                           + "functions at least once.  Make sure you use "
-                           + "SimpleTest.waitForExplicitFinish() if you need "
-                           + "it.)");
-    }
+        if (SpecialPowers.DOMWindowUtils.isTestControllingRefreshes) {
+            SimpleTest.ok(false, "test left refresh driver under test control");
+            SpecialPowers.DOMWindowUtils.restoreNormalRefresh();
+        }
+        if (SimpleTest._expectingUncaughtException) {
+            SimpleTest.ok(false, "expectUncaughtException was called but no uncaught exception was detected!");
+        }
+        if (SimpleTest._pendingWaitForFocusCount != 0) {
+            SimpleTest.is(SimpleTest._pendingWaitForFocusCount, 0,
+                          "[SimpleTest.finish()] waitForFocus() was called a "
+                          + "different number of times from the number of "
+                          + "callbacks run.  Maybe the test terminated "
+                          + "prematurely -- be sure to use "
+                          + "SimpleTest.waitForExplicitFinish().");
+        }
+        if (SimpleTest._tests.length == 0) {
+            SimpleTest.ok(false, "[SimpleTest.finish()] No checks actually run. "
+                               + "(You need to call ok(), is(), or similar "
+                               + "functions at least once.  Make sure you use "
+                               + "SimpleTest.waitForExplicitFinish() if you need "
+                               + "it.)");
+        }
 
-    if (parentRunner) {
-        /* We're running in an iframe, and the parent has a TestRunner */
-        parentRunner.testFinished(SimpleTest._tests);
-    } else {
-        SpecialPowers.flushPermissions(function () {
-          SpecialPowers.flushPrefEnv(function() {
-            SimpleTest.showReport();
-          });
-        });
-    }
+        if (parentRunner) {
+            /* We're running in an iframe, and the parent has a TestRunner */
+            parentRunner.testFinished(SimpleTest._tests);
+        } else {
+            SpecialPowers.flushAllAppsLaunchable();
+            SpecialPowers.flushPermissions(function () {
+              SpecialPowers.flushPrefEnv(function() {
+                SimpleTest.showReport();
+              });
+            });
+        }
+    });
 };
 
 /**

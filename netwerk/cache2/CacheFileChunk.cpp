@@ -7,8 +7,6 @@
 
 #include "CacheFile.h"
 #include "nsThreadUtils.h"
-#include "nsAlgorithm.h"
-#include <algorithm>
 
 namespace mozilla {
 namespace net {
@@ -48,55 +46,6 @@ protected:
 };
 
 
-class ValidityPair {
-public:
-  ValidityPair(uint32_t aOffset, uint32_t aLen)
-    : mOffset(aOffset), mLen(aLen)
-  {}
-
-  ValidityPair& operator=(const ValidityPair& aOther) {
-    mOffset = aOther.mOffset;
-    mLen = aOther.mLen;
-    return *this;
-  }
-
-  bool Overlaps(const ValidityPair& aOther) const {
-    if ((mOffset <= aOther.mOffset && mOffset + mLen >= aOther.mOffset) ||
-        (aOther.mOffset <= mOffset && aOther.mOffset + mLen >= mOffset))
-      return true;
-
-    return false;
-  }
-
-  bool LessThan(const ValidityPair& aOther) const {
-    if (mOffset < aOther.mOffset)
-      return true;
-
-    if (mOffset == aOther.mOffset && mLen < aOther.mLen)
-      return true;
-
-    return false;
-  }
-
-  void Merge(const ValidityPair& aOther) {
-    MOZ_ASSERT(Overlaps(aOther));
-
-    uint32_t offset = std::min(mOffset, aOther.mOffset);
-    uint32_t end = std::max(mOffset + mLen, aOther.mOffset + aOther.mLen);
-
-    mOffset = offset;
-    mLen = end - offset;
-  }
-
-  uint32_t Offset() { return mOffset; }
-  uint32_t Len()    { return mLen; }
-
-private:
-  uint32_t mOffset;
-  uint32_t mLen;
-};
-
-
 NS_IMPL_ADDREF(CacheFileChunk)
 NS_IMETHODIMP_(MozExternalRefCountType)
 CacheFileChunk::Release()
@@ -124,8 +73,10 @@ NS_INTERFACE_MAP_BEGIN(CacheFileChunk)
 NS_INTERFACE_MAP_END_THREADSAFE
 
 CacheFileChunk::CacheFileChunk(CacheFile *aFile, uint32_t aIndex)
-  : mIndex(aIndex)
+  : CacheMemoryConsumer(aFile->mOpenAsMemoryOnly ? MEMORY_ONLY : DONT_REPORT)
+  , mIndex(aIndex)
   , mState(INITIAL)
+  , mStatus(NS_OK)
   , mIsDirty(false)
   , mRemovingChunk(false)
   , mDataSize(0)
@@ -156,8 +107,6 @@ CacheFileChunk::~CacheFileChunk()
     mRWBuf = nullptr;
     mRWBufSize = 0;
   }
-
-  DoMemoryReport(MemorySize());
 }
 
 void
@@ -203,18 +152,18 @@ CacheFileChunk::Read(CacheFileHandle *aHandle, uint32_t aLen,
   DoMemoryReport(MemorySize());
 
   rv = CacheFileIOManager::Read(aHandle, mIndex * kChunkSize, mRWBuf, aLen,
-                                this);
-  if (NS_FAILED(rv)) {
-    mState = READING;   // TODO: properly handle error states
-//    mState = ERROR;
-    NS_ENSURE_SUCCESS(rv, rv);
+                                true, this);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    rv = mIndex ? NS_ERROR_FILE_CORRUPTED : NS_ERROR_FILE_NOT_FOUND;
+    SetError(rv);
+  } else {
+    mState = READING;
+    mListener = aCallback;
+    mDataSize = aLen;
+    mReadHash = aHash;
   }
 
-  mState = READING;
-  mListener = aCallback;
-  mDataSize = aLen;
-  mReadHash = aHash;
-  return NS_OK;
+  return rv;
 }
 
 nsresult
@@ -240,16 +189,15 @@ CacheFileChunk::Write(CacheFileHandle *aHandle,
 
   rv = CacheFileIOManager::Write(aHandle, mIndex * kChunkSize, mRWBuf,
                                  mDataSize, false, this);
-  if (NS_FAILED(rv)) {
-    mState = WRITING;   // TODO: properly handle error states
-//    mState = ERROR;
-    NS_ENSURE_SUCCESS(rv, rv);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    SetError(rv);
+  } else {
+    mState = WRITING;
+    mListener = aCallback;
+    mIsDirty = false;
   }
 
-  mState = WRITING;
-  mListener = aCallback;
-  mIsDirty = false;
-  return NS_OK;
+  return rv;
 }
 
 void
@@ -368,6 +316,11 @@ CacheFileChunk::UpdateDataSize(uint32_t aOffset, uint32_t aLen, bool aEOF)
 
   MOZ_ASSERT(!aEOF, "Implement me! What to do with opened streams?");
   MOZ_ASSERT(aOffset <= mDataSize);
+  MOZ_ASSERT(aLen != 0);
+
+  // UpdateDataSize() is called only when we've written some data to the chunk
+  // and we never write data anymore once some error occurs.
+  MOZ_ASSERT(mState != ERROR);
 
   LOG(("CacheFileChunk::UpdateDataSize() [this=%p, offset=%d, len=%d, EOF=%d]",
        this, aOffset, aLen, aEOF));
@@ -388,8 +341,9 @@ CacheFileChunk::UpdateDataSize(uint32_t aOffset, uint32_t aLen, bool aEOF)
   if (mState == READY || mState == WRITING) {
     MOZ_ASSERT(mValidityMap.Length() == 0);
 
-    if (notify)
+    if (notify) {
       NotifyUpdateListeners();
+    }
 
     return;
   }
@@ -402,49 +356,8 @@ CacheFileChunk::UpdateDataSize(uint32_t aOffset, uint32_t aLen, bool aEOF)
   MOZ_ASSERT(mUpdateListeners.Length() == 0);
   MOZ_ASSERT(mState == READING);
 
-  ValidityPair pair(aOffset, aLen);
-
-  if (mValidityMap.Length() == 0) {
-    mValidityMap.AppendElement(pair);
-    return;
-  }
-
-
-  // Find out where to place this pair into the map, it can overlap with
-  // one preceding pair and all subsequent pairs.
-  uint32_t pos = 0;
-  for (pos = mValidityMap.Length() ; pos > 0 ; pos--) {
-    if (mValidityMap[pos-1].LessThan(pair)) {
-      if (mValidityMap[pos-1].Overlaps(pair)) {
-        // Merge with the preceding pair
-        mValidityMap[pos-1].Merge(pair);
-        pos--; // Point to the updated pair
-      }
-      else {
-        if (pos == mValidityMap.Length())
-          mValidityMap.AppendElement(pair);
-        else
-          mValidityMap.InsertElementAt(pos, pair);
-      }
-
-      break;
-    }
-  }
-
-  if (!pos)
-    mValidityMap.InsertElementAt(0, pair);
-
-  // Now pos points to merged or inserted pair, check whether it overlaps with
-  // subsequent pairs.
-  while (pos + 1 < mValidityMap.Length()) {
-    if (mValidityMap[pos].Overlaps(mValidityMap[pos + 1])) {
-      mValidityMap[pos].Merge(mValidityMap[pos + 1]);
-      mValidityMap.RemoveElementAt(pos + 1);
-    }
-    else {
-      break;
-    }
-  }
+  mValidityMap.AddPair(aOffset, aLen);
+  mValidityMap.Log();
 }
 
 nsresult
@@ -469,29 +382,23 @@ CacheFileChunk::OnDataWritten(CacheFileHandle *aHandle, const char *aBuf,
     MOZ_ASSERT(mState == WRITING);
     MOZ_ASSERT(mListener);
 
-#if 0
-    // TODO: properly handle error states
-    if (NS_FAILED(aResult)) {
-      mState = ERROR;
-    }
-    else {
-#endif
+    if (NS_WARN_IF(NS_FAILED(aResult))) {
+      SetError(aResult);
+    } else {
       mState = READY;
-      if (!mBuf) {
-        mBuf = mRWBuf;
-        mBufSize = mRWBufSize;
-      }
-      else {
-        free(mRWBuf);
-      }
-
-      mRWBuf = nullptr;
-      mRWBufSize = 0;
-
-      DoMemoryReport(MemorySize());
-#if 0
     }
-#endif
+
+    if (!mBuf) {
+      mBuf = mRWBuf;
+      mBufSize = mRWBufSize;
+    } else {
+      free(mRWBuf);
+    }
+
+    mRWBuf = nullptr;
+    mRWBufSize = 0;
+
+    DoMemoryReport(MemorySize());
 
     mListener.swap(listener);
   }
@@ -533,16 +440,21 @@ CacheFileChunk::OnDataRead(CacheFileHandle *aHandle, char *aBuf,
           mRWBuf = nullptr;
           mRWBufSize = 0;
         } else {
+          LOG(("CacheFileChunk::OnDataRead() - Merging buffers. [this=%p]",
+               this));
+
           // Merge data with write buffer
           if (mRWBufSize < mBufSize) {
             mRWBuf = static_cast<char *>(moz_xrealloc(mRWBuf, mBufSize));
             mRWBufSize = mBufSize;
           }
 
+          mValidityMap.Log();
           for (uint32_t i = 0 ; i < mValidityMap.Length() ; i++) {
             memcpy(mRWBuf + mValidityMap[i].Offset(),
                    mBuf + mValidityMap[i].Offset(), mValidityMap[i].Len());
           }
+          mValidityMap.Clear();
 
           free(mBuf);
           mBuf = mRWBuf;
@@ -556,14 +468,10 @@ CacheFileChunk::OnDataRead(CacheFileHandle *aHandle, char *aBuf,
     }
 
     if (NS_FAILED(aResult)) {
-#if 0
-      // TODO: properly handle error states
-      mState = ERROR;
-#endif
-      mState = READY;
+      aResult = mIndex ? NS_ERROR_FILE_CORRUPTED : NS_ERROR_FILE_NOT_FOUND;
+      SetError(aResult);
       mDataSize = 0;
-    }
-    else {
+    } else {
       mState = READY;
     }
 
@@ -601,7 +509,7 @@ CacheFileChunk::IsReady() const
 {
   mFile->AssertOwnsLock();
 
-  return (mState == READY || mState == WRITING);
+  return (NS_SUCCEEDED(mStatus) && (mState == READY || mState == WRITING));
 }
 
 bool
@@ -610,6 +518,26 @@ CacheFileChunk::IsDirty() const
   mFile->AssertOwnsLock();
 
   return mIsDirty;
+}
+
+nsresult
+CacheFileChunk::GetStatus()
+{
+  mFile->AssertOwnsLock();
+
+  return mStatus;
+}
+
+void
+CacheFileChunk::SetError(nsresult aStatus)
+{
+  if (NS_SUCCEEDED(mStatus)) {
+    MOZ_ASSERT(mState != ERROR);
+    mStatus = aStatus;
+    mState = ERROR;
+  } else {
+    MOZ_ASSERT(mState == ERROR);
+  }
 }
 
 char *
@@ -641,6 +569,10 @@ void
 CacheFileChunk::EnsureBufSize(uint32_t aBufSize)
 {
   mFile->AssertOwnsLock();
+
+  // EnsureBufSize() is called only when we want to write some data to the chunk
+  // and we never write data anymore once some error occurs.
+  MOZ_ASSERT(mState != ERROR);
 
   if (mBufSize >= aBufSize)
     return;

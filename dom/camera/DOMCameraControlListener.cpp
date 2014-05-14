@@ -131,7 +131,7 @@ DOMCameraControlListener::OnPreviewStateChange(PreviewState aState)
 
     default:
       DOM_CAMERA_LOGE("Unknown preview state %d\n", aState);
-      MOZ_ASSUME_UNREACHABLE("Invalid preview state");
+      MOZ_ASSERT_UNREACHABLE("Invalid preview state");
       return;
   }
   NS_DispatchToMainThread(new Callback(mDOMCameraControl, aState));
@@ -216,6 +216,55 @@ DOMCameraControlListener::OnConfigurationChange(const CameraListenerConfiguratio
   };
 
   NS_DispatchToMainThread(new Callback(mDOMCameraControl, aConfiguration));
+}
+
+void
+DOMCameraControlListener::OnAutoFocusMoving(bool aIsMoving)
+{
+  class Callback : public DOMCallback
+  {
+  public:
+    Callback(nsMainThreadPtrHandle<nsDOMCameraControl> aDOMCameraControl, bool aIsMoving)
+      : DOMCallback(aDOMCameraControl)
+      , mIsMoving(aIsMoving)
+    { }
+
+    void
+    RunCallback(nsDOMCameraControl* aDOMCameraControl) MOZ_OVERRIDE
+    {
+      aDOMCameraControl->OnAutoFocusMoving(mIsMoving);
+    }
+
+  protected:
+    bool mIsMoving;
+  };
+
+  NS_DispatchToMainThread(new Callback(mDOMCameraControl, aIsMoving));
+}
+
+void
+DOMCameraControlListener::OnFacesDetected(const nsTArray<ICameraControl::Face>& aFaces)
+{
+  class Callback : public DOMCallback
+  {
+  public:
+    Callback(nsMainThreadPtrHandle<nsDOMCameraControl> aDOMCameraControl,
+             const nsTArray<ICameraControl::Face>& aFaces)
+      : DOMCallback(aDOMCameraControl)
+      , mFaces(aFaces)
+    { }
+
+    void
+    RunCallback(nsDOMCameraControl* aDOMCameraControl) MOZ_OVERRIDE
+    {
+      aDOMCameraControl->OnFacesDetected(mFaces);
+    }
+
+  protected:
+    const nsTArray<ICameraControl::Face> mFaces;
+  };
+
+  NS_DispatchToMainThread(new Callback(mDOMCameraControl, aFaces));
 }
 
 void
@@ -305,14 +354,14 @@ DOMCameraControlListener::OnTakePictureComplete(uint8_t* aData, uint32_t aLength
 }
 
 void
-DOMCameraControlListener::OnError(CameraErrorContext aContext, CameraError aError)
+DOMCameraControlListener::OnUserError(UserContext aContext, nsresult aError)
 {
   class Callback : public DOMCallback
   {
   public:
     Callback(nsMainThreadPtrHandle<nsDOMCameraControl> aDOMCameraControl,
-             CameraErrorContext aContext,
-             CameraError aError)
+             UserContext aContext,
+             nsresult aError)
       : DOMCallback(aDOMCameraControl)
       , mContext(aContext)
       , mError(aError)
@@ -321,36 +370,12 @@ DOMCameraControlListener::OnError(CameraErrorContext aContext, CameraError aErro
     virtual void
     RunCallback(nsDOMCameraControl* aDOMCameraControl) MOZ_OVERRIDE
     {
-      nsString error;
-
-      switch (mError) {
-        case kErrorServiceFailed:
-          error = NS_LITERAL_STRING("ErrorServiceFailed");
-          break;
-
-        case kErrorSetPictureSizeFailed:
-          error = NS_LITERAL_STRING("ErrorSetPictureSizeFailed");
-          break;
-
-        case kErrorSetThumbnailSizeFailed:
-          error = NS_LITERAL_STRING("ErrorSetThumbnailSizeFailed");
-          break;
-
-        case kErrorApiFailed:
-          // XXXmikeh legacy error placeholder
-          error = NS_LITERAL_STRING("FAILURE");
-          break;
-
-        default:
-          error = NS_LITERAL_STRING("ErrorUnknown");
-          break;
-      }
-      aDOMCameraControl->OnError(mContext, error);
+      aDOMCameraControl->OnUserError(mContext, mError);
     }
 
   protected:
-    CameraErrorContext mContext;
-    CameraError mError;
+    UserContext mContext;
+    nsresult mError;
   };
 
   NS_DispatchToMainThread(new Callback(mDOMCameraControl, aContext, aError));

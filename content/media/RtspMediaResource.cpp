@@ -15,6 +15,10 @@
 #include "nsIScriptSecurityManager.h"
 #include "nsIStreamingProtocolService.h"
 #include "nsServiceManagerUtils.h"
+#ifdef NECKO_PROTOCOL_rtsp
+#include "mozilla/net/RtspChannelChild.h"
+#endif
+using namespace mozilla::net;
 
 #ifdef PR_LOGGING
 PRLogModuleInfo* gRtspMediaResourceLog;
@@ -39,7 +43,7 @@ namespace mozilla {
  * */
 #define BUFFER_SLOT_NUM 8192
 #define BUFFER_SLOT_DEFAULT_SIZE 256
-#define BUFFER_SLOT_MAX_SIZE 8192
+#define BUFFER_SLOT_MAX_SIZE 512
 #define BUFFER_SLOT_INVALID -1
 #define BUFFER_SLOT_EMPTY 0
 
@@ -353,21 +357,22 @@ RtspMediaResource::RtspMediaResource(MediaDecoder* aDecoder,
   : BaseMediaResource(aDecoder, aChannel, aURI, aContentType)
   , mIsConnected(false)
   , mRealTime(false)
+  , mIsSuspend(true)
 {
-  nsCOMPtr<nsIStreamingProtocolControllerService> mediaControllerService =
-    do_GetService(MEDIASTREAMCONTROLLERSERVICE_CONTRACTID);
-  MOZ_ASSERT(mediaControllerService);
-  if (mediaControllerService) {
-    mediaControllerService->Create(mChannel,
-                                   getter_AddRefs(mMediaStreamController));
-    MOZ_ASSERT(mMediaStreamController);
-    mListener = new Listener(this);
-    mMediaStreamController->AsyncOpen(mListener);
-  }
+#ifndef NECKO_PROTOCOL_rtsp
+  MOZ_CRASH("Should not be called except for B2G platform");
+#else
+  MOZ_ASSERT(aChannel);
+  mMediaStreamController =
+    static_cast<RtspChannelChild*>(aChannel)->GetController();
+  MOZ_ASSERT(mMediaStreamController);
+  mListener = new Listener(this);
+  mMediaStreamController->AsyncOpen(mListener);
 #ifdef PR_LOGGING
   if (!gRtspMediaResourceLog) {
     gRtspMediaResourceLog = PR_NewLogModule("RtspMediaResource");
   }
+#endif
 #endif
 }
 
@@ -377,6 +382,28 @@ RtspMediaResource::~RtspMediaResource()
   if (mListener) {
     // Kill its reference to us since we're going away
     mListener->Revoke();
+  }
+}
+
+void RtspMediaResource::SetSuspend(bool aIsSuspend)
+{
+  NS_ASSERTION(!NS_IsMainThread(), "Don't call on main thread");
+  RTSPMLOG("SetSuspend %d",aIsSuspend);
+
+  nsCOMPtr<nsIRunnable> runnable =
+    NS_NewRunnableMethodWithArg<bool>(this, &RtspMediaResource::NotifySuspend,
+                                      aIsSuspend);
+  NS_DispatchToMainThread(runnable);
+}
+
+void RtspMediaResource::NotifySuspend(bool aIsSuspend)
+{
+  NS_ASSERTION(NS_IsMainThread(), "Only call on main thread");
+  RTSPMLOG("NotifySuspend %d",aIsSuspend);
+
+  mIsSuspend = aIsSuspend;
+  if (mDecoder) {
+    mDecoder->NotifySuspendedStatusChanged();
   }
 }
 
@@ -400,8 +427,8 @@ RtspMediaResource::SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const
 //----------------------------------------------------------------------------
 // RtspMediaResource::Listener
 //----------------------------------------------------------------------------
-NS_IMPL_ISUPPORTS2(RtspMediaResource::Listener,
-                   nsIInterfaceRequestor, nsIStreamingProtocolListener);
+NS_IMPL_ISUPPORTS(RtspMediaResource::Listener,
+                  nsIInterfaceRequestor, nsIStreamingProtocolListener);
 
 nsresult
 RtspMediaResource::Listener::OnMediaDataAvailable(uint8_t aTrackIdx,
@@ -635,6 +662,11 @@ void RtspMediaResource::Suspend(bool aCloseImmediately)
 {
   NS_ASSERTION(NS_IsMainThread(), "Don't call on non-main thread");
 
+  mIsSuspend = true;
+  if (NS_WARN_IF(!mDecoder)) {
+    return;
+  }
+
   MediaDecoderOwner* owner = mDecoder->GetMediaOwner();
   NS_ENSURE_TRUE_VOID(owner);
   dom::HTMLMediaElement* element = owner->GetMediaElement();
@@ -642,11 +674,17 @@ void RtspMediaResource::Suspend(bool aCloseImmediately)
 
   mMediaStreamController->Suspend();
   element->DownloadSuspended();
+  mDecoder->NotifySuspendedStatusChanged();
 }
 
 void RtspMediaResource::Resume()
 {
   NS_ASSERTION(NS_IsMainThread(), "Don't call on non-main thread");
+
+  mIsSuspend = false;
+  if (NS_WARN_IF(!mDecoder)) {
+    return;
+  }
 
   MediaDecoderOwner* owner = mDecoder->GetMediaOwner();
   NS_ENSURE_TRUE_VOID(owner);
@@ -657,6 +695,7 @@ void RtspMediaResource::Resume()
     element->DownloadResumed();
   }
   mMediaStreamController->Resume();
+  mDecoder->NotifySuspendedStatusChanged();
 }
 
 nsresult RtspMediaResource::Open(nsIStreamListener **aStreamListener)

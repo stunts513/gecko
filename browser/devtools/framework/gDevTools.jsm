@@ -12,9 +12,7 @@ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/devtools/event-emitter.js");
 Cu.import("resource://gre/modules/devtools/Loader.jsm");
-const { Promise: promise } = Cu.import("resource://gre/modules/Promise.jsm", {});
-
-var ProfilerController = devtools.require("devtools/profiler/controller");
+XPCOMUtils.defineLazyModuleGetter(this, "promise", "resource://gre/modules/Promise.jsm", "Promise");
 
 const FORBIDDEN_IDS = new Set(["toolbox", ""]);
 const MAX_ORDINAL = 99;
@@ -315,13 +313,18 @@ DevTools.prototype = {
 
   /**
    * Close the toolbox for a given target
+   *
+   * @return promise
+   *         This promise will resolve to false if no toolbox was found
+   *         associated to the target. true, if the toolbox was successfuly
+   *         closed.
    */
   closeToolbox: function DT_closeToolbox(target) {
     let toolbox = this._toolboxes.get(target);
     if (toolbox == null) {
-      return;
+      return promise.resolve(false);
     }
-    return toolbox.destroy();
+    return toolbox.destroy().then(() => true);
   },
 
   /**
@@ -519,7 +522,17 @@ let gDevToolsBrowser = {
    * Open the App Manager
    */
   openAppManager: function(gBrowser) {
-    gBrowser.selectedTab = gBrowser.addTab("about:app-manager");
+    if (Services.prefs.getBoolPref("devtools.webide.enabled")) {
+      let win = Services.wm.getMostRecentWindow("devtools:webide");
+      if (win) {
+        win.focus();
+      } else {
+        let ww = Cc["@mozilla.org/embedcomp/window-watcher;1"].getService(Ci.nsIWindowWatcher);
+        ww.openWindow(null, "chrome://webide/content/", "webide", "chrome,centerscreen,resizable", null);
+      }
+    } else {
+      gBrowser.selectedTab = gBrowser.addTab("about:app-manager");
+    }
   },
 
   /**
@@ -804,6 +817,8 @@ let gDevToolsBrowser = {
    * Connects to the SPS profiler when the developer tools are open.
    */
   _connectToProfiler: function DT_connectToProfiler() {
+    let ProfilerController = devtools.require("devtools/profiler/controller");
+
     for (let win of gDevToolsBrowser._trackedBrowserWindows) {
       if (devtools.TargetFactory.isKnownTab(win.gBrowser.selectedTab)) {
         let target = devtools.TargetFactory.forTab(win.gBrowser.selectedTab);

@@ -4,8 +4,8 @@
 * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "BasicCompositor.h"
+#include "BasicLayersImpl.h"            // for FillRectWithMask
 #include "TextureHostBasic.h"
-#include "ipc/AutoOpenSurface.h"
 #include "mozilla/layers/Effects.h"
 #include "mozilla/layers/YCbCrImageDataSerializer.h"
 #include "nsIWidget.h"
@@ -32,7 +32,7 @@ public:
 
   virtual TextureSourceBasic* AsSourceBasic() MOZ_OVERRIDE { return this; }
 
-  virtual gfx::SourceSurface* GetSurface() MOZ_OVERRIDE { return mSurface; }
+  virtual gfx::SourceSurface* GetSurface(DrawTarget* aTarget) MOZ_OVERRIDE { return mSurface; }
 
   SurfaceFormat GetFormat() const MOZ_OVERRIDE
   {
@@ -126,7 +126,7 @@ BasicCompositor::CreateDataTextureSource(TextureFlags aFlags)
 bool
 BasicCompositor::SupportsEffect(EffectTypes aEffect)
 {
-  return static_cast<EffectTypes>(aEffect) != EFFECT_YCBCR;
+  return static_cast<EffectTypes>(aEffect) != EffectTypes::YCBCR;
 }
 
 static void
@@ -137,13 +137,18 @@ DrawSurfaceWithTextureCoords(DrawTarget *aDest,
                              gfx::Filter aFilter,
                              float aOpacity,
                              SourceSurface *aMask,
-                             const Matrix& aMaskTransform)
+                             const Matrix* aMaskTransform)
 {
   // Convert aTextureCoords into aSource's coordinate space
   gfxRect sourceRect(aTextureCoords.x * aSource->GetSize().width,
                      aTextureCoords.y * aSource->GetSize().height,
                      aTextureCoords.width * aSource->GetSize().width,
                      aTextureCoords.height * aSource->GetSize().height);
+
+  // Floating point error can accumulate above and we know our visible region
+  // is integer-aligned, so round it out.
+  sourceRect.Round();
+
   // Compute a transform that maps sourceRect to aDestRect.
   gfxMatrix transform =
     gfxUtils::TransformRectToRect(sourceRect,
@@ -156,22 +161,8 @@ DrawSurfaceWithTextureCoords(DrawTarget *aDest,
   gfx::Rect unitRect(0, 0, 1, 1);
   ExtendMode mode = unitRect.Contains(aTextureCoords) ? ExtendMode::CLAMP : ExtendMode::REPEAT;
 
-  if (aMask) {
-    aDest->PushClipRect(aDestRect);
-    Matrix maskTransformInverse = aMaskTransform;
-    maskTransformInverse.Invert();
-    Matrix dtTransform = aDest->GetTransform();
-    aDest->SetTransform(aMaskTransform);
-    Matrix patternMatrix = maskTransformInverse * dtTransform * matrix;
-    aDest->MaskSurface(SurfacePattern(aSource, mode, patternMatrix, aFilter),
-                       aMask, Point(), DrawOptions(aOpacity));
-    aDest->SetTransform(dtTransform);
-    aDest->PopClip();
-  } else {
-    aDest->FillRect(aDestRect,
-                    SurfacePattern(aSource, mode, matrix, aFilter),
-                    DrawOptions(aOpacity));
-  }
+  FillRectWithMask(aDest, aDestRect, aSource, aFilter, DrawOptions(aOpacity),
+                   mode, aMask, aMaskTransform, &matrix);
 }
 
 static pixman_transform
@@ -305,41 +296,41 @@ BasicCompositor::DrawQuad(const gfx::Rect& aRect,
 
   RefPtr<SourceSurface> sourceMask;
   Matrix maskTransform;
-  if (aEffectChain.mSecondaryEffects[EFFECT_MASK]) {
-    EffectMask *effectMask = static_cast<EffectMask*>(aEffectChain.mSecondaryEffects[EFFECT_MASK].get());
-    sourceMask = effectMask->mMaskTexture->AsSourceBasic()->GetSurface();
+  if (aEffectChain.mSecondaryEffects[EffectTypes::MASK]) {
+    EffectMask *effectMask = static_cast<EffectMask*>(aEffectChain.mSecondaryEffects[EffectTypes::MASK].get());
+    sourceMask = effectMask->mMaskTexture->AsSourceBasic()->GetSurface(dest);
     MOZ_ASSERT(effectMask->mMaskTransform.Is2D(), "How did we end up with a 3D transform here?!");
     MOZ_ASSERT(!effectMask->mIs3D);
     maskTransform = effectMask->mMaskTransform.As2D();
+    maskTransform.Translate(-offset.x, -offset.y);
   }
 
   switch (aEffectChain.mPrimaryEffect->mType) {
-    case EFFECT_SOLID_COLOR: {
+    case EffectTypes::SOLID_COLOR: {
       EffectSolidColor* effectSolidColor =
         static_cast<EffectSolidColor*>(aEffectChain.mPrimaryEffect.get());
 
-      dest->FillRect(aRect,
-                     ColorPattern(effectSolidColor->mColor),
-                     DrawOptions(aOpacity));
+      FillRectWithMask(dest, aRect, effectSolidColor->mColor,
+                       DrawOptions(aOpacity), sourceMask, &maskTransform);
       break;
     }
-    case EFFECT_RGB: {
+    case EffectTypes::RGB: {
       TexturedEffect* texturedEffect =
           static_cast<TexturedEffect*>(aEffectChain.mPrimaryEffect.get());
       TextureSourceBasic* source = texturedEffect->mTexture->AsSourceBasic();
 
       DrawSurfaceWithTextureCoords(dest, aRect,
-                                   source->GetSurface(),
+                                   source->GetSurface(dest),
                                    texturedEffect->mTextureCoords,
                                    texturedEffect->mFilter,
-                                   aOpacity, sourceMask, maskTransform);
+                                   aOpacity, sourceMask, &maskTransform);
       break;
     }
-    case EFFECT_YCBCR: {
+    case EffectTypes::YCBCR: {
       NS_RUNTIMEABORT("Can't (easily) support component alpha with BasicCompositor!");
       break;
     }
-    case EFFECT_RENDER_TARGET: {
+    case EffectTypes::RENDER_TARGET: {
       EffectRenderTarget* effectRenderTarget =
         static_cast<EffectRenderTarget*>(aEffectChain.mPrimaryEffect.get());
       RefPtr<BasicCompositingRenderTarget> surface
@@ -350,10 +341,10 @@ BasicCompositor::DrawQuad(const gfx::Rect& aRect,
                                    sourceSurf,
                                    effectRenderTarget->mTextureCoords,
                                    effectRenderTarget->mFilter,
-                                   aOpacity, sourceMask, maskTransform);
+                                   aOpacity, sourceMask, &maskTransform);
       break;
     }
-    case EFFECT_COMPONENT_ALPHA: {
+    case EffectTypes::COMPONENT_ALPHA: {
       NS_RUNTIMEABORT("Can't (easily) support component alpha with BasicCompositor!");
       break;
     }
@@ -392,6 +383,7 @@ BasicCompositor::BeginFrame(const nsIntRegion& aInvalidRegion,
 {
   nsIntRect intRect;
   mWidget->GetClientBounds(intRect);
+  mWidgetSize = gfx::ToIntSize(intRect.Size());
 
   // The result of GetClientBounds is shifted over by the size of the window
   // manager styling. We want to ignore that.

@@ -239,7 +239,7 @@ nsSubDocumentFrame::PassPointerEventsToChildren()
       }
 
       nsCOMPtr<nsIPermissionManager> permMgr =
-        do_GetService(NS_PERMISSIONMANAGER_CONTRACTID);
+        services::GetPermissionManager();
       if (permMgr) {
         uint32_t permission = nsIPermissionManager::DENY_ACTION;
         permMgr->TestPermissionFromPrincipal(GetContent()->NodePrincipal(),
@@ -381,24 +381,23 @@ nsSubDocumentFrame::BuildDisplayList(nsDisplayListBuilder*   aBuilder,
     // and convert into the appunits of the subdoc
     dirty = dirty.ConvertAppUnitsRoundOut(parentAPD, subdocAPD);
 
-    nsIFrame* rootScrollFrame = presShell->GetRootScrollFrame();
-    if (nsLayoutUtils::ViewportHasDisplayPort(presContext)) {
-      haveDisplayPort = true;
+    if (nsIFrame* rootScrollFrame = presShell->GetRootScrollFrame()) {
       // for root content documents we want the base to be the composition bounds
-      nsLayoutUtils::SetDisplayPortBase(rootScrollFrame->GetContent(),
-        presContext->IsRootContentDocument() ?
+      nsRect displayportBase = presContext->IsRootContentDocument() ?
           nsRect(nsPoint(0,0), nsLayoutUtils::CalculateCompositionSizeForFrame(rootScrollFrame)) :
-          dirty);
+          dirty.Intersect(nsRect(nsPoint(0,0), subdocRootFrame->GetSize()));
       nsRect displayPort;
-      nsLayoutUtils::ViewportHasDisplayPort(presContext, &displayPort);
-      dirty = displayPort;
-    }
+      if (nsLayoutUtils::GetOrMaybeCreateDisplayPort(
+            *aBuilder, rootScrollFrame, displayportBase, &displayPort)) {
+        haveDisplayPort = true;
+        dirty = displayPort;
+      }
 
-    ignoreViewportScrolling =
-      rootScrollFrame && presShell->IgnoringViewportScrolling();
-    if (ignoreViewportScrolling) {
-      savedIgnoreScrollFrame = aBuilder->GetIgnoreScrollFrame();
-      aBuilder->SetIgnoreScrollFrame(rootScrollFrame);
+      ignoreViewportScrolling = presShell->IgnoringViewportScrolling();
+      if (ignoreViewportScrolling) {
+        savedIgnoreScrollFrame = aBuilder->GetIgnoreScrollFrame();
+        aBuilder->SetIgnoreScrollFrame(rootScrollFrame);
+      }
     }
 
     aBuilder->EnterPresShell(subdocRootFrame, dirty);
@@ -437,6 +436,12 @@ nsSubDocumentFrame::BuildDisplayList(nsDisplayListBuilder*   aBuilder,
     }
 
     if (subdocRootFrame) {
+      nsDisplayListBuilder::AutoCurrentScrollParentIdSetter idSetter(
+          aBuilder,
+          ignoreViewportScrolling && subdocRootFrame->GetContent()
+              ? nsLayoutUtils::FindOrCreateIDFor(subdocRootFrame->GetContent())
+              : aBuilder->GetCurrentScrollParentId());
+
       aBuilder->SetAncestorHasTouchEventHandler(false);
       subdocRootFrame->
         BuildDisplayListForStackingContext(aBuilder, dirty, &childItems);
@@ -683,7 +688,7 @@ nsSubDocumentFrame::ComputeSize(nsRenderingContext *aRenderingContext,
                                   aMargin, aBorder, aPadding, aFlags);
 }
 
-nsresult
+void
 nsSubDocumentFrame::Reflow(nsPresContext*           aPresContext,
                            nsHTMLReflowMetrics&     aDesiredSize,
                            const nsHTMLReflowState& aReflowState,
@@ -702,9 +707,7 @@ nsSubDocumentFrame::Reflow(nsPresContext*           aPresContext,
                "Shouldn't happen");
 
   // XUL <iframe> or <browser>, or HTML <iframe>, <object> or <embed>
-  nsresult rv = nsLeafFrame::DoReflow(aPresContext, aDesiredSize, aReflowState,
-                                      aStatus);
-  NS_ENSURE_SUCCESS(rv, rv);
+  nsLeafFrame::DoReflow(aPresContext, aDesiredSize, aReflowState, aStatus);
 
   // "offset" is the offset of our content area from our frame's
   // top-left corner.
@@ -744,7 +747,6 @@ nsSubDocumentFrame::Reflow(nsPresContext*           aPresContext,
       aDesiredSize.Width(), aDesiredSize.Height(), aStatus));
 
   NS_FRAME_SET_TRUNCATION(aStatus, aReflowState, aDesiredSize);
-  return NS_OK;
 }
 
 bool

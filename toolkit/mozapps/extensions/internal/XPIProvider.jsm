@@ -35,6 +35,10 @@ XPCOMUtils.defineLazyModuleGetter(this, "Task",
                                   "resource://gre/modules/Task.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "OS",
                                   "resource://gre/modules/osfile.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "BrowserToolboxProcess",
+                                  "resource:///modules/devtools/ToolboxProcess.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "ConsoleAPI",
+                                  "resource://gre/modules/devtools/Console.jsm");
 
 XPCOMUtils.defineLazyServiceGetter(this,
                                    "ChromeRegistry",
@@ -1588,6 +1592,8 @@ this.XPIProvider = {
   _telemetryDetails: {},
   // Experiments are disabled by default. Track ones that are locally enabled.
   _enabledExperiments: null,
+  // A Map from an add-on install to its ID
+  _addonFileMap: new Map(),
 
   /*
    * Set a value in the telemetry hash for a given ID
@@ -1632,54 +1638,8 @@ this.XPIProvider = {
    * consumers may still have URIs of (leaked) resources they want to map.
    */
   _addURIMapping: function XPI__addURIMapping(aID, aFile) {
-    try {
-      // Always use our own mechanics instead of nsIIOService.newFileURI, so
-      // that we can be sure to map things as we want them mapped.
-      let uri = this._resolveURIToFile(getURIForResourceInFile(aFile, "."));
-      if (!uri) {
-        throw new Error("Cannot resolve");
-      }
-      this._ensureURIMappings();
-      this._uriMappings[aID] = uri.spec;
-    }
-    catch (ex) {
-      logger.warn("Failed to add URI mapping", ex);
-    }
-  },
-
-  /**
-   * Ensures that the URI to Addon mappings are available.
-   *
-   * The function will add mappings for all non-bootstrapped but enabled
-   * add-ons.
-   * Bootstrapped add-on mappings will be added directly when the bootstrap
-   * scope get loaded. (See XPIProvider._addURIMapping() and callers)
-   */
-  _ensureURIMappings: function XPI__ensureURIMappings() {
-    if (this._uriMappings) {
-      return;
-    }
-    // XXX Convert to Map(), once it gets stable with stable iterators
-    this._uriMappings = Object.create(null);
-
-    // XXX Convert to Set(), once it gets stable with stable iterators
-    let enabled = Object.create(null);
-    for (let a of this.enabledAddons.split(",")) {
-      a = decodeURIComponent(a.split(":")[0]);
-      enabled[a] = null;
-    }
-
-    let cache = JSON.parse(Prefs.getCharPref(PREF_INSTALL_CACHE, "[]"));
-    for (let loc of cache) {
-      for (let [id, val] in Iterator(loc.addons)) {
-        if (!(id in enabled)) {
-          continue;
-        }
-        let file = new nsIFile(val.descriptor);
-        let spec = Services.io.newFileURI(file).spec;
-        this._uriMappings[id] = spec;
-      }
-    }
+    logger.info("Mapping " + aID + " to " + aFile.path);
+    this._addonFileMap.set(aID, aFile.path);
   },
 
   /**
@@ -1869,6 +1829,14 @@ this.XPIProvider = {
       Services.prefs.addObserver(PREF_EM_MIN_COMPAT_PLATFORM_VERSION, this, false);
       Services.obs.addObserver(this, NOTIFICATION_FLUSH_PERMISSIONS, false);
 
+      try {
+        BrowserToolboxProcess.on("connectionchange",
+                                 this.onDebugConnectionChange.bind(this));
+      }
+      catch (e) {
+        // BrowserToolboxProcess is not available in all applications
+      }
+
       let flushCaches = this.checkForChanges(aAppChanged, aOldAppVersion,
                                              aOldPlatformVersion);
 
@@ -1900,6 +1868,7 @@ this.XPIProvider = {
       }
 
       this.enabledAddons = Prefs.getCharPref(PREF_EM_ENABLED_ADDONS, "");
+
       if ("nsICrashReporter" in Ci &&
           Services.appinfo instanceof Ci.nsICrashReporter) {
         // Annotate the crash report with relevant add-on information.
@@ -2009,9 +1978,7 @@ this.XPIProvider = {
 
     // This is needed to allow xpcshell tests to simulate a restart
     this.extensionsActive = false;
-
-    // Remove URI mappings again
-    delete this._uriMappings;
+    this._addonFileMap.clear();
 
     if (gLazyObjectsLoaded) {
       let done = XPIDatabase.shutdown();
@@ -3592,7 +3559,13 @@ this.XPIProvider = {
    *         The AddonInstall to remove
    */
   removeActiveInstall: function XPI_removeActiveInstall(aInstall) {
-    this.installs = this.installs.filter(function installFilter(i) i != aInstall);
+    let where = this.installs.indexOf(aInstall);
+    if (where == -1) {
+      logger.warn("removeActiveInstall: could not find active install for "
+          + aInstall.sourceURI.spec);
+      return;
+    }
+    this.installs.splice(where, 1);
   },
 
   /**
@@ -3691,17 +3664,15 @@ this.XPIProvider = {
    * @see    amIAddonManager.mapURIToAddonID
    */
   mapURIToAddonID: function XPI_mapURIToAddonID(aURI) {
-    this._ensureURIMappings();
     let resolved = this._resolveURIToFile(aURI);
-    if (!resolved) {
+    if (!resolved || !(resolved instanceof Ci.nsIFileURL))
       return null;
-    }
-    resolved = resolved.spec;
-    for (let [id, spec] in Iterator(this._uriMappings)) {
-      if (resolved.startsWith(spec)) {
+
+    for (let [id, path] of this._addonFileMap) {
+      if (resolved.file.path.startsWith(path))
         return id;
-      }
     }
+
     return null;
   },
 
@@ -3846,6 +3817,15 @@ this.XPIProvider = {
     }
     else {
       logger.warn("Unable to activate the default theme");
+    }
+  },
+
+  onDebugConnectionChange: function(aEvent, aWhat, aConnection) {
+    if (aWhat != "opened")
+      return;
+
+    for (let id of Object.keys(this.bootstrapScopes)) {
+      aConnection.setAddonOptions(id, { global: this.bootstrapScopes[id] });
     }
   },
 
@@ -4087,9 +4067,6 @@ this.XPIProvider = {
     let loader = Cc["@mozilla.org/moz/jssubscript-loader;1"].
                  createInstance(Ci.mozIJSSubScriptLoader);
 
-    // Add a mapping for XPIProvider.mapURIToAddonID
-    this._addURIMapping(aId, aFile);
-
     try {
       // Copy the reason values from the global object into the bootstrap scope.
       for (let name in BOOTSTRAP_REASONS)
@@ -4100,6 +4077,9 @@ this.XPIProvider = {
 
       for (let feature of features)
         this.bootstrapScopes[aId][feature] = gGlobalScope[feature];
+
+      // Define a console for the add-on
+      this.bootstrapScopes[aId]["console"] = new ConsoleAPI({ consoleID: "addon/" + aId });
 
       // As we don't want our caller to control the JS version used for the
       // bootstrap file, we run loadSubScript within the context of the
@@ -4112,6 +4092,13 @@ this.XPIProvider = {
     }
     catch (e) {
       logger.warn("Error loading bootstrap.js for " + aId, e);
+    }
+
+    try {
+      BrowserToolboxProcess.setAddonOptions(aId, { global: this.bootstrapScopes[aId] });
+    }
+    catch (e) {
+      // BrowserToolboxProcess is not available in all applications
     }
   },
 
@@ -4127,6 +4114,13 @@ this.XPIProvider = {
     delete this.bootstrappedAddons[aId];
     this.persistBootstrappedAddons();
     this.addAddonsToCrashReporter();
+
+    try {
+      BrowserToolboxProcess.setAddonOptions(aId, { global: null });
+    }
+    catch (e) {
+      // BrowserToolboxProcess is not available in all applications
+    }
   },
 
   /**
@@ -6283,9 +6277,11 @@ function AddonWrapper(aAddon) {
 
   ["sourceURI", "releaseNotesURI"].forEach(function(aProp) {
     this.__defineGetter__(aProp, function AddonWrapper_URIPropertyGetter() {
-      let target = chooseValue(aAddon, aProp)[0];
+      let [target, fromRepo] = chooseValue(aAddon, aProp);
       if (!target)
         return null;
+      if (fromRepo)
+        return target;
       return NetUtil.newURI(target);
     });
   }, this);
@@ -6893,6 +6889,7 @@ DirectoryInstallLocation.prototype = {
 
       this._IDToFileMap[id] = entry;
       this._FileToIDMap[entry.path] = id;
+      XPIProvider._addURIMapping(id, entry);
     }
   },
 
@@ -7102,6 +7099,7 @@ DirectoryInstallLocation.prototype = {
     }
     this._FileToIDMap[newFile.path] = aId;
     this._IDToFileMap[aId] = newFile;
+    XPIProvider._addURIMapping(aId, newFile);
 
     if (aExistingAddonID && aExistingAddonID != aId &&
         aExistingAddonID in this._IDToFileMap) {
@@ -7296,6 +7294,7 @@ WinRegInstallLocation.prototype = {
 
       this._IDToFileMap[id] = file;
       this._FileToIDMap[file.path] = id;
+      XPIProvider._addURIMapping(id, file);
     }
   },
 

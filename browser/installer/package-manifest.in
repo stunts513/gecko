@@ -170,7 +170,6 @@
 @BINPATH@/components/composer.xpt
 @BINPATH@/components/content_base.xpt
 @BINPATH@/components/content_events.xpt
-@BINPATH@/components/content_canvas.xpt
 @BINPATH@/components/content_htmldoc.xpt
 @BINPATH@/components/content_html.xpt
 #ifdef MOZ_WEBRTC
@@ -203,7 +202,6 @@
 @BINPATH@/components/dom_notification.xpt
 @BINPATH@/components/dom_html.xpt
 @BINPATH@/components/dom_indexeddb.xpt
-@BINPATH@/components/dom_inputmethod.xpt
 @BINPATH@/components/dom_offline.xpt
 @BINPATH@/components/dom_json.xpt
 @BINPATH@/components/dom_power.xpt
@@ -278,6 +276,7 @@
 @BINPATH@/components/necko_socket.xpt
 @BINPATH@/components/necko_strconv.xpt
 @BINPATH@/components/necko_viewsource.xpt
+@BINPATH@/components/necko_websocket.xpt
 #ifdef NECKO_WIFI
 @BINPATH@/components/necko_wifi.xpt
 #endif
@@ -345,6 +344,8 @@
 @BINPATH@/components/telemetry.xpt
 
 ; JavaScript components
+@BINPATH@/components/ChromeNotifications.js
+@BINPATH@/components/ChromeNotifications.manifest
 @BINPATH@/components/ConsoleAPI.manifest
 @BINPATH@/components/ConsoleAPIStorage.js
 @BINPATH@/components/BrowserElementParent.manifest
@@ -368,6 +369,8 @@
 @BINPATH@/browser/components/BrowserPlaces.manifest
 @BINPATH@/browser/components/devtools-clhandler.manifest
 @BINPATH@/browser/components/devtools-clhandler.js
+@BINPATH@/browser/components/Experiments.manifest
+@BINPATH@/browser/components/ExperimentsService.js
 @BINPATH@/components/Downloads.manifest
 @BINPATH@/components/DownloadLegacy.js
 @BINPATH@/components/BrowserPageThumbs.manifest
@@ -427,6 +430,8 @@
 @BINPATH@/components/nsTaggingService.js
 @BINPATH@/components/nsPlacesAutoComplete.manifest
 @BINPATH@/components/nsPlacesAutoComplete.js
+@BINPATH@/components/UnifiedComplete.manifest
+@BINPATH@/components/UnifiedComplete.js
 @BINPATH@/components/nsPlacesExpiration.js
 @BINPATH@/browser/components/PlacesProtocolHandler.js
 @BINPATH@/components/PlacesCategoriesStarter.js
@@ -593,8 +598,15 @@
 #ifdef MOZ_ANGLE_RENDERER
 @BINPATH@/libEGL.dll
 @BINPATH@/libGLESv2.dll
-@BINPATH@/@MOZ_D3DCOMPILER_DLL@
+
+#ifdef MOZ_D3DCOMPILER_VISTA_DLL
+@BINPATH@/@MOZ_D3DCOMPILER_VISTA_DLL@
 #endif
+
+#ifdef MOZ_D3DCOMPILER_XP_DLL
+@BINPATH@/@MOZ_D3DCOMPILER_XP_DLL@
+#endif
+#endif # MOZ_ANGLE_RENDERER
 
 ; [Browser Chrome Files]
 @BINPATH@/browser/chrome.manifest
@@ -616,6 +628,13 @@
 @BINPATH@/browser/chrome/icons/default/default16.png
 @BINPATH@/browser/chrome/icons/default/default32.png
 @BINPATH@/browser/chrome/icons/default/default48.png
+#endif
+
+; [Webide Files]
+#ifdef MOZ_DEVTOOLS_WEBIDE
+@BINPATH@/browser/chrome/webide@JAREXT@
+@BINPATH@/browser/chrome/webide.manifest
+@BINPATH@/browser/@PREF_DIR@/webide-prefs.js
 #endif
 
 ; shell icons
@@ -761,6 +780,7 @@ bin/libfreebl_32int64_3.so
 #ifdef MOZ_CRASHREPORTER
 @BINPATH@/components/CrashService.manifest
 @BINPATH@/components/CrashService.js
+@BINPATH@/components/toolkit_crashservice.xpt
 #ifdef XP_MACOSX
 @BINPATH@/crashreporter.app/
 #else

@@ -29,8 +29,6 @@ Cu.import("resource://gre/modules/osfile/osfile_shared_allthreads.jsm", SharedAl
 Cu.import("resource://gre/modules/XPCOMUtils.jsm", this);
 Cu.import("resource://gre/modules/Timer.jsm", this);
 
-XPCOMUtils.defineLazyModuleGetter(this, 'Deprecated',
-  'resource://gre/modules/Deprecated.jsm');
 
 // Boilerplate, to simplify the transition to require()
 let LOG = SharedAll.LOG.bind(SharedAll, "Controller");
@@ -179,8 +177,8 @@ function summarizeObject(obj) {
   return obj;
 }
 
-let worker = null;
 let Scheduler = {
+
   /**
    * |true| once we have sent at least one message to the worker.
    * This field is unaffected by resetting the worker.
@@ -238,6 +236,25 @@ let Scheduler = {
   resetTimer: null,
 
   /**
+   * The worker to which to send requests.
+   *
+   * If the worker has never been created or has been reset, this is a
+   * fresh worker, initialized with osfile_async_worker.js.
+   *
+   * @type {PromiseWorker}
+   */
+  get worker() {
+    if (!this._worker) {
+      // Either the worker has never been created or it has been reset
+      this._worker = new PromiseWorker(
+	"resource://gre/modules/osfile/osfile_async_worker.js", LOG);
+    }
+    return this._worker;
+  },
+
+  _worker: null,
+
+  /**
    * Prepare to kill the OS.File worker after a few seconds.
    */
   restartTimer: function(arg) {
@@ -273,10 +290,14 @@ let Scheduler = {
 
       yield this.queue;
 
-      if (!this.launched || this.shutdown || !worker) {
+      // Enter critical section: no yield in this block
+      // (we want to make sure that we remain the only
+      // request in the queue).
+
+      if (!this.launched || this.shutdown || !this._worker) {
         // Nothing to kill
         this.shutdown = this.shutdown || shutdown;
-        worker = null;
+        this._worker = null;
         return null;
       }
 
@@ -285,12 +306,15 @@ let Scheduler = {
       let deferred = Promise.defer();
       this.queue = deferred.promise;
 
+
+      // Exit critical section
+
       let message = ["Meta_shutdown", [reset]];
 
       try {
         Scheduler.latestReceived = [];
         Scheduler.latestSent = [Date.now(), ...message];
-        let promise = worker.post(...message);
+        let promise = this._worker.post(...message);
 
         // Wait for result
         let resources;
@@ -329,7 +353,7 @@ let Scheduler = {
 
         // Make sure that we do not leave an invalid |worker| around.
         if (killed || shutdown) {
-          worker = null;
+          this._worker = null;
         }
 
         this.shutdown = shutdown;
@@ -376,19 +400,14 @@ let Scheduler = {
     if (this.shutdown) {
       LOG("OS.File is not available anymore. The following request has been rejected.",
         method, args);
-      return Promise.reject(new Error("OS.File has been shut down."));
-    }
-    if (!worker) {
-      // Either the worker has never been created or it has been reset
-      worker = new PromiseWorker(
-        "resource://gre/modules/osfile/osfile_async_worker.js", LOG);
+      return Promise.reject(new Error("OS.File has been shut down. Rejecting post to " + method));
     }
     let firstLaunch = !this.launched;
     this.launched = true;
 
     if (firstLaunch && SharedAll.Config.DEBUG) {
       // If we have delayed sending SET_DEBUG, do it now.
-      worker.post("SET_DEBUG", [true]);
+      this.worker.post("SET_DEBUG", [true]);
       Scheduler.Debugging.messagesSent++;
     }
 
@@ -399,7 +418,13 @@ let Scheduler = {
       options = methodArgs[methodArgs.length - 1];
     }
     Scheduler.Debugging.messagesQueued++;
-    return this.push(() => Task.spawn(function*() {
+    return this.push(Task.async(function*() {
+      if (this.shutdown) {
+	LOG("OS.File is not available anymore. The following request has been rejected.",
+	  method, args);
+	throw new Error("OS.File has been shut down. Rejecting request to " + method);
+      }
+
       // Update debugging information. As |args| may be quite
       // expensive, we only keep a shortened version of it.
       Scheduler.Debugging.latestReceived = null;
@@ -414,7 +439,7 @@ let Scheduler = {
       let isError = false;
       try {
         try {
-          data = yield worker.post(method, ...args);
+          data = yield this.worker.post(method, ...args);
         } finally {
           Scheduler.Debugging.messagesReceived++;
         }
@@ -474,7 +499,7 @@ let Scheduler = {
         options.outExecutionDuration = durationMs;
       }
       return data.ok;
-    }));
+    }.bind(this)));
   },
 
   /**
@@ -483,6 +508,7 @@ let Scheduler = {
    * This is only useful on first launch.
    */
   _updateTelemetry: function() {
+    let worker = this.worker;
     let workerTimeStamps = worker.workerTimeStamps;
     if (!workerTimeStamps) {
       // If the first call to OS.File results in an uncaught errors,
@@ -648,20 +674,6 @@ File.prototype = {
   },
 
   /**
-   * Set the last access and modification date of the file.
-   * The time stamp resolution is 1 second at best, but might be worse
-   * depending on the platform.
-   *
-   * @return {promise}
-   * @rejects {TypeError}
-   * @rejects {OS.File.Error}
-   */
-  setDates: function setDates(accessDate, modificationDate) {
-    return Scheduler.post("File_prototype_setDates",
-                          [this._fdmsg, accessDate, modificationDate], this);
-  },
-
-  /**
    * Read a number of bytes from the file and into a buffer.
    *
    * @param {Typed array | C pointer} buffer This buffer will be
@@ -798,6 +810,27 @@ File.prototype = {
       [this._fdmsg]);
   }
 };
+
+
+if (SharedAll.Constants.Sys.Name != "Android") {
+  /**
+   * Set the last access and modification date of the file.
+   * The time stamp resolution is 1 second at best, but might be worse
+   * depending on the platform.
+   *
+   * WARNING: This method is not implemented on Android/B2G. On Android/B2G,
+   * you should use File.setDates instead.
+   *
+   * @return {promise}
+   * @rejects {TypeError}
+   * @rejects {OS.File.Error}
+   */
+  File.prototype.setDates = function(accessDate, modificationDate) {
+    return Scheduler.post("File_prototype_setDates",
+      [this._fdmsg, accessDate, modificationDate], this);
+  };
+}
+
 
 /**
  * Open a file asynchronously.
@@ -1206,6 +1239,7 @@ File.Info.prototype = SysAll.AbstractInfo.prototype;
 // Deprecated
 Object.defineProperty(File.Info.prototype, "creationDate", {
   get: function creationDate() {
+    let {Deprecated} = Cu.import("resource://gre/modules/Deprecated.jsm", {});
     Deprecated.warning("Field 'creationDate' is deprecated.", "https://developer.mozilla.org/en-US/docs/JavaScript_OS.File/OS.File.Info#Cross-platform_Attributes");
     return this._deprecatedCreationDate;
   }
@@ -1450,6 +1484,12 @@ this.OS.Shared = {
 Object.freeze(this.OS.Shared);
 this.OS.Path = Path;
 
+// Returns a resolved promise when all the queued operation have been completed.
+Object.defineProperty(OS.File, "queue", {
+  get: function() {
+    return Scheduler.queue;
+  }
+});
 
 // Auto-flush OS.File during profile-before-change. This ensures that any I/O
 // that has been queued *before* profile-before-change is properly completed.
@@ -1476,7 +1516,7 @@ AsyncShutdown.profileBeforeChange.addBlocker(
     let result = {
       launched: Scheduler.launched,
       shutdown: Scheduler.shutdown,
-      worker: !!worker,
+      worker: !!Scheduler._worker,
       pendingReset: !!Scheduler.resetTimer,
       latestSent: Scheduler.Debugging.latestSent,
       latestReceived: Scheduler.Debugging.latestReceived,

@@ -9,6 +9,7 @@
 #ifndef jsgc_h
 #define jsgc_h
 
+#include "mozilla/Atomics.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/MemoryReporting.h"
 
@@ -17,7 +18,6 @@
 
 #include "js/GCAPI.h"
 #include "js/SliceBudget.h"
-#include "js/Tracer.h"
 #include "js/Vector.h"
 
 class JSAtom;
@@ -51,6 +51,18 @@ enum HeapState {
     MinorCollecting   // doing a GC of the minor heap (nursery)
 };
 
+struct ExtraTracer {
+    JSTraceDataOp op;
+    void *data;
+
+    ExtraTracer()
+      : op(nullptr), data(nullptr)
+        {}
+    ExtraTracer(JSTraceDataOp op, void *data)
+      : op(op), data(data)
+        {}
+};
+
 namespace jit {
     class JitCode;
 }
@@ -77,8 +89,6 @@ class ChunkPool {
     size_t getEmptyCount() const {
         return emptyCount;
     }
-
-    inline bool wantBackgroundAllocation(JSRuntime *rt) const;
 
     /* Must be called with the GC lock taken. */
     inline Chunk *get(JSRuntime *rt);
@@ -117,7 +127,7 @@ MapAllocToTraceKind(AllocKind kind)
         JSTRACE_SHAPE,      /* FINALIZE_SHAPE */
         JSTRACE_BASE_SHAPE, /* FINALIZE_BASE_SHAPE */
         JSTRACE_TYPE_OBJECT,/* FINALIZE_TYPE_OBJECT */
-        JSTRACE_STRING,     /* FINALIZE_SHORT_STRING */
+        JSTRACE_STRING,     /* FINALIZE_FAT_INLINE_STRING */
         JSTRACE_STRING,     /* FINALIZE_STRING */
         JSTRACE_STRING,     /* FINALIZE_EXTERNAL_STRING */
         JSTRACE_JITCODE,    /* FINALIZE_JITCODE */
@@ -150,6 +160,10 @@ template <> struct MapTypeToTraceKind<JSLinearString>   { static const JSGCTrace
 template <> struct MapTypeToTraceKind<PropertyName>     { static const JSGCTraceKind kind = JSTRACE_STRING; };
 template <> struct MapTypeToTraceKind<jit::JitCode>     { static const JSGCTraceKind kind = JSTRACE_JITCODE; };
 
+/* Return a printable string for the given kind, for diagnostic purposes. */
+const char *
+TraceKindAsAscii(JSGCTraceKind kind);
+
 /* Map from C++ type to finalize kind. JSObject does not have a 1:1 mapping, so must use Arena::thingSize. */
 template <typename T> struct MapTypeToFinalizeKind {};
 template <> struct MapTypeToFinalizeKind<JSScript>          { static const AllocKind kind = FINALIZE_SCRIPT; };
@@ -157,7 +171,7 @@ template <> struct MapTypeToFinalizeKind<LazyScript>        { static const Alloc
 template <> struct MapTypeToFinalizeKind<Shape>             { static const AllocKind kind = FINALIZE_SHAPE; };
 template <> struct MapTypeToFinalizeKind<BaseShape>         { static const AllocKind kind = FINALIZE_BASE_SHAPE; };
 template <> struct MapTypeToFinalizeKind<types::TypeObject> { static const AllocKind kind = FINALIZE_TYPE_OBJECT; };
-template <> struct MapTypeToFinalizeKind<JSShortString>     { static const AllocKind kind = FINALIZE_SHORT_STRING; };
+template <> struct MapTypeToFinalizeKind<JSFatInlineString> { static const AllocKind kind = FINALIZE_FAT_INLINE_STRING; };
 template <> struct MapTypeToFinalizeKind<JSString>          { static const AllocKind kind = FINALIZE_STRING; };
 template <> struct MapTypeToFinalizeKind<JSExternalString>  { static const AllocKind kind = FINALIZE_EXTERNAL_STRING; };
 template <> struct MapTypeToFinalizeKind<jit::JitCode>      { static const AllocKind kind = FINALIZE_JITCODE; };
@@ -185,7 +199,7 @@ IsNurseryAllocable(AllocKind kind)
         false,     /* FINALIZE_SHAPE */
         false,     /* FINALIZE_BASE_SHAPE */
         false,     /* FINALIZE_TYPE_OBJECT */
-        false,     /* FINALIZE_SHORT_STRING */
+        false,     /* FINALIZE_FAT_INLINE_STRING */
         false,     /* FINALIZE_STRING */
         false,     /* FINALIZE_EXTERNAL_STRING */
         false,     /* FINALIZE_JITCODE */
@@ -217,7 +231,7 @@ IsBackgroundFinalized(AllocKind kind)
         true,      /* FINALIZE_SHAPE */
         true,      /* FINALIZE_BASE_SHAPE */
         true,      /* FINALIZE_TYPE_OBJECT */
-        true,      /* FINALIZE_SHORT_STRING */
+        true,      /* FINALIZE_FAT_INLINE_STRING */
         true,      /* FINALIZE_STRING */
         false,     /* FINALIZE_EXTERNAL_STRING */
         false,     /* FINALIZE_JITCODE */
@@ -354,30 +368,165 @@ GetGCKindSlots(AllocKind thingKind, const Class *clasp)
 }
 
 /*
- * ArenaList::head points to the start of the list. Normally cursor points
- * to the first arena in the list with some free things and all arenas
- * before cursor are fully allocated. However, as the arena currently being
- * allocated from is considered full while its list of free spans is moved
- * into the freeList, during the GC or cell enumeration, when an
- * unallocated freeList is moved back to the arena, we can see an arena
- * with some free cells before the cursor. The cursor is an indirect
- * pointer to allow for efficient list insertion at the cursor point and
- * other list manipulations.
+ * Arena lists have a head and a cursor. The cursor conceptually lies on arena
+ * boundaries, i.e. before the first arena, between two arenas, or after the
+ * last arena.
+ *
+ * Normally the arena following the cursor is the first arena in the list with
+ * some free things and all arenas before the cursor are fully allocated. (And
+ * if the cursor is at the end of the list, then all the arenas are full.)
+ *
+ * However, the arena currently being allocated from is considered full while
+ * its list of free spans is moved into the freeList. Therefore, during GC or
+ * cell enumeration, when an unallocated freeList is moved back to the arena,
+ * we can see an arena with some free cells before the cursor.
+ *
+ * Arenas following the cursor should not be full.
  */
-struct ArenaList {
-    ArenaHeader     *head;
-    ArenaHeader     **cursor;
+class ArenaList {
+    // The cursor is implemented via an indirect pointer, |cursorp_|, to allow
+    // for efficient list insertion at the cursor point and other list
+    // manipulations.
+    //
+    // - If the list is empty: |head| is null, |cursorp_| points to |head|, and
+    //   therefore |*cursorp_| is null.
+    //
+    // - If the list is not empty: |head| is non-null, and...
+    //
+    //   - If the cursor is at the start of the list: |cursorp_| points to
+    //     |head|, and therefore |*cursorp_| points to the first arena.
+    //
+    //   - If cursor is at the end of the list: |cursorp_| points to the |next|
+    //     field of the last arena, and therefore |*cursorp_| is null.
+    //
+    //   - If the cursor is at neither the start nor the end of the list:
+    //     |cursorp_| points to the |next| field of the arena preceding the
+    //     cursor, and therefore |*cursorp_| points to the arena following the
+    //     cursor.
+    //
+    // |cursorp_| is never null.
+    //
+    ArenaHeader     *head_;
+    ArenaHeader     **cursorp_;
 
+  public:
     ArenaList() {
         clear();
     }
 
-    void clear() {
-        head = nullptr;
-        cursor = &head;
+    // This does checking just of |head_| and |cursorp_|.
+    void check() const {
+#ifdef DEBUG
+        // If the list is empty, it must have this form.
+        JS_ASSERT_IF(!head_, cursorp_ == &head_);
+
+        // If there's an arena following the cursor, it must not be full.
+        ArenaHeader *cursor = *cursorp_;
+        JS_ASSERT_IF(cursor, cursor->hasFreeThings());
+#endif
     }
 
-    void insert(ArenaHeader *arena);
+    // This does checking involving all the arenas in the list.
+    void deepCheck() const {
+#ifdef DEBUG
+        check();
+        // All full arenas must precede all non-full arenas.
+        //
+        // XXX: this is currently commented out because it fails moderately
+        // often. I'm not sure if this is because (a) it's not true that all
+        // full arenas must precede all non-full arenas, or (b) we have some
+        // defective list-handling code.
+        //
+//      bool havePassedFullArenas = false;
+//      for (ArenaHeader *aheader = head_; aheader; aheader = aheader->next) {
+//          if (havePassedFullArenas) {
+//              JS_ASSERT(aheader->hasFreeThings());
+//          } else if (aheader->hasFreeThings()) {
+//              havePassedFullArenas = true;
+//          }
+//      }
+#endif
+    }
+
+    void clear() {
+        head_ = nullptr;
+        cursorp_ = &head_;
+        check();
+    }
+
+    bool isEmpty() const {
+        check();
+        return !head_;
+    }
+
+    // This returns nullptr if the list is empty.
+    ArenaHeader *head() const {
+        check();
+        return head_;
+    }
+
+    bool isCursorAtEnd() const {
+        check();
+        return !*cursorp_;
+    }
+
+    // This can return nullptr.
+    ArenaHeader *arenaAfterCursor() const {
+        check();
+        return *cursorp_;
+    }
+
+    // This moves the cursor past |aheader|. |aheader| must be an arena within
+    // this list.
+    void moveCursorPast(ArenaHeader *aheader) {
+        cursorp_ = &aheader->next;
+        check();
+    }
+
+    // This does two things.
+    // - Inserts |a| at the cursor.
+    // - Leaves the cursor sitting just before |a|, if |a| is not full, or just
+    //   after |a|, if |a| is full.
+    //
+    void insertAtCursor(ArenaHeader *a) {
+        check();
+        a->next = *cursorp_;
+        *cursorp_ = a;
+        // At this point, the cursor is sitting before |a|. Move it after |a|
+        // if necessary.
+        if (!a->hasFreeThings())
+            cursorp_ = &a->next;
+        check();
+    }
+
+    // This inserts |a| at the start of the list, and doesn't change the
+    // cursor.
+    void insertAtStart(ArenaHeader *a) {
+        check();
+        a->next = head_;
+        if (isEmpty())
+            cursorp_ = &a->next;        // The cursor remains null.
+        head_ = a;
+        check();
+    }
+
+    // Appends |list|. |this|'s cursor must be at the end.
+    void appendToListWithCursorAtEnd(ArenaList &other) {
+        JS_ASSERT(isCursorAtEnd());
+        deepCheck();
+        other.deepCheck();
+        if (!other.isEmpty()) {
+            // Because |this|'s cursor is at the end, |cursorp_| points to the
+            // list-ending null. So this assignment appends |other| to |this|.
+            *cursorp_ = other.head_;
+
+            // If |other|'s cursor isn't at the start of the list, then update
+            // |this|'s cursor accordingly.
+            if (other.cursorp_ != &other.head_)
+                cursorp_ = other.cursorp_;
+        }
+        deepCheck();
+    }
 };
 
 class ArenaLists
@@ -391,13 +540,13 @@ class ArenaLists
      * GC we only move the head of the of the list of spans back to the arena
      * only for the arena that was not fully allocated.
      */
-    FreeSpan       freeLists[FINALIZE_LIMIT];
+    FreeList       freeLists[FINALIZE_LIMIT];
 
     ArenaList      arenaLists[FINALIZE_LIMIT];
 
     /*
      * The background finalization adds the finalized arenas to the list at
-     * the *cursor position. backgroundFinalizeState controls the interaction
+     * the cursor position. backgroundFinalizeState controls the interaction
      * between the GC lock and the access to the list from the allocation
      * thread.
      *
@@ -409,15 +558,18 @@ class ArenaLists
      * lock. The former indicates that the finalization still runs. The latter
      * signals that finalization just added to the list finalized arenas. In
      * that case the lock effectively serves as a read barrier to ensure that
-     * the allocation thread see all the writes done during finalization.
+     * the allocation thread sees all the writes done during finalization.
      */
-    enum BackgroundFinalizeState {
+    enum BackgroundFinalizeStateEnum {
         BFS_DONE,
         BFS_RUN,
         BFS_JUST_FINISHED
     };
 
-    volatile uintptr_t backgroundFinalizeState[FINALIZE_LIMIT];
+    typedef mozilla::Atomic<BackgroundFinalizeStateEnum, mozilla::ReleaseAcquire>
+        BackgroundFinalizeState;
+
+    BackgroundFinalizeState backgroundFinalizeState[FINALIZE_LIMIT];
 
   public:
     /* For each arena kind, a list of arenas remaining to be swept. */
@@ -444,9 +596,10 @@ class ArenaLists
              * the background finalization is disabled.
              */
             JS_ASSERT(backgroundFinalizeState[i] == BFS_DONE);
-            ArenaHeader **headp = &arenaLists[i].head;
-            while (ArenaHeader *aheader = *headp) {
-                *headp = aheader->next;
+            ArenaHeader *next;
+            for (ArenaHeader *aheader = arenaLists[i].head(); aheader; aheader = next) {
+                // Copy aheader->next before releasing.
+                next = aheader->next;
                 aheader->chunk()->releaseArena(aheader);
             }
         }
@@ -454,15 +607,15 @@ class ArenaLists
 
     static uintptr_t getFreeListOffset(AllocKind thingKind) {
         uintptr_t offset = offsetof(ArenaLists, freeLists);
-        return offset + thingKind * sizeof(FreeSpan);
+        return offset + thingKind * sizeof(FreeList);
     }
 
-    const FreeSpan *getFreeList(AllocKind thingKind) const {
+    const FreeList *getFreeList(AllocKind thingKind) const {
         return &freeLists[thingKind];
     }
 
     ArenaHeader *getFirstArena(AllocKind thingKind) const {
-        return arenaLists[thingKind].head;
+        return arenaLists[thingKind].head();
     }
 
     ArenaHeader *getFirstArenaToSweep(AllocKind thingKind) const {
@@ -477,14 +630,10 @@ class ArenaLists
              */
             if (backgroundFinalizeState[i] != BFS_DONE)
                 return false;
-            if (arenaLists[i].head)
+            if (!arenaLists[i].isEmpty())
                 return false;
         }
         return true;
-    }
-
-    bool arenasAreFull(AllocKind thingKind) const {
-        return !*arenaLists[thingKind].cursor;
     }
 
     void unmarkAll() {
@@ -492,7 +641,7 @@ class ArenaLists
             /* The background finalization must have stopped at this point. */
             JS_ASSERT(backgroundFinalizeState[i] == BFS_DONE ||
                       backgroundFinalizeState[i] == BFS_JUST_FINISHED);
-            for (ArenaHeader *aheader = arenaLists[i].head; aheader; aheader = aheader->next) {
+            for (ArenaHeader *aheader = arenaLists[i].head(); aheader; aheader = aheader->next) {
                 uintptr_t *word = aheader->chunk()->bitmap.arenaBits(aheader);
                 memset(word, 0, ArenaBitmapWords * sizeof(uintptr_t));
             }
@@ -518,11 +667,11 @@ class ArenaLists
     }
 
     void purge(AllocKind i) {
-        FreeSpan *headSpan = &freeLists[i];
-        if (!headSpan->isEmpty()) {
-            ArenaHeader *aheader = headSpan->arenaHeader();
-            aheader->setFirstFreeSpan(headSpan);
-            headSpan->initAsEmpty();
+        FreeList *freeList = &freeLists[i];
+        if (!freeList->isEmpty()) {
+            ArenaHeader *aheader = freeList->arenaHeader();
+            aheader->setFirstFreeSpan(freeList->getHead());
+            freeList->initAsEmpty();
         }
     }
 
@@ -539,11 +688,11 @@ class ArenaLists
     }
 
     void copyFreeListToArena(AllocKind thingKind) {
-        FreeSpan *headSpan = &freeLists[thingKind];
-        if (!headSpan->isEmpty()) {
-            ArenaHeader *aheader = headSpan->arenaHeader();
+        FreeList *freeList = &freeLists[thingKind];
+        if (!freeList->isEmpty()) {
+            ArenaHeader *aheader = freeList->arenaHeader();
             JS_ASSERT(!aheader->hasFreeThings());
-            aheader->setFirstFreeSpan(headSpan);
+            aheader->setFirstFreeSpan(freeList->getHead());
         }
     }
 
@@ -558,10 +707,10 @@ class ArenaLists
 
 
     void clearFreeListInArena(AllocKind kind) {
-        FreeSpan *headSpan = &freeLists[kind];
-        if (!headSpan->isEmpty()) {
-            ArenaHeader *aheader = headSpan->arenaHeader();
-            JS_ASSERT(aheader->getFirstFreeSpan().isSameNonEmptySpan(headSpan));
+        FreeList *freeList = &freeLists[kind];
+        if (!freeList->isEmpty()) {
+            ArenaHeader *aheader = freeList->arenaHeader();
+            JS_ASSERT(freeList->isSameNonEmptySpan(aheader->getFirstFreeSpan()));
             aheader->setAsFullyUsed();
         }
     }
@@ -571,16 +720,16 @@ class ArenaLists
      * arena using copyToArena().
      */
     bool isSynchronizedFreeList(AllocKind kind) {
-        FreeSpan *headSpan = &freeLists[kind];
-        if (headSpan->isEmpty())
+        FreeList *freeList = &freeLists[kind];
+        if (freeList->isEmpty())
             return true;
-        ArenaHeader *aheader = headSpan->arenaHeader();
+        ArenaHeader *aheader = freeList->arenaHeader();
         if (aheader->hasFreeThings()) {
             /*
              * If the arena has a free list, it must be the same as one in
              * lists.
              */
-            JS_ASSERT(aheader->getFirstFreeSpan().isSameNonEmptySpan(headSpan));
+            JS_ASSERT(freeList->isSameNonEmptySpan(aheader->getFirstFreeSpan()));
             return true;
         }
         return false;
@@ -776,9 +925,6 @@ NotifyGCPreSwap(JSObject *a, JSObject *b);
 extern void
 NotifyGCPostSwap(JSObject *a, JSObject *b, unsigned preResult);
 
-void
-InitTracer(JSTracer *trc, JSRuntime *rt, JSTraceCallback callback);
-
 /*
  * Helper that implements sweeping and allocation for kinds that can be swept
  * and allocated off the main thread.
@@ -933,159 +1079,6 @@ struct GCChunkHasher {
 
 typedef HashSet<js::gc::Chunk *, GCChunkHasher, SystemAllocPolicy> GCChunkSet;
 
-static const size_t NON_INCREMENTAL_MARK_STACK_BASE_CAPACITY = 4096;
-static const size_t INCREMENTAL_MARK_STACK_BASE_CAPACITY = 32768;
-
-template<class T>
-struct MarkStack {
-    T *stack_;
-    T *tos_;
-    T *end_;
-
-    // The capacity we start with and reset() to.
-    size_t baseCapacity_;
-    size_t maxCapacity_;
-
-    MarkStack(size_t maxCapacity)
-      : stack_(nullptr),
-        tos_(nullptr),
-        end_(nullptr),
-        baseCapacity_(0),
-        maxCapacity_(maxCapacity)
-    {}
-
-    ~MarkStack() {
-        js_free(stack_);
-    }
-
-    size_t capacity() { return end_ - stack_; }
-
-    ptrdiff_t position() const { return tos_ - stack_; }
-
-    void setStack(T *stack, size_t tosIndex, size_t capacity) {
-        stack_ = stack;
-        tos_ = stack + tosIndex;
-        end_ = stack + capacity;
-    }
-
-    void setBaseCapacity(JSGCMode mode) {
-        switch (mode) {
-          case JSGC_MODE_GLOBAL:
-          case JSGC_MODE_COMPARTMENT:
-            baseCapacity_ = NON_INCREMENTAL_MARK_STACK_BASE_CAPACITY;
-            break;
-          case JSGC_MODE_INCREMENTAL:
-            baseCapacity_ = INCREMENTAL_MARK_STACK_BASE_CAPACITY;
-            break;
-          default:
-            MOZ_ASSUME_UNREACHABLE("bad gc mode");
-        }
-
-        if (baseCapacity_ > maxCapacity_)
-            baseCapacity_ = maxCapacity_;
-    }
-
-    bool init(JSGCMode gcMode) {
-        setBaseCapacity(gcMode);
-
-        JS_ASSERT(!stack_);
-        T *newStack = js_pod_malloc<T>(baseCapacity_);
-        if (!newStack)
-            return false;
-
-        setStack(newStack, 0, baseCapacity_);
-        return true;
-    }
-
-    void setMaxCapacity(size_t maxCapacity) {
-        JS_ASSERT(isEmpty());
-        maxCapacity_ = maxCapacity;
-        if (baseCapacity_ > maxCapacity_)
-            baseCapacity_ = maxCapacity_;
-
-        reset();
-    }
-
-    bool push(T item) {
-        if (tos_ == end_) {
-            if (!enlarge())
-                return false;
-        }
-        JS_ASSERT(tos_ < end_);
-        *tos_++ = item;
-        return true;
-    }
-
-    bool push(T item1, T item2, T item3) {
-        T *nextTos = tos_ + 3;
-        if (nextTos > end_) {
-            if (!enlarge())
-                return false;
-            nextTos = tos_ + 3;
-        }
-        JS_ASSERT(nextTos <= end_);
-        tos_[0] = item1;
-        tos_[1] = item2;
-        tos_[2] = item3;
-        tos_ = nextTos;
-        return true;
-    }
-
-    bool isEmpty() const {
-        return tos_ == stack_;
-    }
-
-    T pop() {
-        JS_ASSERT(!isEmpty());
-        return *--tos_;
-    }
-
-    void reset() {
-        if (capacity() == baseCapacity_) {
-            // No size change; keep the current stack.
-            setStack(stack_, 0, baseCapacity_);
-            return;
-        }
-
-        T *newStack = (T *)js_realloc(stack_, sizeof(T) * baseCapacity_);
-        if (!newStack) {
-            // If the realloc fails, just keep using the existing stack; it's
-            // not ideal but better than failing.
-            newStack = stack_;
-            baseCapacity_ = capacity();
-        }
-        setStack(newStack, 0, baseCapacity_);
-    }
-
-    bool enlarge() {
-        if (capacity() == maxCapacity_)
-            return false;
-
-        size_t newCapacity = capacity() * 2;
-        if (newCapacity > maxCapacity_)
-            newCapacity = maxCapacity_;
-
-        size_t tosIndex = position();
-
-        T *newStack = (T *)js_realloc(stack_, sizeof(T) * newCapacity);
-        if (!newStack)
-            return false;
-
-        setStack(newStack, tosIndex, newCapacity);
-        return true;
-    }
-
-    void setGCMode(JSGCMode gcMode) {
-        // The mark stack won't be resized until the next call to reset(), but
-        // that will happen at the end of the next GC.
-        setBaseCapacity(gcMode);
-    }
-
-    size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) const {
-        return mallocSizeOf(stack_);
-    }
-};
-
 struct GrayRoot {
     void *thing;
     JSGCTraceKind kind;
@@ -1098,178 +1091,6 @@ struct GrayRoot {
     GrayRoot(void *thing, JSGCTraceKind kind)
         : thing(thing), kind(kind) {}
 };
-
-struct GCMarker : public JSTracer {
-  private:
-    /*
-     * We use a common mark stack to mark GC things of different types and use
-     * the explicit tags to distinguish them when it cannot be deduced from
-     * the context of push or pop operation.
-     */
-    enum StackTag {
-        ValueArrayTag,
-        ObjectTag,
-        TypeTag,
-        XmlTag,
-        SavedValueArrayTag,
-        JitCodeTag,
-        LastTag = JitCodeTag
-    };
-
-    static const uintptr_t StackTagMask = 7;
-
-    static void staticAsserts() {
-        JS_STATIC_ASSERT(StackTagMask >= uintptr_t(LastTag));
-        JS_STATIC_ASSERT(StackTagMask <= gc::CellMask);
-    }
-
-  public:
-    explicit GCMarker(JSRuntime *rt);
-    bool init(JSGCMode gcMode);
-
-    void setMaxCapacity(size_t maxCap) { stack.setMaxCapacity(maxCap); }
-    size_t maxCapacity() const { return stack.maxCapacity_; }
-
-    void start();
-    void stop();
-    void reset();
-
-    void pushObject(ObjectImpl *obj) {
-        pushTaggedPtr(ObjectTag, obj);
-    }
-
-    void pushType(types::TypeObject *type) {
-        pushTaggedPtr(TypeTag, type);
-    }
-
-    void pushJitCode(jit::JitCode *code) {
-        pushTaggedPtr(JitCodeTag, code);
-    }
-
-    uint32_t getMarkColor() const {
-        return color;
-    }
-
-    /*
-     * Care must be taken changing the mark color from gray to black. The cycle
-     * collector depends on the invariant that there are no black to gray edges
-     * in the GC heap. This invariant lets the CC not trace through black
-     * objects. If this invariant is violated, the cycle collector may free
-     * objects that are still reachable.
-     */
-    void setMarkColorGray() {
-        JS_ASSERT(isDrained());
-        JS_ASSERT(color == gc::BLACK);
-        color = gc::GRAY;
-    }
-
-    void setMarkColorBlack() {
-        JS_ASSERT(isDrained());
-        JS_ASSERT(color == gc::GRAY);
-        color = gc::BLACK;
-    }
-
-    inline void delayMarkingArena(gc::ArenaHeader *aheader);
-    void delayMarkingChildren(const void *thing);
-    void markDelayedChildren(gc::ArenaHeader *aheader);
-    bool markDelayedChildren(SliceBudget &budget);
-    bool hasDelayedChildren() const {
-        return !!unmarkedArenaStackTop;
-    }
-
-    bool isDrained() {
-        return isMarkStackEmpty() && !unmarkedArenaStackTop;
-    }
-
-    bool drainMarkStack(SliceBudget &budget);
-
-    /*
-     * Gray marking must be done after all black marking is complete. However,
-     * we do not have write barriers on XPConnect roots. Therefore, XPConnect
-     * roots must be accumulated in the first slice of incremental GC. We
-     * accumulate these roots in the each compartment's gcGrayRoots vector and
-     * then mark them later, after black marking is complete for each
-     * compartment. This accumulation can fail, but in that case we switch to
-     * non-incremental GC.
-     */
-    bool hasBufferedGrayRoots() const;
-    void startBufferingGrayRoots();
-    void endBufferingGrayRoots();
-    void resetBufferedGrayRoots();
-    void markBufferedGrayRoots(JS::Zone *zone);
-
-    static void GrayCallback(JSTracer *trc, void **thing, JSGCTraceKind kind);
-
-    void setGCMode(JSGCMode mode) { stack.setGCMode(mode); }
-
-    size_t sizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) const;
-
-    MarkStack<uintptr_t> stack;
-
-  private:
-#ifdef DEBUG
-    void checkZone(void *p);
-#else
-    void checkZone(void *p) {}
-#endif
-
-    void pushTaggedPtr(StackTag tag, void *ptr) {
-        checkZone(ptr);
-        uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
-        JS_ASSERT(!(addr & StackTagMask));
-        if (!stack.push(addr | uintptr_t(tag)))
-            delayMarkingChildren(ptr);
-    }
-
-    void pushValueArray(JSObject *obj, void *start, void *end) {
-        checkZone(obj);
-
-        JS_ASSERT(start <= end);
-        uintptr_t tagged = reinterpret_cast<uintptr_t>(obj) | GCMarker::ValueArrayTag;
-        uintptr_t startAddr = reinterpret_cast<uintptr_t>(start);
-        uintptr_t endAddr = reinterpret_cast<uintptr_t>(end);
-
-        /*
-         * Push in the reverse order so obj will be on top. If we cannot push
-         * the array, we trigger delay marking for the whole object.
-         */
-        if (!stack.push(endAddr, startAddr, tagged))
-            delayMarkingChildren(obj);
-    }
-
-    bool isMarkStackEmpty() {
-        return stack.isEmpty();
-    }
-
-    bool restoreValueArray(JSObject *obj, void **vpp, void **endp);
-    void saveValueRanges();
-    inline void processMarkStackTop(SliceBudget &budget);
-    void processMarkStackOther(uintptr_t tag, uintptr_t addr);
-
-    void appendGrayRoot(void *thing, JSGCTraceKind kind);
-
-    /* The color is only applied to objects and functions. */
-    uint32_t color;
-
-    mozilla::DebugOnly<bool> started;
-
-    /* Pointer to the top of the stack of arenas we are delaying marking on. */
-    js::gc::ArenaHeader *unmarkedArenaStackTop;
-    /* Count of arenas that are currently in the stack. */
-    mozilla::DebugOnly<size_t> markLaterArenas;
-
-    enum GrayBufferState
-    {
-        GRAY_BUFFER_UNUSED,
-        GRAY_BUFFER_OK,
-        GRAY_BUFFER_FAILED
-    };
-
-    GrayBufferState grayBufferState;
-};
-
-void
-SetMarkStackLimit(JSRuntime *rt, size_t limit);
 
 void
 MarkStackRangeConservatively(JSTracer *trc, Value *begin, Value *end);
@@ -1324,12 +1145,6 @@ IterateScripts(JSRuntime *rt, JSCompartment *compartment,
 
 extern void
 js_FinalizeStringRT(JSRuntime *rt, JSString *str);
-
-/*
- * Macro to test if a traversal is the marking phase of the GC.
- */
-#define IS_GC_MARKING_TRACER(trc) \
-    ((trc)->callback == nullptr || (trc)->callback == GCMarker::GrayCallback)
 
 namespace js {
 

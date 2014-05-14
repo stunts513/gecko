@@ -17,6 +17,10 @@
 #include "PseudoStack.h"
 #include "nsISupports.h"
 
+#ifdef MOZ_TASK_TRACER
+#include "GeckoTaskTracerImpl.h"
+#endif
+
 /* QT has a #define for the word "slots" and jsfriendapi.h has a struct with
  * this variable name, causing compilation problems. Alleviate this for now by
  * removing this #define */
@@ -54,12 +58,18 @@ extern bool stack_key_initialized;
 static inline
 void profiler_init(void* stackTop)
 {
+#ifdef MOZ_TASK_TRACER
+  mozilla::tasktracer::InitTaskTracer();
+#endif
   mozilla_sampler_init(stackTop);
 }
 
 static inline
 void profiler_shutdown()
 {
+#ifdef MOZ_TASK_TRACER
+  mozilla::tasktracer::ShutdownTaskTracer();
+#endif
   mozilla_sampler_shutdown();
 }
 
@@ -141,6 +151,12 @@ static inline
 JSObject* profiler_get_profile_jsobject(JSContext* aCx)
 {
   return mozilla_sampler_get_profile_data(aCx);
+}
+
+static inline
+void profiler_save_profile_to_file(const char* aFilename)
+{
+  return mozilla_sampler_save_profile_to_file(aFilename);
 }
 
 static inline
@@ -226,6 +242,22 @@ bool profiler_in_privacy_mode()
     return false;
   }
   return stack->mPrivacyMode;
+}
+
+static inline void profiler_tracing(const char* aCategory, const char* aInfo,
+                                    ProfilerBacktrace* aCause,
+                                    TracingMetadata aMetaData = TRACING_DEFAULT)
+{
+  if (!stack_key_initialized)
+    return;
+
+  // Don't insert a marker if we're not profiling to avoid
+  // the heap copy (malloc).
+  if (!profiler_is_active()) {
+    return;
+  }
+
+  mozilla_sampler_tracing(aCategory, aInfo, aCause, aMetaData);
 }
 
 static inline void profiler_tracing(const char* aCategory, const char* aInfo,

@@ -92,6 +92,7 @@ class ImageLoader;
 } // namespace css
 
 namespace dom {
+class AnimationTimeline;
 class Attr;
 class CDATASection;
 class Comment;
@@ -105,6 +106,7 @@ struct ElementRegistrationOptions;
 class Event;
 class EventTarget;
 class FrameRequestCallback;
+class OverfillCallback;
 class HTMLBodyElement;
 struct LifecycleCallbackArgs;
 class Link;
@@ -112,6 +114,7 @@ class GlobalObject;
 class NodeFilter;
 class NodeIterator;
 class ProcessingInstruction;
+class StyleSheetList;
 class Touch;
 class TouchList;
 class TreeWalker;
@@ -126,8 +129,8 @@ typedef CallbackObjectHolder<NodeFilter, nsIDOMNodeFilter> NodeFilterHolder;
 } // namespace mozilla
 
 #define NS_IDOCUMENT_IID \
-{ 0x94629cb0, 0xfe8a, 0x4627, \
-  { 0x8e, 0x59, 0xab, 0x1a, 0xaf, 0xdc, 0x99, 0x56 } }
+{ 0x906d05e7, 0x39af, 0x4ff0, \
+  { 0xbc, 0xcd, 0x30, 0x0c, 0x7f, 0xeb, 0x86, 0x21 } }
 
 // Flag for AddStyleSheet().
 #define NS_STYLESHEET_FROM_CATALOG                (1 << 0)
@@ -252,6 +255,18 @@ public:
   virtual void SetDocumentURI(nsIURI* aURI) = 0;
 
   /**
+   * Set the URI for the document loaded via XHR, when accessed from
+   * chrome privileged script.
+   */
+  virtual void SetChromeXHRDocURI(nsIURI* aURI) = 0;
+
+  /**
+   * Set the base URI for the document loaded via XHR, when accessed from
+   * chrome privileged script.
+   */
+  virtual void SetChromeXHRDocBaseURI(nsIURI* aURI) = 0;
+
+  /**
    * Set the principal responsible for this document.
    */
   virtual void SetPrincipal(nsIPrincipal *aPrincipal) = 0;
@@ -278,7 +293,7 @@ public:
     }
     return mDocumentBaseURI ? mDocumentBaseURI : mDocumentURI;
   }
-  virtual already_AddRefed<nsIURI> GetBaseURI() const MOZ_OVERRIDE;
+  virtual already_AddRefed<nsIURI> GetBaseURI(bool aTryUseXHRDocBaseURI = false) const MOZ_OVERRIDE;
 
   virtual nsresult SetBaseURI(nsIURI* aURI) = 0;
 
@@ -1323,6 +1338,13 @@ public:
    */
   virtual void UnblockOnload(bool aFireSync) = 0;
 
+  void BlockDOMContentLoaded()
+  {
+    ++mBlockDOMContentLoaded;
+  }
+
+  virtual void UnblockDOMContentLoaded() = 0;
+
   /**
    * Notification that the page has been shown, for documents which are loaded
    * into a DOM window.  This corresponds to the completion of document load,
@@ -1838,6 +1860,8 @@ public:
 
   virtual already_AddRefed<mozilla::dom::UndoManager> GetUndoManager() = 0;
 
+  virtual mozilla::dom::AnimationTimeline* Timeline() = 0;
+
   typedef mozilla::dom::CallbackObjectHolder<
     mozilla::dom::FrameRequestCallback,
     nsIFrameRequestCallback> FrameRequestCallbackHolder;
@@ -1985,6 +2009,11 @@ public:
     GetImplementation(mozilla::ErrorResult& rv) = 0;
   void GetURL(nsString& retval) const;
   void GetDocumentURI(nsString& retval) const;
+  // Return the URI for the document.
+  // The returned value may differ if the document is loaded via XHR, and
+  // when accessed from chrome privileged script and
+  // from content privileged script for compatibility.
+  void GetDocumentURIFromJS(nsString& aDocumentURI) const;
   void GetCompatMode(nsString& retval) const;
   void GetCharacterSet(nsAString& retval) const;
   // Skip GetContentType, because our NS_IMETHOD version above works fine here.
@@ -2120,10 +2149,7 @@ public:
   void ReleaseCapture() const;
   virtual void MozSetImageElement(const nsAString& aImageElementId,
                                   Element* aElement) = 0;
-  nsIURI* GetDocumentURIObject()
-  {
-    return GetDocumentURI();
-  }
+  nsIURI* GetDocumentURIObject() const;
   // Not const because all the full-screen goop is not const
   virtual bool MozFullScreenEnabled() = 0;
   virtual Element* GetMozFullScreenElement(mozilla::ErrorResult& rv) = 0;
@@ -2155,7 +2181,7 @@ public:
     WarnOnceAbout(ePrefixedVisibilityAPI);
     return VisibilityState();
   }
-  virtual nsIDOMStyleSheetList* StyleSheets() = 0;
+  virtual mozilla::dom::StyleSheetList* StyleSheets() = 0;
   void GetSelectedStyleSheetSet(nsAString& aSheetSet);
   virtual void SetSelectedStyleSheetSet(const nsAString& aSheetSet) = 0;
   virtual void GetLastStyleSheetSet(nsString& aSheetSet) = 0;
@@ -2227,8 +2253,7 @@ public:
 
   virtual nsHTMLDocument* AsHTMLDocument() { return nullptr; }
 
-  virtual JSObject* WrapObject(JSContext *aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext *aCx) MOZ_OVERRIDE;
 
 private:
   uint64_t mWarnedAbout;
@@ -2275,7 +2300,9 @@ protected:
 
   nsCOMPtr<nsIURI> mDocumentURI;
   nsCOMPtr<nsIURI> mOriginalURI;
+  nsCOMPtr<nsIURI> mChromeXHRDocURI;
   nsCOMPtr<nsIURI> mDocumentBaseURI;
+  nsCOMPtr<nsIURI> mChromeXHRDocBaseURI;
 
   nsWeakPtr mDocumentLoadGroup;
 
@@ -2290,8 +2317,9 @@ protected:
   // A reference to the element last returned from GetRootElement().
   mozilla::dom::Element* mCachedRootElement;
 
-  // We hold a strong reference to mNodeInfoManager through mNodeInfo
-  nsNodeInfoManager* mNodeInfoManager; // [STRONG]
+  // This is a weak reference, but we hold a strong reference to mNodeInfo,
+  // which in turn holds a strong reference to this mNodeInfoManager.
+  nsNodeInfoManager* mNodeInfoManager;
   nsRefPtr<mozilla::css::Loader> mCSSLoader;
   nsRefPtr<mozilla::css::ImageLoader> mStyleImageLoader;
   nsRefPtr<nsHTMLStyleSheet> mAttrStyleSheet;
@@ -2537,6 +2565,9 @@ protected:
   uint32_t mInSyncOperationCount;
 
   nsRefPtr<mozilla::dom::XPathEvaluator> mXPathEvaluator;
+
+  uint32_t mBlockDOMContentLoaded;
+  bool mDidFireDOMContentLoaded:1;
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(nsIDocument, NS_IDOCUMENT_IID)

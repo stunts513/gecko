@@ -106,9 +106,9 @@ SpeechRecognition::SetState(FSMState state)
 }
 
 JSObject*
-SpeechRecognition::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+SpeechRecognition::WrapObject(JSContext* aCx)
 {
-  return SpeechRecognitionBinding::Wrap(aCx, aScope, this);
+  return SpeechRecognitionBinding::Wrap(aCx, this);
 }
 
 already_AddRefed<SpeechRecognition>
@@ -711,14 +711,12 @@ SpeechRecognition::Start(ErrorResult& aRv)
   rv = mRecognitionService->Initialize(this->asWeakPtr());
   NS_ENSURE_SUCCESS_VOID(rv);
 
-  AutoSafeJSContext cx;
   MediaStreamConstraints constraints;
   constraints.mAudio.SetAsBoolean() = true;
 
   if (!mTestConfig.mFakeFSMEvents) {
     MediaManager* manager = MediaManager::Get();
-    manager->GetUserMedia(cx,
-                          false,
+    manager->GetUserMedia(false,
                           GetOwner(),
                           constraints,
                           new GetUserMediaSuccessCallback(this),
@@ -940,7 +938,7 @@ SpeechEvent::Run()
   return NS_OK;
 }
 
-NS_IMPL_ISUPPORTS1(SpeechRecognition::GetUserMediaSuccessCallback, nsIDOMGetUserMediaSuccessCallback)
+NS_IMPL_ISUPPORTS(SpeechRecognition::GetUserMediaSuccessCallback, nsIDOMGetUserMediaSuccessCallback)
 
 NS_IMETHODIMP
 SpeechRecognition::GetUserMediaSuccessCallback::OnSuccess(nsISupports* aStream)
@@ -950,7 +948,7 @@ SpeechRecognition::GetUserMediaSuccessCallback::OnSuccess(nsISupports* aStream)
   return NS_OK;
 }
 
-NS_IMPL_ISUPPORTS1(SpeechRecognition::GetUserMediaErrorCallback, nsIDOMGetUserMediaErrorCallback)
+NS_IMPL_ISUPPORTS(SpeechRecognition::GetUserMediaErrorCallback, nsIDOMGetUserMediaErrorCallback)
 
 NS_IMETHODIMP
 SpeechRecognition::GetUserMediaErrorCallback::OnError(const nsAString& aError)

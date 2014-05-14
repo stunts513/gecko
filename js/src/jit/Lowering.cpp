@@ -8,8 +8,6 @@
 
 #include "mozilla/DebugOnly.h"
 
-#include "jsanalyze.h"
-
 #include "jit/IonSpewer.h"
 #include "jit/LIR.h"
 #include "jit/MIR.h"
@@ -161,17 +159,6 @@ LIRGenerator::visitDefFun(MDefFun *ins)
 }
 
 bool
-LIRGenerator::visitNewSlots(MNewSlots *ins)
-{
-    // No safepoint needed, since we don't pass a cx.
-    LNewSlots *lir = new(alloc()) LNewSlots(tempFixed(CallTempReg0), tempFixed(CallTempReg1),
-                                            tempFixed(CallTempReg2));
-    if (!assignSnapshot(lir))
-        return false;
-    return defineReturn(lir, ins);
-}
-
-bool
 LIRGenerator::visitNewArray(MNewArray *ins)
 {
     LNewArray *lir = new(alloc()) LNewArray(temp());
@@ -195,20 +182,14 @@ LIRGenerator::visitNewDeclEnvObject(MNewDeclEnvObject *ins)
 bool
 LIRGenerator::visitNewCallObject(MNewCallObject *ins)
 {
-    LAllocation slots;
-    if (ins->slots()->type() == MIRType_Slots)
-        slots = useRegister(ins->slots());
-    else
-        slots = LConstantIndex::Bogus();
-
     LInstruction *lir;
     if (ins->templateObject()->hasSingletonType()) {
-        LNewSingletonCallObject *singletonLir = new(alloc()) LNewSingletonCallObject(slots);
+        LNewSingletonCallObject *singletonLir = new(alloc()) LNewSingletonCallObject(temp());
         if (!define(singletonLir, ins))
             return false;
         lir = singletonLir;
     } else {
-        LNewCallObject *normalLir = new(alloc()) LNewCallObject(slots, temp());
+        LNewCallObject *normalLir = new(alloc()) LNewCallObject(temp());
         if (!define(normalLir, ins))
             return false;
         lir = normalLir;
@@ -223,13 +204,7 @@ LIRGenerator::visitNewCallObject(MNewCallObject *ins)
 bool
 LIRGenerator::visitNewRunOnceCallObject(MNewRunOnceCallObject *ins)
 {
-    LAllocation slots;
-    if (ins->slots()->type() == MIRType_Slots)
-        slots = useRegister(ins->slots());
-    else
-        slots = LConstantIndex::Bogus();
-
-    LNewSingletonCallObject *lir = new(alloc()) LNewSingletonCallObject(slots);
+    LNewSingletonCallObject *lir = new(alloc()) LNewSingletonCallObject(temp());
     if (!define(lir, ins))
         return false;
 
@@ -253,17 +228,7 @@ bool
 LIRGenerator::visitNewCallObjectPar(MNewCallObjectPar *ins)
 {
     const LAllocation &parThreadContext = useRegister(ins->forkJoinContext());
-    const LDefinition &temp1 = temp();
-    const LDefinition &temp2 = temp();
-
-    LNewCallObjectPar *lir;
-    if (ins->slots()->type() == MIRType_Slots) {
-        const LAllocation &slots = useRegister(ins->slots());
-        lir = LNewCallObjectPar::NewWithSlots(alloc(), parThreadContext, slots, temp1, temp2);
-    } else {
-        lir = LNewCallObjectPar::NewSansSlots(alloc(), parThreadContext, temp1, temp2);
-    }
-
+    LNewCallObjectPar *lir = LNewCallObjectPar::New(alloc(), parThreadContext, temp(), temp());
     return define(lir, ins);
 }
 
@@ -494,7 +459,7 @@ LIRGenerator::visitCall(MCall *call)
 
             LCallNative *lir = new(alloc()) LCallNative(tempFixed(cxReg), tempFixed(numReg),
                                                         tempFixed(vpReg), tempFixed(tmpReg));
-            return (defineReturn(lir, call) && assignSafepoint(lir, call));
+            return defineReturn(lir, call) && assignSafepoint(lir, call);
         }
 
         LCallKnown *lir = new(alloc()) LCallKnown(useFixed(call->getFunction(), CallTempReg0),
@@ -564,6 +529,15 @@ LIRGenerator::visitAssertFloat32(MAssertFloat32 *assertion)
         JS_ASSERT_IF(!checkIsFloat32, type != MIRType_Float32);
     }
     return true;
+}
+
+bool
+LIRGenerator::visitArraySplice(MArraySplice *ins)
+{
+    LArraySplice *lir = new(alloc()) LArraySplice(useRegisterAtStart(ins->object()),
+                                                  useRegisterAtStart(ins->start()),
+                                                  useRegisterAtStart(ins->deleteCount()));
+    return add(lir, ins) && assignSafepoint(lir, ins);
 }
 
 bool
@@ -674,8 +648,8 @@ ReorderCommutative(MDefinition **lhsp, MDefinition **rhsp)
     // be fully precise, we should check whether this is the *last* use,
     // but checking hasOneDefUse() is a decent approximation which doesn't
     // require any extra analysis.
-    JS_ASSERT(lhs->defUseCount() > 0);
-    JS_ASSERT(rhs->defUseCount() > 0);
+    JS_ASSERT(lhs->hasDefUses());
+    JS_ASSERT(rhs->hasDefUses());
     if (lhs->isConstant() || (rhs->hasOneDefUse() && !lhs->hasOneDefUse())) {
         *rhsp = lhs;
         *lhsp = rhs;
@@ -2069,6 +2043,18 @@ LIRGenerator::visitLambda(MLambda *ins)
 }
 
 bool
+LIRGenerator::visitLambdaArrow(MLambdaArrow *ins)
+{
+    MOZ_ASSERT(ins->scopeChain()->type() == MIRType_Object);
+    MOZ_ASSERT(ins->thisDef()->type() == MIRType_Value);
+
+    LLambdaArrow *lir = new(alloc()) LLambdaArrow(useRegister(ins->scopeChain()), temp());
+    if (!useBox(lir, LLambdaArrow::ThisValue, ins->thisDef()))
+        return false;
+    return define(lir, ins) && assignSafepoint(lir, ins);
+}
+
+bool
 LIRGenerator::visitLambdaPar(MLambdaPar *ins)
 {
     JS_ASSERT(!ins->info().singletonType);
@@ -2284,7 +2270,8 @@ LIRGenerator::visitTypeBarrier(MTypeBarrier *ins)
     }
 
     // Handle typebarrier with specific TypeObject/SingleObjects.
-    if (inputType == MIRType_Object && !types->hasType(types::Type::AnyObjectType()))
+    if (inputType == MIRType_Object && !types->hasType(types::Type::AnyObjectType()) &&
+        ins->barrierKind() != BarrierKind::TypeTagOnly)
     {
         LDefinition tmp = needTemp ? temp() : LDefinition::BogusTemp();
         LTypeBarrierO *barrier = new(alloc()) LTypeBarrierO(useRegister(ins->getOperand(0)), tmp);
@@ -2319,13 +2306,16 @@ LIRGenerator::visitPostWriteBarrier(MPostWriteBarrier *ins)
 #ifdef JSGC_GENERATIONAL
     switch (ins->value()->type()) {
       case MIRType_Object: {
-        LPostWriteBarrierO *lir = new(alloc()) LPostWriteBarrierO(useRegisterOrConstant(ins->object()),
-                                                         useRegister(ins->value()));
+        LDefinition tmp = needTempForPostBarrier() ? temp() : LDefinition::BogusTemp();
+        LPostWriteBarrierO *lir =
+            new(alloc()) LPostWriteBarrierO(useRegisterOrConstant(ins->object()),
+                                            useRegister(ins->value()), tmp);
         return add(lir, ins) && assignSafepoint(lir, ins);
       }
       case MIRType_Value: {
+        LDefinition tmp = needTempForPostBarrier() ? temp() : LDefinition::BogusTemp();
         LPostWriteBarrierV *lir =
-            new(alloc()) LPostWriteBarrierV(useRegisterOrConstant(ins->object()), tempToUnbox());
+            new(alloc()) LPostWriteBarrierV(useRegisterOrConstant(ins->object()), tmp);
         if (!useBox(lir, LPostWriteBarrierV::Input, ins->value()))
             return false;
         return add(lir, ins) && assignSafepoint(lir, ins);
@@ -2376,6 +2366,16 @@ LIRGenerator::visitTypedObjectElements(MTypedObjectElements *ins)
 {
     JS_ASSERT(ins->type() == MIRType_Elements);
     return define(new(alloc()) LTypedObjectElements(useRegisterAtStart(ins->object())), ins);
+}
+
+bool
+LIRGenerator::visitSetTypedObjectOffset(MSetTypedObjectOffset *ins)
+{
+    return add(new(alloc()) LSetTypedObjectOffset(
+                   useRegister(ins->object()),
+                   useRegister(ins->offset()),
+                   temp()),
+               ins);
 }
 
 bool
@@ -3011,6 +3011,21 @@ LIRGenerator::visitGuardString(MGuardString *ins)
 }
 
 bool
+LIRGenerator::visitGuardShapePolymorphic(MGuardShapePolymorphic *ins)
+{
+    MOZ_ASSERT(ins->obj()->type() == MIRType_Object);
+    MOZ_ASSERT(ins->type() == MIRType_Object);
+
+    LGuardShapePolymorphic *guard =
+        new(alloc()) LGuardShapePolymorphic(useRegister(ins->obj()), temp());
+    if (!assignSnapshot(guard, Bailout_ShapeGuard))
+        return false;
+    if (!add(guard, ins))
+        return false;
+    return redefine(ins, ins->obj());
+}
+
+bool
 LIRGenerator::visitAssertRange(MAssertRange *ins)
 {
     MDefinition *input = ins->input();
@@ -3348,9 +3363,9 @@ LIRGenerator::visitCallInstanceOf(MCallInstanceOf *ins)
 }
 
 bool
-LIRGenerator::visitFunctionBoundary(MFunctionBoundary *ins)
+LIRGenerator::visitProfilerStackOp(MProfilerStackOp *ins)
 {
-    LFunctionBoundary *lir = new(alloc()) LFunctionBoundary(temp());
+    LProfilerStackOp *lir = new(alloc()) LProfilerStackOp(temp());
     if (!add(lir, ins))
         return false;
     // If slow assertions are enabled, then this node will result in a callVM
@@ -3469,12 +3484,6 @@ LIRGenerator::visitAsmJSCall(MAsmJSCall *ins)
 }
 
 bool
-LIRGenerator::visitAsmJSCheckOverRecursed(MAsmJSCheckOverRecursed *ins)
-{
-    return add(new(alloc()) LAsmJSCheckOverRecursed(), ins);
-}
-
-bool
 LIRGenerator::visitSetDOMProperty(MSetDOMProperty *ins)
 {
     MDefinition *val = ins->value();
@@ -3522,8 +3531,11 @@ bool
 LIRGenerator::visitGetDOMMember(MGetDOMMember *ins)
 {
     MOZ_ASSERT(ins->isDomMovable(), "Members had better be movable");
-    MOZ_ASSERT(ins->domAliasSet() == JSJitInfo::AliasNone,
-               "Members had better not alias anything");
+    // We wish we could assert that ins->domAliasSet() == JSJitInfo::AliasNone,
+    // but some MGetDOMMembers are for [Pure], not [Constant] properties, whose
+    // value can in fact change as a result of DOM setters and method calls.
+    MOZ_ASSERT(ins->domAliasSet() != JSJitInfo::AliasEverything,
+               "Member gets had better not alias the world");
     LGetDOMMember *lir =
         new(alloc()) LGetDOMMember(useRegister(ins->object()));
     return defineBox(lir, ins);
@@ -3568,10 +3580,16 @@ SpewResumePoint(MBasicBlock *block, MInstruction *ins, MResumePoint *resumePoint
 bool
 LIRGenerator::visitInstruction(MInstruction *ins)
 {
+    if (ins->isRecoveredOnBailout())
+        return true;
+
     if (!gen->ensureBallast())
         return false;
     if (!ins->accept(this))
         return false;
+
+    if (ins->possiblyCalls())
+        gen->setPerformsCall();
 
     if (ins->resumePoint())
         updateResumeState(ins);

@@ -195,7 +195,7 @@ nsBlockReflowContext::ComputeCollapsedTopMargin(const nsHTMLReflowState& aRS,
   return dirtiedLine;
 }
 
-nsresult
+void
 nsBlockReflowContext::ReflowBlock(const nsRect&       aSpace,
                                   bool                aApplyTopMargin,
                                   nsCollapsingMargin& aPrevMargin,
@@ -206,7 +206,6 @@ nsBlockReflowContext::ReflowBlock(const nsRect&       aSpace,
                                   nsReflowStatus&     aFrameReflowStatus,
                                   nsBlockReflowState& aState)
 {
-  nsresult rv = NS_OK;
   mFrame = aFrameRS.frame;
   mSpace = aSpace;
 
@@ -245,7 +244,8 @@ nsBlockReflowContext::ReflowBlock(const nsRect&       aSpace,
     mY = ty = mSpace.y + mTopMargin.get() + aClearance;
 
     if ((mFrame->GetStateBits() & NS_BLOCK_FLOAT_MGR) == 0)
-      aFrameRS.mBlockDelta = mOuterReflowState.mBlockDelta + ty - aLine->mBounds.y;
+      aFrameRS.mBlockDelta =
+        mOuterReflowState.mBlockDelta + ty - aLine->BStart();
   }
 
   // Let frame know that we are reflowing it
@@ -257,7 +257,7 @@ nsBlockReflowContext::ReflowBlock(const nsRect&       aSpace,
 #endif
 
   mOuterReflowState.mFloatManager->Translate(tx, ty);
-  rv = mFrame->Reflow(mPresContext, mMetrics, aFrameRS, aFrameReflowStatus);
+  mFrame->Reflow(mPresContext, mMetrics, aFrameRS, aFrameReflowStatus);
   mOuterReflowState.mFloatManager->Translate(-tx, -ty);
 
 #ifdef DEBUG
@@ -300,8 +300,6 @@ nsBlockReflowContext::ReflowBlock(const nsRect&       aSpace,
       }
     }
   }
-
-  return rv;
 }
 
 /**
@@ -310,13 +308,13 @@ nsBlockReflowContext::ReflowBlock(const nsRect&       aSpace,
  * margins (CSS2 8.3.1). Also apply relative positioning.
  */
 bool
-nsBlockReflowContext::PlaceBlock(const nsHTMLReflowState& aReflowState,
-                                 bool                     aForceFit,
-                                 nsLineBox*               aLine,
-                                 nsCollapsingMargin&      aBottomMarginResult,
-                                 nsRect&                  aInFlowBounds,
-                                 nsOverflowAreas&         aOverflowAreas,
-                                 nsReflowStatus           aReflowStatus)
+nsBlockReflowContext::PlaceBlock(const nsHTMLReflowState&  aReflowState,
+                                 bool                      aForceFit,
+                                 nsLineBox*                aLine,
+                                 nsCollapsingMargin&       aBottomMarginResult,
+                                 nsOverflowAreas&          aOverflowAreas,
+                                 nsReflowStatus            aReflowStatus,
+                                 nscoord                   aContainerWidth)
 {
   // Compute collapsed bottom margin value.
   if (NS_FRAME_IS_COMPLETE(aReflowStatus)) {
@@ -386,11 +384,15 @@ nsBlockReflowContext::PlaceBlock(const nsHTMLReflowState& aReflowState,
     }
   }
 
-  aInFlowBounds = nsRect(position.x, position.y - backupContainingBlockAdvance,
-                         mMetrics.Width(), mMetrics.Height());
-  
+  aLine->SetBounds(aReflowState.GetWritingMode(),
+                   nsRect(position.x,
+                          position.y - backupContainingBlockAdvance,
+                          mMetrics.Width(),
+                          mMetrics.Height()),
+                   aContainerWidth);
+
   aReflowState.ApplyRelativePositioning(&position);
-  
+
   // Now place the frame and complete the reflow process
   nsContainerFrame::FinishReflowChild(mFrame, mPresContext, mMetrics,
                                       &aReflowState, position.x, position.y, 0);

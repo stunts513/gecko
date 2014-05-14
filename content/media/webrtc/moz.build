@@ -9,10 +9,12 @@ XPIDL_MODULE = 'content_webrtc'
 EXPORTS += [
     'MediaEngine.h',
     'MediaEngineDefault.h',
+    'MediaTrackConstraints.h',
 ]
 
 if CONFIG['MOZ_WEBRTC']:
-    EXPORTS += ['LoadManager.h',
+    EXPORTS += ['AudioOutputObserver.h',
+                'LoadManager.h',
                 'LoadManagerFactory.h',
                 'LoadMonitor.h',
                 'MediaEngineWebRTC.h']
@@ -46,6 +48,11 @@ XPIDL_SOURCES += [
 
 UNIFIED_SOURCES += [
     'MediaEngineDefault.cpp',
+    'PeerIdentity.cpp',
+]
+
+EXPORTS.mozilla += [
+    'PeerIdentity.h',
 ]
 
 include('/ipc/chromium/chromium-config.mozbuild')

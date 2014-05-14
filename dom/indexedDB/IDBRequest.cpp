@@ -169,7 +169,7 @@ IDBRequest::NotifyHelperCompleted(HelperBase* aHelper)
 {
   NS_ASSERTION(NS_IsMainThread(), "Wrong thread!");
   NS_ASSERTION(!mHaveResultOrErrorCode, "Already called!");
-  NS_ASSERTION(JSVAL_IS_VOID(mResultVal), "Should be undefined!");
+  NS_ASSERTION(mResultVal.isUndefined(), "Should be undefined!");
 
   mHaveResultOrErrorCode = true;
 
@@ -225,7 +225,7 @@ IDBRequest::NotifyHelperSentResultsToChildProcess(nsresult aRv)
 {
   NS_ASSERTION(NS_IsMainThread(), "Wrong thread!");
   NS_ASSERTION(!mHaveResultOrErrorCode, "Already called!");
-  NS_ASSERTION(JSVAL_IS_VOID(mResultVal), "Should be undefined!");
+  NS_ASSERTION(mResultVal.isUndefined(), "Should be undefined!");
 
   // See if our window is still valid. If not then we're going to pretend that
   // we never completed.
@@ -321,9 +321,9 @@ IDBRequest::ReadyState() const
 }
 
 JSObject*
-IDBRequest::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+IDBRequest::WrapObject(JSContext* aCx)
 {
-  return IDBRequestBinding::Wrap(aCx, aScope, this);
+  return IDBRequestBinding::Wrap(aCx, this);
 }
 
 JS::Value
@@ -463,7 +463,7 @@ IDBOpenDBRequest::PostHandleEvent(EventChainPostVisitor& aVisitor)
 }
 
 JSObject*
-IDBOpenDBRequest::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+IDBOpenDBRequest::WrapObject(JSContext* aCx)
 {
-  return IDBOpenDBRequestBinding::Wrap(aCx, aScope, this);
+  return IDBOpenDBRequestBinding::Wrap(aCx, this);
 }

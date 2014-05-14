@@ -8,14 +8,16 @@
 #include "nsUnicharUtils.h"
 #include "prmem.h"
 #include "nsIUnicodeEncoder.h"
-#include "nsICharsetConverterManager.h"
 #include "nsServiceManagerUtils.h"
+#include "mozilla/dom/EncodingUtils.h"
+
+using mozilla::dom::EncodingUtils;
 
 ////////////////////////////////////////////////////////////////////////////////
 
 NS_DEFINE_CID(kCollationCID, NS_COLLATION_CID);
 
-NS_IMPL_ISUPPORTS1(nsCollationFactory, nsICollationFactory)
+NS_IMPL_ISUPPORTS(nsCollationFactory, nsICollationFactory)
 
 nsresult nsCollationFactory::CreateCollation(nsILocale* locale, nsICollation** instancePtr)
 {
@@ -73,13 +75,13 @@ nsresult nsCollation::SetCharset(const char* aCharset)
 {
   NS_ENSURE_ARG_POINTER(aCharset);
 
-  nsresult rv;
-  nsCOMPtr <nsICharsetConverterManager> charsetConverterManager = do_GetService(NS_CHARSETCONVERTERMANAGER_CONTRACTID, &rv);
-  if (NS_SUCCEEDED(rv)) {
-    rv = charsetConverterManager->GetUnicodeEncoder(aCharset,
-                                                    getter_AddRefs(mEncoder));
+  nsDependentCString label(aCharset);
+  nsAutoCString encoding;
+  if (!EncodingUtils::FindEncodingForLabelNoReplacement(label, encoding)) {
+      return NS_ERROR_UCONV_NOCONV;
   }
-  return rv;
+  mEncoder = EncodingUtils::EncoderForEncoding(encoding);
+  return NS_OK;
 }
 
 nsresult nsCollation::UnicodeToChar(const nsAString& aSrc, char** dst)

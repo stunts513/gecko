@@ -9,7 +9,6 @@
 #include "ImageTypes.h"                 // for ImageFormat::PLANAR_YCBCR, etc
 #include "SharedTextureImage.h"         // for SharedTextureImage::Data, etc
 #include "gfx2DGlue.h"                  // for ImageFormatToSurfaceFormat
-#include "gfxASurface.h"                // for gfxASurface, etc
 #include "gfxPlatform.h"                // for gfxPlatform
 #include "mozilla/Assertions.h"         // for MOZ_ASSERT, etc
 #include "mozilla/RefPtr.h"             // for RefPtr, TemporaryRef
@@ -42,6 +41,46 @@ using namespace mozilla::gfx;
 namespace mozilla {
 namespace layers {
 
+/**
+ * Handle RemoveTextureFromCompositableAsync() transaction.
+ */
+class RemoveTextureFromCompositableTracker : public AsyncTransactionTracker {
+public:
+  RemoveTextureFromCompositableTracker(CompositableClient* aCompositableClient)
+    : mCompositableClient(aCompositableClient)
+  {
+    MOZ_COUNT_CTOR(RemoveTextureFromCompositableTracker);
+  }
+
+  ~RemoveTextureFromCompositableTracker()
+  {
+    MOZ_COUNT_DTOR(RemoveTextureFromCompositableTracker);
+  }
+
+  virtual void Complete() MOZ_OVERRIDE
+  {
+    // The TextureClient's recycling is postponed until the transaction
+    // complete.
+    mTextureClient = nullptr;
+    mCompositableClient = nullptr;
+  }
+
+  virtual void Cancel() MOZ_OVERRIDE
+  {
+    mTextureClient = nullptr;
+    mCompositableClient = nullptr;
+  }
+
+  virtual void SetTextureClient(TextureClient* aTextureClient) MOZ_OVERRIDE
+  {
+    mTextureClient = aTextureClient;
+  }
+
+private:
+  RefPtr<CompositableClient> mCompositableClient;
+  RefPtr<TextureClient> mTextureClient;
+};
+
 /* static */ TemporaryRef<ImageClient>
 ImageClient::CreateImageClient(CompositableType aCompositableHostType,
                                CompositableForwarder* aForwarder,
@@ -49,17 +88,17 @@ ImageClient::CreateImageClient(CompositableType aCompositableHostType,
 {
   RefPtr<ImageClient> result = nullptr;
   switch (aCompositableHostType) {
-  case COMPOSITABLE_IMAGE:
-  case BUFFER_IMAGE_SINGLE:
-    result = new ImageClientSingle(aForwarder, aFlags, COMPOSITABLE_IMAGE);
+  case CompositableType::IMAGE:
+  case CompositableType::BUFFER_IMAGE_SINGLE:
+    result = new ImageClientSingle(aForwarder, aFlags, CompositableType::IMAGE);
     break;
-  case BUFFER_IMAGE_BUFFERED:
-    result = new ImageClientBuffered(aForwarder, aFlags, COMPOSITABLE_IMAGE);
+  case CompositableType::BUFFER_IMAGE_BUFFERED:
+    result = new ImageClientBuffered(aForwarder, aFlags, CompositableType::IMAGE);
     break;
-  case BUFFER_BRIDGE:
+  case CompositableType::BUFFER_BRIDGE:
     result = new ImageClientBridge(aForwarder, aFlags);
     break;
-  case BUFFER_UNKNOWN:
+  case CompositableType::BUFFER_UNKNOWN:
     result = nullptr;
     break;
   default:
@@ -69,6 +108,36 @@ ImageClient::CreateImageClient(CompositableType aCompositableHostType,
   NS_ASSERTION(result, "Failed to create ImageClient");
 
   return result.forget();
+}
+
+void
+ImageClient::RemoveTextureFromCompositable(TextureClient* aTexture,
+                                           AsyncTransactionTracker* aAsyncTransactionTracker)
+{
+#ifdef MOZ_WIDGET_GONK
+  // AsyncTransactionTracker is supported only on ImageBridge.
+  // Use AsyncTransactionTracker only when TextureClient is recyeled.
+  if (GetForwarder()->IsImageBridgeChild() &&
+      aTexture->HasRecycleCallback()) {
+    RefPtr<AsyncTransactionTracker> request = aAsyncTransactionTracker;
+    if (!request) {
+      // Create AsyncTransactionTracker if it is not provided as argument.
+      request = new RemoveTextureFromCompositableTracker(this);
+    }
+    // Hold TextureClient until the transaction complete to postpone
+    // the TextureClient recycle.
+    request->SetTextureClient(aTexture);
+    GetForwarder()->RemoveTextureFromCompositableAsync(request, this, aTexture);
+    return;
+  }
+#endif
+
+  GetForwarder()->RemoveTextureFromCompositable(this, aTexture);
+  if (aAsyncTransactionTracker) {
+    // Do not need to wait a transaction complete message
+    // from the compositor side.
+    aAsyncTransactionTracker->NotifyComplete();
+  }
 }
 
 ImageClientSingle::ImageClientSingle(CompositableForwarder* aFwd,
@@ -87,27 +156,39 @@ ImageClientBuffered::ImageClientBuffered(CompositableForwarder* aFwd,
 
 TextureInfo ImageClientSingle::GetTextureInfo() const
 {
-  return TextureInfo(COMPOSITABLE_IMAGE);
+  return TextureInfo(CompositableType::IMAGE);
+}
+
+TemporaryRef<AsyncTransactionTracker>
+ImageClientSingle::PrepareFlushAllImages()
+{
+  RefPtr<AsyncTransactionTracker> status = new RemoveTextureFromCompositableTracker(this);
+  return status;
 }
 
 void
-ImageClientSingle::FlushAllImages(bool aExceptFront)
+ImageClientSingle::FlushAllImages(bool aExceptFront,
+                                  AsyncTransactionTracker* aAsyncTransactionTracker)
 {
   if (!aExceptFront && mFrontBuffer) {
-    GetForwarder()->RemoveTextureFromCompositable(this, mFrontBuffer);
+    RemoveTextureFromCompositable(mFrontBuffer, aAsyncTransactionTracker);
     mFrontBuffer = nullptr;
+  } else if(aAsyncTransactionTracker) {
+    // already flushed
+    aAsyncTransactionTracker->NotifyComplete();
   }
 }
 
 void
-ImageClientBuffered::FlushAllImages(bool aExceptFront)
+ImageClientBuffered::FlushAllImages(bool aExceptFront,
+                                    AsyncTransactionTracker* aAsyncTransactionTracker)
 {
   if (!aExceptFront && mFrontBuffer) {
-    GetForwarder()->RemoveTextureFromCompositable(this, mFrontBuffer);
+    RemoveTextureFromCompositable(mFrontBuffer);
     mFrontBuffer = nullptr;
   }
   if (mBackBuffer) {
-    GetForwarder()->RemoveTextureFromCompositable(this, mBackBuffer);
+    RemoveTextureFromCompositable(mBackBuffer, aAsyncTransactionTracker);
     mBackBuffer = nullptr;
   }
 }
@@ -140,9 +221,8 @@ ImageClientSingle::UpdateImageInternal(ImageContainer* aContainer,
     // fast path: no need to allocate and/or copy image data
     RefPtr<TextureClient> texture = image->AsSharedImage()->GetTextureClient(this);
 
-
     if (mFrontBuffer) {
-      GetForwarder()->RemoveTextureFromCompositable(this, mFrontBuffer);
+      RemoveTextureFromCompositable(mFrontBuffer);
     }
     mFrontBuffer = texture;
     if (!AddTextureClient(texture)) {
@@ -159,13 +239,13 @@ ImageClientSingle::UpdateImageInternal(ImageContainer* aContainer,
     }
 
     if (mFrontBuffer && mFrontBuffer->IsImmutable()) {
-      GetForwarder()->RemoveTextureFromCompositable(this, mFrontBuffer);
+      RemoveTextureFromCompositable(mFrontBuffer);
       mFrontBuffer = nullptr;
     }
 
     bool bufferCreated = false;
     if (!mFrontBuffer) {
-      mFrontBuffer = CreateBufferTextureClient(gfx::SurfaceFormat::YUV, TEXTURE_FLAGS_DEFAULT);
+      mFrontBuffer = CreateBufferTextureClient(gfx::SurfaceFormat::YUV, TextureFlags::DEFAULT);
       gfx::IntSize ySize(data->mYSize.width, data->mYSize.height);
       gfx::IntSize cbCrSize(data->mCbCrSize.width, data->mCbCrSize.height);
       if (!mFrontBuffer->AsTextureClientYCbCr()->AllocateForYCbCr(ySize, cbCrSize, data->mStereoMode)) {
@@ -175,7 +255,8 @@ ImageClientSingle::UpdateImageInternal(ImageContainer* aContainer,
       bufferCreated = true;
     }
 
-    if (!mFrontBuffer->Lock(OPEN_WRITE_ONLY)) {
+    if (!mFrontBuffer->Lock(OpenMode::OPEN_WRITE_ONLY)) {
+      mFrontBuffer = nullptr;
       return false;
     }
     bool status = mFrontBuffer->AsTextureClientYCbCr()->UpdateYCbCr(*data);
@@ -202,7 +283,7 @@ ImageClientSingle::UpdateImageInternal(ImageContainer* aContainer,
     gfx::IntSize size = gfx::IntSize(image->GetSize().width, image->GetSize().height);
 
     if (mFrontBuffer) {
-      GetForwarder()->RemoveTextureFromCompositable(this, mFrontBuffer);
+      RemoveTextureFromCompositable(mFrontBuffer);
       mFrontBuffer = nullptr;
     }
 
@@ -223,7 +304,7 @@ ImageClientSingle::UpdateImageInternal(ImageContainer* aContainer,
 
     if (mFrontBuffer &&
         (mFrontBuffer->IsImmutable() || mFrontBuffer->GetSize() != size)) {
-      GetForwarder()->RemoveTextureFromCompositable(this, mFrontBuffer);
+      RemoveTextureFromCompositable(mFrontBuffer);
       mFrontBuffer = nullptr;
     }
 
@@ -233,8 +314,8 @@ ImageClientSingle::UpdateImageInternal(ImageContainer* aContainer,
         = gfxPlatform::GetPlatform()->OptimalFormatForContent(gfx::ContentForFormat(surface->GetFormat()));
       mFrontBuffer = CreateTextureClientForDrawing(gfx::ImageFormatToSurfaceFormat(format),
                                                    mTextureFlags, gfx::BackendType::NONE, size);
-      MOZ_ASSERT(mFrontBuffer->AsTextureClientDrawTarget());
-      if (!mFrontBuffer->AsTextureClientDrawTarget()->AllocateForSurface(size)) {
+      MOZ_ASSERT(mFrontBuffer->CanExposeDrawTarget());
+      if (!mFrontBuffer->AllocateForSurface(size)) {
         mFrontBuffer = nullptr;
         return false;
       }
@@ -242,13 +323,14 @@ ImageClientSingle::UpdateImageInternal(ImageContainer* aContainer,
       bufferCreated = true;
     }
 
-    if (!mFrontBuffer->Lock(OPEN_WRITE_ONLY)) {
+    if (!mFrontBuffer->Lock(OpenMode::OPEN_WRITE_ONLY)) {
+      mFrontBuffer = nullptr;
       return false;
     }
 
     {
       // We must not keep a reference to the DrawTarget after it has been unlocked.
-      RefPtr<DrawTarget> dt = mFrontBuffer->AsTextureClientDrawTarget()->GetAsDrawTarget();
+      RefPtr<DrawTarget> dt = mFrontBuffer->GetAsDrawTarget();
       MOZ_ASSERT(surface.get());
       dt->CopySurface(surface, IntRect(IntPoint(), surface->GetSize()), IntPoint());
     }
@@ -334,7 +416,7 @@ ImageClient::UpdatePictureRect(nsIntRect aRect)
 
 ImageClientBridge::ImageClientBridge(CompositableForwarder* aFwd,
                                      TextureFlags aFlags)
-: ImageClient(aFwd, aFlags, BUFFER_BRIDGE)
+: ImageClient(aFwd, aFlags, CompositableType::BUFFER_BRIDGE)
 , mAsyncContainerID(0)
 , mLayer(nullptr)
 {

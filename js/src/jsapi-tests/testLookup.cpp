@@ -23,7 +23,7 @@ BEGIN_TEST(testLookup_bug522590)
 
     // Now make x.f a method.
     EVAL("mkobj()", &x);
-    JS::RootedObject xobj(cx, JSVAL_TO_OBJECT(x));
+    JS::RootedObject xobj(cx, x.toObjectOrNull());
 
     // This lookup must not return an internal function object.
     JS::RootedValue r(cx);
@@ -50,15 +50,15 @@ static const JSClass DocumentAllClass = {
 };
 
 bool
-document_resolve(JSContext *cx, JS::HandleObject obj, JS::HandleId id, unsigned flags,
+document_resolve(JSContext *cx, JS::HandleObject obj, JS::HandleId id,
                  JS::MutableHandleObject objp)
 {
     // If id is "all", resolve document.all=true.
     JS::RootedValue v(cx);
     if (!JS_IdToValue(cx, id, &v))
         return false;
-    if (JSVAL_IS_STRING(v)) {
-        JSString *str = JSVAL_TO_STRING(v);
+    if (v.isString()) {
+        JSString *str = v.toString();
         JSFlatString *flatStr = JS_FlattenString(cx, str);
         if (!flatStr)
             return false;
@@ -68,7 +68,7 @@ document_resolve(JSContext *cx, JS::HandleObject obj, JS::HandleId id, unsigned 
             if (!docAll)
                 return false;
             JS::Rooted<JS::Value> allValue(cx, ObjectValue(*docAll));
-            bool ok = JS_DefinePropertyById(cx, obj, id, allValue, nullptr, nullptr, 0);
+            bool ok = JS_DefinePropertyById(cx, obj, id, allValue, 0);
             objp.set(ok ? obj.get() : nullptr);
             return ok;
         }
@@ -87,7 +87,7 @@ BEGIN_TEST(testLookup_bug570195)
 {
     JS::RootedObject obj(cx, JS_NewObject(cx, &document_class, JS::NullPtr(), JS::NullPtr()));
     CHECK(obj);
-    CHECK(JS_DefineProperty(cx, global, "document", OBJECT_TO_JSVAL(obj), nullptr, nullptr, 0));
+    CHECK(JS_DefineProperty(cx, global, "document", obj, 0));
     JS::RootedValue v(cx);
     EVAL("document.all ? true : false", &v);
     CHECK_SAME(v, JSVAL_FALSE);

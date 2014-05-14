@@ -4,7 +4,7 @@
 "use strict";
 
 let {Ci,Cu,CC} = require("chrome");
-const promise = require("sdk/core/promise");
+const promise = require("devtools/toolkit/deprecated-sync-thenables");
 
 const {FileUtils} = Cu.import("resource://gre/modules/FileUtils.jsm");
 const {Services} = Cu.import("resource://gre/modules/Services.jsm");
@@ -56,6 +56,7 @@ AppValidator.prototype._fetchManifest = function (manifestURL) {
   this.manifestURL = manifestURL;
 
   let req = new XMLHttpRequest();
+  req.overrideMimeType('text/plain');
   try {
     req.open("GET", manifestURL, true);
   } catch(e) {
@@ -155,6 +156,7 @@ AppValidator.prototype.validateLaunchPath = function (manifest) {
   }
 
   let req = new XMLHttpRequest();
+  req.overrideMimeType('text/plain');
   try {
     req.open("HEAD", indexURL, true);
   } catch(e) {

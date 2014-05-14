@@ -7,6 +7,7 @@
 gyp_vars = {
     'build_with_mozilla': 1,
     'build_with_chromium': 0,
+    'use_official_google_api_keys': 0,
     'have_clock_monotonic': 1 if CONFIG['HAVE_CLOCK_MONOTONIC'] else 0,
     'have_ethtool_cmd_speed_hi': 1 if CONFIG['MOZ_WEBRTC_HAVE_ETHTOOL_SPEED_HI'] else 0,
     'include_alsa_audio': 1 if CONFIG['MOZ_ALSA'] else 0,
@@ -35,6 +36,7 @@ gyp_vars = {
     'arm_neon_optional': 1,
 
     'moz_widget_toolkit_gonk': 0,
+    'moz_webrtc_omx': 0,
 
     # (for vp8) chromium sets to 0 also
     'use_temporal_layers': 0,
@@ -61,6 +63,8 @@ elif os == 'Android':
     if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'gonk':
         gyp_vars['build_with_gonk'] = 1
         gyp_vars['moz_widget_toolkit_gonk'] = 1
+        if int(CONFIG['ANDROID_VERSION']) >= 18:
+          gyp_vars['moz_webrtc_omx'] = 1
     else:
         gyp_vars.update(
             gtest_target_type='executable',

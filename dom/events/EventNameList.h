@@ -218,9 +218,9 @@ EVENT(ended,
       EventNameType_HTML,
       NS_EVENT)
 EVENT(input,
-      NS_FORM_INPUT,
+      NS_EDITOR_INPUT,
       EventNameType_HTMLXUL,
-      NS_UI_EVENT)
+      NS_EDITOR_INPUT_EVENT)
 EVENT(invalid,
       NS_FORM_INVALID,
       EventNameType_HTMLXUL,
@@ -463,6 +463,10 @@ BEFOREUNLOAD_EVENT(beforeunload,
 WINDOW_EVENT(hashchange,
              NS_HASHCHANGE,
              EventNameType_XUL | EventNameType_HTMLBodyOrFramesetOnly,
+             NS_EVENT)
+WINDOW_EVENT(languagechange,
+             NS_LANGUAGECHANGE,
+             EventNameType_HTMLBodyOrFramesetOnly,
              NS_EVENT)
 // XXXbz Should the onmessage attribute on <body> really not work?  If so, do we
 // need a different macro to flag things like that (IDL, but not content

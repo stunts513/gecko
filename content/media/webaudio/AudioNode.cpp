@@ -19,7 +19,9 @@ NS_IMPL_CYCLE_COLLECTION_CLASS(AudioNode)
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(AudioNode, DOMEventTargetHelper)
   tmp->DisconnectFromGraph();
-  tmp->mContext->UpdateNodeCount(-1);
+  if (tmp->mContext) {
+    tmp->mContext->UpdateNodeCount(-1);
+  }
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mContext)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mOutputNodes)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mOutputParams)
@@ -75,11 +77,42 @@ AudioNode::~AudioNode()
   }
 }
 
+size_t
+AudioNode::SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const
+{
+  // Not owned:
+  // - mContext
+  // - mStream
+  size_t amount = 0;
+
+  amount += mInputNodes.SizeOfExcludingThis(aMallocSizeOf);
+  for (size_t i = 0; i < mInputNodes.Length(); i++) {
+    amount += mInputNodes[i].SizeOfExcludingThis(aMallocSizeOf);
+  }
+
+  // Just measure the array. The entire audio node graph is measured via the
+  // MediaStreamGraph's streams, so we don't want to double-count the elements.
+  amount += mOutputNodes.SizeOfExcludingThis(aMallocSizeOf);
+
+  amount += mOutputParams.SizeOfExcludingThis(aMallocSizeOf);
+  for (size_t i = 0; i < mOutputParams.Length(); i++) {
+    amount += mOutputParams[i]->SizeOfIncludingThis(aMallocSizeOf);
+  }
+
+  return amount;
+}
+
+size_t
+AudioNode::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const
+{
+  return aMallocSizeOf(this) + SizeOfExcludingThis(aMallocSizeOf);
+}
+
 template <class InputNode>
-static uint32_t
+static size_t
 FindIndexOfNode(const nsTArray<InputNode>& aInputNodes, const AudioNode* aNode)
 {
-  for (uint32_t i = 0; i < aInputNodes.Length(); ++i) {
+  for (size_t i = 0; i < aInputNodes.Length(); ++i) {
     if (aInputNodes[i].mInputNode == aNode) {
       return i;
     }
@@ -88,11 +121,11 @@ FindIndexOfNode(const nsTArray<InputNode>& aInputNodes, const AudioNode* aNode)
 }
 
 template <class InputNode>
-static uint32_t
+static size_t
 FindIndexOfNodeWithPorts(const nsTArray<InputNode>& aInputNodes, const AudioNode* aNode,
                          uint32_t aInputPort, uint32_t aOutputPort)
 {
-  for (uint32_t i = 0; i < aInputNodes.Length(); ++i) {
+  for (size_t i = 0; i < aInputNodes.Length(); ++i) {
     if (aInputNodes[i].mInputNode == aNode &&
         aInputNodes[i].mInputPort == aInputPort &&
         aInputNodes[i].mOutputPort == aOutputPort) {
@@ -114,27 +147,27 @@ AudioNode::DisconnectFromGraph()
 
   // Disconnect inputs. We don't need them anymore.
   while (!mInputNodes.IsEmpty()) {
-    uint32_t i = mInputNodes.Length() - 1;
+    size_t i = mInputNodes.Length() - 1;
     nsRefPtr<AudioNode> input = mInputNodes[i].mInputNode;
     mInputNodes.RemoveElementAt(i);
     input->mOutputNodes.RemoveElement(this);
   }
 
   while (!mOutputNodes.IsEmpty()) {
-    uint32_t i = mOutputNodes.Length() - 1;
+    size_t i = mOutputNodes.Length() - 1;
     nsRefPtr<AudioNode> output = mOutputNodes[i].forget();
     mOutputNodes.RemoveElementAt(i);
-    uint32_t inputIndex = FindIndexOfNode(output->mInputNodes, this);
+    size_t inputIndex = FindIndexOfNode(output->mInputNodes, this);
     // It doesn't matter which one we remove, since we're going to remove all
     // entries for this node anyway.
     output->mInputNodes.RemoveElementAt(inputIndex);
   }
 
   while (!mOutputParams.IsEmpty()) {
-    uint32_t i = mOutputParams.Length() - 1;
+    size_t i = mOutputParams.Length() - 1;
     nsRefPtr<AudioParam> output = mOutputParams[i].forget();
     mOutputParams.RemoveElementAt(i);
-    uint32_t inputIndex = FindIndexOfNode(output->InputNodes(), this);
+    size_t inputIndex = FindIndexOfNode(output->InputNodes(), this);
     // It doesn't matter which one we remove, since we're going to remove all
     // entries for this node anyway.
     output->RemoveInputNode(inputIndex);

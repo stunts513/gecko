@@ -40,7 +40,7 @@ public:
   }
 };
 
-NS_IMPL_ISUPPORTS1(CellBroadcast::Listener, nsICellBroadcastListener)
+NS_IMPL_ISUPPORTS(CellBroadcast::Listener, nsICellBroadcastListener)
 
 /**
  * CellBroadcast Implementation.
@@ -84,10 +84,9 @@ CellBroadcast::~CellBroadcast()
 }
 
 JSObject*
-CellBroadcast::WrapObject(JSContext* aCx,
-                          JS::Handle<JSObject*> aScope)
+CellBroadcast::WrapObject(JSContext* aCx)
 {
-  return MozCellBroadcastBinding::Wrap(aCx, aScope, this);
+  return MozCellBroadcastBinding::Wrap(aCx, this);
 }
 
 // Forwarded nsICellBroadcastListener methods

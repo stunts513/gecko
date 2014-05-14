@@ -42,6 +42,7 @@ public class BrowserContract {
     public static final String PARAM_INSERT_IF_NEEDED = "insert_if_needed";
     public static final String PARAM_INCREMENT_VISITS = "increment_visits";
     public static final String PARAM_EXPIRE_PRIORITY = "priority";
+    public static final String PARAM_DATASET_ID = "dataset_id";
 
     static public enum ExpirePriority {
         NORMAL,
@@ -346,6 +347,9 @@ public class BrowserContract {
         public static final String IMAGE_URL = "image_url";
         public static final String CREATED = "created";
         public static final String FILTER = "filter";
+
+        public static final String[] DEFAULT_PROJECTION =
+            new String[] { _ID, DATASET_ID, URL, TITLE, DESCRIPTION, IMAGE_URL, FILTER };
     }
 
     /*
@@ -402,7 +406,7 @@ public class BrowserContract {
         public static final String EXCERPT = "excerpt";
         public static final String READ = "read";
         public static final String LENGTH = "length";
-        public static final String DEFAULT_SORT_ORDER = _ID + " DESC";
+        public static final String DEFAULT_SORT_ORDER = DATE_MODIFIED + " DESC";
         public static final String[] DEFAULT_PROJECTION = new String[] { _ID, URL, TITLE, EXCERPT, LENGTH };
 
         // Minimum fields required to create a reading list item.
@@ -411,4 +415,30 @@ public class BrowserContract {
         public static final String TABLE_NAME = "reading_list";
     }
 
+    @RobocopTarget
+    public static final class TopSites implements CommonColumns, URLColumns {
+        private TopSites() {}
+
+        public static final int TYPE_BLANK = 0;
+        public static final int TYPE_TOP = 1;
+        public static final int TYPE_PINNED = 2;
+        public static final int TYPE_SUGGESTED = 3;
+
+        public static final String BOOKMARK_ID = "bookmark_id";
+        public static final String HISTORY_ID = "history_id";
+        public static final String DISPLAY = "display";
+
+        public static final String IMAGE_URL = "image_url";
+        public static final String BG_COLOR = "bg_color";
+
+        public static final String TYPE = "type";
+    }
+
+    @RobocopTarget
+    public static final class SuggestedSites implements CommonColumns, URLColumns {
+        private SuggestedSites() {}
+
+        public static final String IMAGE_URL = "image_url";
+        public static final String BG_COLOR = "bg_color";
+    }
 }

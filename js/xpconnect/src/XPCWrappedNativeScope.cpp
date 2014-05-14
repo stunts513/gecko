@@ -1,6 +1,6 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=8 sw=4 et tw=78:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* vim: set ts=8 sts=4 et sw=4 tw=99: */
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -78,8 +78,10 @@ XPCWrappedNativeScope::XPCWrappedNativeScope(JSContext *cx,
     // add ourselves to the scopes list
     {
         MOZ_ASSERT(aGlobal);
-        MOZ_ASSERT(js::GetObjectClass(aGlobal)->flags & (JSCLASS_PRIVATE_IS_NSISUPPORTS |
-                                                         JSCLASS_HAS_PRIVATE)); 
+        DebugOnly<const js::Class*> clasp = js::GetObjectClass(aGlobal);
+        MOZ_ASSERT(clasp->flags & (JSCLASS_PRIVATE_IS_NSISUPPORTS |
+                                   JSCLASS_HAS_PRIVATE) ||
+                   mozilla::dom::IsDOMClass(clasp));
 #ifdef DEBUG
         for (XPCWrappedNativeScope* cur = gScopes; cur; cur = cur->mNext)
             MOZ_ASSERT(aGlobal != cur->GetGlobalJSObjectPreserveColor(), "dup object");
@@ -135,7 +137,7 @@ XPCWrappedNativeScope::GetComponentsJSObject()
     AutoJSContext cx;
     if (!mComponents) {
         nsIPrincipal *p = GetPrincipal();
-        bool system = XPCWrapper::GetSecurityManager()->IsSystemPrincipal(p);
+        bool system = nsXPConnect::SecurityManager()->IsSystemPrincipal(p);
         mComponents = system ? new nsXPCComponents(this)
                              : new nsXPCComponentsBase(this);
     }
@@ -183,8 +185,8 @@ XPCWrappedNativeScope::AttachComponentsObject(JSContext* aCx)
     MOZ_ASSERT(js::IsObjectInContextCompartment(global, aCx));
 
     RootedId id(aCx, XPCJSRuntime::Get()->GetStringID(XPCJSRuntime::IDX_COMPONENTS));
-    return JS_DefinePropertyById(aCx, global, id, ObjectValue(*components),
-                                 nullptr, nullptr, JSPROP_PERMANENT | JSPROP_READONLY);
+    return JS_DefinePropertyById(aCx, global, id, components,
+                                 JSPROP_PERMANENT | JSPROP_READONLY);
 }
 
 JSObject*

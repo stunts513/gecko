@@ -50,10 +50,6 @@ class Shape;
 class WatchpointMap;
 class NestedScopeObject;
 
-namespace analyze {
-    class ScriptAnalysis;
-}
-
 namespace frontend {
     class BytecodeEmitter;
 }
@@ -184,7 +180,7 @@ class Bindings
     friend class BindingIter;
     friend class AliasedFormalIter;
 
-    HeapPtr<Shape> callObjShape_;
+    HeapPtrShape callObjShape_;
     uintptr_t bindingArrayAndFlag_;
     uint16_t numArgs_;
     uint16_t numBlockScoped_;
@@ -390,30 +386,32 @@ class ScriptSource
 {
     friend class SourceCompressionTask;
 
-    // A note on concurrency:
-    //
-    // The source may be compressed by a worker thread during parsing. (See
-    // SourceCompressionTask.) When compression is running in the background,
-    // ready() returns false. The compression thread touches the |data| union
-    // and |compressedLength_|. Therefore, it is not safe to read these members
-    // unless ready() is true. With that said, users of the public ScriptSource
-    // API should be fine.
+    uint32_t refs;
+
+    // Note: while ScriptSources may be compressed off thread, they are only
+    // modified by the main thread, and all members are always safe to access
+    // on the main thread.
+
+    // Indicate which field in the |data| union is active.
+    enum {
+        DataMissing,
+        DataUncompressed,
+        DataCompressed
+    } dataType;
 
     union {
-        // Before setSourceCopy or setSource are successfully called, this union
-        // has a nullptr pointer. When the script source is ready,
-        // compressedLength_ != 0 implies compressed holds the compressed data;
-        // otherwise, source holds the uncompressed source. There is a special
-        // pointer |emptySource| for source code for length 0.
-        //
-        // The only function allowed to malloc, realloc, or free the pointers in
-        // this union is adjustDataSize(). Don't do it elsewhere.
-        jschar *source;
-        unsigned char *compressed;
+        struct {
+            const jschar *chars;
+            bool ownsChars;
+        } uncompressed;
+
+        struct {
+            void *raw;
+            size_t nbytes;
+        } compressed;
     } data;
-    uint32_t refs;
+
     uint32_t length_;
-    uint32_t compressedLength_;
     char *filename_;
     jschar *displayURL_;
     jschar *sourceMapURL_;
@@ -450,14 +448,13 @@ class ScriptSource
     // possible to get source at all.
     bool sourceRetrievable_:1;
     bool argumentsNotIncluded_:1;
-    bool ready_:1;
     bool hasIntroductionOffset_:1;
 
   public:
     explicit ScriptSource()
       : refs(0),
+        dataType(DataMissing),
         length_(0),
-        compressedLength_(0),
         filename_(nullptr),
         displayURL_(nullptr),
         sourceMapURL_(nullptr),
@@ -467,29 +464,25 @@ class ScriptSource
         introductionType_(nullptr),
         sourceRetrievable_(false),
         argumentsNotIncluded_(false),
-        ready_(true),
         hasIntroductionOffset_(false)
     {
-        data.source = nullptr;
     }
+    ~ScriptSource();
     void incref() { refs++; }
     void decref() {
         JS_ASSERT(refs != 0);
         if (--refs == 0)
-            destroy();
+            js_delete(this);
     }
     bool initFromOptions(ExclusiveContext *cx, const ReadOnlyCompileOptions &options);
     bool setSourceCopy(ExclusiveContext *cx,
-                       const jschar *src,
-                       uint32_t length,
+                       JS::SourceBufferHolder &srcBuf,
                        bool argumentsNotIncluded,
                        SourceCompressionTask *tok);
-    void setSource(const jschar *src, size_t length);
-    bool ready() const { return ready_; }
     void setSourceRetrievable() { sourceRetrievable_ = true; }
     bool sourceRetrievable() const { return sourceRetrievable_; }
-    bool hasSourceData() const { return !ready() || !!data.source; }
-    uint32_t length() const {
+    bool hasSourceData() const { return dataType != DataMissing; }
+    size_t length() const {
         JS_ASSERT(hasSourceData());
         return length_;
     }
@@ -501,6 +494,30 @@ class ScriptSource
     JSFlatString *substring(JSContext *cx, uint32_t start, uint32_t stop);
     void addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf,
                                 JS::ScriptSourceInfo *info) const;
+
+    const jschar *uncompressedChars() const {
+        JS_ASSERT(dataType == DataUncompressed);
+        return data.uncompressed.chars;
+    }
+
+    bool ownsUncompressedChars() const {
+        JS_ASSERT(dataType == DataUncompressed);
+        return data.uncompressed.ownsChars;
+    }
+
+    void *compressedData() const {
+        JS_ASSERT(dataType == DataCompressed);
+        return data.compressed.raw;
+    }
+
+    size_t compressedBytes() const {
+        JS_ASSERT(dataType == DataCompressed);
+        return data.compressed.nbytes;
+    }
+
+    void setSource(const jschar *chars, size_t length, bool ownsChars = true);
+    void setCompressedSource(void *raw, size_t nbytes);
+    bool ensureOwnsSource(ExclusiveContext *cx);
 
     // XDR handling
     template <XDRMode mode>
@@ -546,13 +563,7 @@ class ScriptSource
     }
 
   private:
-    void destroy();
-    bool compressed() const { return compressedLength_ != 0; }
-    size_t computedSizeOfData() const {
-        return compressed() ? compressedLength_ : sizeof(jschar) * length_;
-    }
-    bool adjustDataSize(size_t nbytes);
-    const jschar *getOffThreadCompressionChars(ExclusiveContext *cx);
+    size_t computedSizeOfData() const;
 };
 
 class ScriptSourceHolder
@@ -1129,7 +1140,7 @@ class JSScript : public js::gc::BarrieredCell<JSScript>
     /*
      * As an optimization, even when argsHasLocalBinding, the function prologue
      * may not need to create an arguments object. This is determined by
-     * needsArgsObj which is set by ScriptAnalysis::analyzeSSA before running
+     * needsArgsObj which is set by AnalyzeArgumentsUsage before running
      * the script the first time. When !needsArgsObj, the prologue may simply
      * write MagicValue(JS_OPTIMIZED_ARGUMENTS) to 'arguments's slot and any
      * uses of 'arguments' will be guaranteed to handle this magic value.
@@ -1137,6 +1148,7 @@ class JSScript : public js::gc::BarrieredCell<JSScript>
      * that needsArgsObj is only called after the script has been analyzed.
      */
     bool analyzedArgsUsage() const { return !needsArgsAnalysis_; }
+    inline bool ensureHasAnalyzedArgsUsage(JSContext *cx);
     bool needsArgsObj() const {
         JS_ASSERT(analyzedArgsUsage());
         return needsArgsObj_;
@@ -1162,7 +1174,9 @@ class JSScript : public js::gc::BarrieredCell<JSScript>
     }
 
     bool hasIonScript() const {
-        return ion && ion != ION_DISABLED_SCRIPT && ion != ION_COMPILING_SCRIPT;
+        bool res = ion && ion != ION_DISABLED_SCRIPT && ion != ION_COMPILING_SCRIPT;
+        MOZ_ASSERT_IF(res, baseline);
+        return res;
     }
     bool canIonCompile() const {
         return ion != ION_DISABLED_SCRIPT;
@@ -1186,11 +1200,14 @@ class JSScript : public js::gc::BarrieredCell<JSScript>
         if (hasIonScript())
             js::jit::IonScript::writeBarrierPre(tenuredZone(), ion);
         ion = ionScript;
+        MOZ_ASSERT_IF(hasIonScript(), hasBaselineScript());
         updateBaselineOrIonRaw();
     }
 
     bool hasBaselineScript() const {
-        return baseline && baseline != BASELINE_DISABLED_SCRIPT;
+        bool res = baseline && baseline != BASELINE_DISABLED_SCRIPT;
+        MOZ_ASSERT_IF(!res, !ion || ion == ION_DISABLED_SCRIPT);
+        return res;
     }
     bool canBaselineCompile() const {
         return baseline != BASELINE_DISABLED_SCRIPT;
@@ -1307,19 +1324,6 @@ class JSScript : public js::gc::BarrieredCell<JSScript>
     /* Ensure the script has a TypeScript. */
     inline bool ensureHasTypes(JSContext *cx);
 
-    /*
-     * Ensure the script has bytecode analysis information. Performed when the
-     * script first runs, or first runs after a TypeScript GC purge.
-     */
-    inline bool ensureRanAnalysis(JSContext *cx);
-
-    /* Ensure the script has type inference analysis information. */
-    inline bool ensureRanInference(JSContext *cx);
-
-    inline bool hasAnalysis();
-    inline void clearAnalysis();
-    inline js::analyze::ScriptAnalysis *analysis();
-
     inline js::GlobalObject &global() const;
     js::GlobalObject &uninlinedGlobal() const;
 
@@ -1332,7 +1336,6 @@ class JSScript : public js::gc::BarrieredCell<JSScript>
 
   private:
     bool makeTypes(JSContext *cx);
-    bool makeAnalysis(JSContext *cx);
 
   public:
     uint32_t getUseCount() const {
@@ -1370,7 +1373,7 @@ class JSScript : public js::gc::BarrieredCell<JSScript>
     jssrcnote *notes() { return (jssrcnote *)(code() + length()); }
 
     bool hasArray(ArrayKind kind) {
-        return (hasArrayBits & (1 << kind));
+        return hasArrayBits & (1 << kind);
     }
     void setHasArray(ArrayKind kind) { hasArrayBits |= (1 << kind); }
     void cloneHasArray(JSScript *script) { hasArrayBits = script->hasArrayBits; }
@@ -1494,14 +1497,8 @@ class JSScript : public js::gc::BarrieredCell<JSScript>
     bool formalLivesInArgumentsObject(unsigned argSlot);
 
   private:
-    /*
-     * Recompile with or without single-stepping support, as directed
-     * by stepModeEnabled().
-     */
-    void recompileForStepMode(js::FreeOp *fop);
-
-    /* Attempt to change this->stepMode to |newValue|. */
-    bool tryNewStepMode(JSContext *cx, uint32_t newValue);
+    /* Change this->stepMode to |newValue|. */
+    void setNewStepMode(js::FreeOp *fop, uint32_t newValue);
 
     bool ensureHasDebugScript(JSContext *cx);
     js::DebugScript *debugScript();
@@ -1539,8 +1536,11 @@ class JSScript : public js::gc::BarrieredCell<JSScript>
      * the flag (set by setStepModeFlag) is set, then the script is in
      * single-step mode. (JSD uses an on/off-style interface; Debugger uses a
      * count-style interface.)
+     *
+     * Only incrementing is fallible, as it could allocate a DebugScript.
      */
-    bool changeStepModeCount(JSContext *cx, int delta);
+    bool incrementStepModeCount(JSContext *cx);
+    void decrementStepModeCount(js::FreeOp *fop);
 
     bool stepModeEnabled() { return hasDebugScript_ && !!debugScript()->stepMode; }
 
@@ -1926,21 +1926,6 @@ SweepScriptData(JSRuntime *rt);
 
 extern void
 FreeScriptData(JSRuntime *rt);
-
-struct ScriptAndCounts
-{
-    /* This structure is stored and marked from the JSRuntime. */
-    JSScript *script;
-    ScriptCounts scriptCounts;
-
-    PCCounts &getPCCounts(jsbytecode *pc) const {
-        return scriptCounts.pcCountsVector[script->pcToOffset(pc)];
-    }
-
-    jit::IonScriptCounts *getIonCounts() const {
-        return scriptCounts.ionCounts;
-    }
-};
 
 struct GSNCache;
 

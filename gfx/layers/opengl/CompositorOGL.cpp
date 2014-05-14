@@ -14,7 +14,6 @@
 #include "LayerScope.h"                 // for LayerScope
 #include "gfx2DGlue.h"                  // for ThebesFilter
 #include "gfx3DMatrix.h"                // for gfx3DMatrix
-#include "gfxASurface.h"                // for gfxASurface, etc
 #include "gfxCrashReporterUtils.h"      // for ScopedGfxFeatureReporter
 #include "gfxImageSurface.h"            // for gfxImageSurface
 #include "gfxMatrix.h"                  // for gfxMatrix
@@ -45,6 +44,7 @@
 #include "ScopedGLHelpers.h"
 #include "GLReadTexImageHelper.h"
 #include "TiledLayerBuffer.h"           // for TiledLayerComposer
+#include "HeapCopyOfStackArray.h"
 
 #if MOZ_ANDROID_OMTC
 #include "TexturePoolOGL.h"
@@ -373,7 +373,11 @@ CompositorOGL::Initialize()
     /* Then quad texcoords */
     0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f,
   };
-  mGLContext->fBufferData(LOCAL_GL_ARRAY_BUFFER, sizeof(vertices), vertices, LOCAL_GL_STATIC_DRAW);
+  HeapCopyOfStackArray<GLfloat> verticesOnHeap(vertices);
+  mGLContext->fBufferData(LOCAL_GL_ARRAY_BUFFER,
+                          verticesOnHeap.ByteLength(),
+                          verticesOnHeap.Data(),
+                          LOCAL_GL_STATIC_DRAW);
   mGLContext->fBindBuffer(LOCAL_GL_ARRAY_BUFFER, 0);
 
   nsCOMPtr<nsIConsoleService>
@@ -799,18 +803,20 @@ CompositorOGL::CreateFBOWithTexture(const IntRect& aRect, bool aCopyFromSource,
 }
 
 ShaderConfigOGL
-CompositorOGL::GetShaderConfigFor(Effect *aEffect, MaskType aMask) const
+CompositorOGL::GetShaderConfigFor(Effect *aEffect,
+                                  MaskType aMask,
+                                  gfx::CompositionOp aOp) const
 {
   ShaderConfigOGL config;
 
   switch(aEffect->mType) {
-  case EFFECT_SOLID_COLOR:
+  case EffectTypes::SOLID_COLOR:
     config.SetRenderColor(true);
     break;
-  case EFFECT_YCBCR:
+  case EffectTypes::YCBCR:
     config.SetYCbCr(true);
     break;
-  case EFFECT_COMPONENT_ALPHA:
+  case EffectTypes::COMPONENT_ALPHA:
   {
     config.SetComponentAlpha(true);
     EffectComponentAlpha* effectComponentAlpha =
@@ -820,12 +826,12 @@ CompositorOGL::GetShaderConfigFor(Effect *aEffect, MaskType aMask) const
                      format == gfx::SurfaceFormat::B8G8R8X8);
     break;
   }
-  case EFFECT_RENDER_TARGET:
+  case EffectTypes::RENDER_TARGET:
     config.SetTextureTarget(mFBOTextureTarget);
     break;
   default:
   {
-    MOZ_ASSERT(aEffect->mType == EFFECT_RGB);
+    MOZ_ASSERT(aEffect->mType == EffectTypes::RGB);
     TexturedEffect* texturedEffect =
         static_cast<TexturedEffect*>(aEffect);
     TextureSourceOGL* source = texturedEffect->mTexture->AsSourceOGL();
@@ -837,11 +843,17 @@ CompositorOGL::GetShaderConfigFor(Effect *aEffect, MaskType aMask) const
                   source->GetFormat() == gfx::SurfaceFormat::R5G6B5);
     config = ShaderConfigFromTargetAndFormat(source->GetTextureTarget(),
                                              source->GetFormat());
+    if (aOp == gfx::CompositionOp::OP_MULTIPLY &&
+        !texturedEffect->mPremultiplied) {
+      // We can do these blend modes just using glBlendFunc but we need the data
+      // to be premultiplied first.
+      config.SetPremultiply(true);
+    }
     break;
   }
   }
-  config.SetMask2D(aMask == Mask2d);
-  config.SetMask3D(aMask == Mask3d);
+  config.SetMask2D(aMask == MaskType::Mask2d);
+  config.SetMask3D(aMask == MaskType::Mask3d);
   return config;
 }
 
@@ -882,6 +894,40 @@ CompositorOGL::DrawLines(const std::vector<gfx::Point>& aLines, const gfx::Rect&
   }
 }
 
+static bool SetBlendMode(GLContext* aGL, gfx::CompositionOp aBlendMode, bool aIsPremultiplied = true)
+{
+  if (aBlendMode == gfx::CompositionOp::OP_OVER && aIsPremultiplied) {
+    return false;
+  }
+
+  GLenum srcBlend;
+  GLenum dstBlend;
+
+  switch (aBlendMode) {
+    case gfx::CompositionOp::OP_OVER:
+      MOZ_ASSERT(!aIsPremultiplied);
+      srcBlend = LOCAL_GL_SRC_ALPHA;
+      dstBlend = LOCAL_GL_ONE_MINUS_SRC_ALPHA;
+      break;
+    case gfx::CompositionOp::OP_SCREEN:
+      srcBlend = aIsPremultiplied ? LOCAL_GL_ONE : LOCAL_GL_SRC_ALPHA;
+      dstBlend = LOCAL_GL_ONE_MINUS_SRC_COLOR;
+      break;
+    case gfx::CompositionOp::OP_MULTIPLY:
+      // If the source data was un-premultiplied we should have already
+      // asked the fragment shader to fix that.
+      srcBlend = LOCAL_GL_DST_COLOR;
+      dstBlend = LOCAL_GL_ONE_MINUS_SRC_ALPHA;
+      break;
+    default:
+      MOZ_ASSERT(0, "Unsupported blend mode!");
+  }
+
+  aGL->fBlendFuncSeparate(srcBlend, dstBlend,
+                          LOCAL_GL_ONE, LOCAL_GL_ONE);
+  return true;
+}
+
 void
 CompositorOGL::DrawQuadInternal(const Rect& aRect,
                                 const Rect& aClipRect,
@@ -910,8 +956,8 @@ CompositorOGL::DrawQuadInternal(const Rect& aRect,
   EffectMask* effectMask;
   TextureSourceOGL* sourceMask = nullptr;
   gfx::Matrix4x4 maskQuadTransform;
-  if (aEffectChain.mSecondaryEffects[EFFECT_MASK]) {
-    effectMask = static_cast<EffectMask*>(aEffectChain.mSecondaryEffects[EFFECT_MASK].get());
+  if (aEffectChain.mSecondaryEffects[EffectTypes::MASK]) {
+    effectMask = static_cast<EffectMask*>(aEffectChain.mSecondaryEffects[EffectTypes::MASK].get());
     sourceMask = effectMask->mMaskTexture->AsSourceOGL();
 
     // NS_ASSERTION(textureMask->IsAlpha(),
@@ -933,10 +979,10 @@ CompositorOGL::DrawQuadInternal(const Rect& aRect,
     maskQuadTransform._42 = float(-bounds.y)/bounds.height;
 
     maskType = effectMask->mIs3D
-                 ? Mask3d
-                 : Mask2d;
+                 ? MaskType::Mask3d
+                 : MaskType::Mask2d;
   } else {
-    maskType = MaskNone;
+    maskType = MaskType::MaskNone;
   }
 
   mPixelsFilled += aRect.width * aRect.height;
@@ -944,7 +990,7 @@ CompositorOGL::DrawQuadInternal(const Rect& aRect,
   // Determine the color if this is a color shader and fold the opacity into
   // the color since color shaders don't have an opacity uniform.
   Color color;
-  if (aEffectChain.mPrimaryEffect->mType == EFFECT_SOLID_COLOR) {
+  if (aEffectChain.mPrimaryEffect->mType == EffectTypes::SOLID_COLOR) {
     EffectSolidColor* effectSolidColor =
       static_cast<EffectSolidColor*>(aEffectChain.mPrimaryEffect.get());
     color = effectSolidColor->mColor;
@@ -959,7 +1005,14 @@ CompositorOGL::DrawQuadInternal(const Rect& aRect,
     aOpacity = 1.f;
   }
 
-  ShaderConfigOGL config = GetShaderConfigFor(aEffectChain.mPrimaryEffect, maskType);
+  gfx::CompositionOp blendMode = gfx::CompositionOp::OP_OVER;
+  if (aEffectChain.mSecondaryEffects[EffectTypes::BLEND_MODE]) {
+    EffectBlendMode *blendEffect =
+      static_cast<EffectBlendMode*>(aEffectChain.mSecondaryEffects[EffectTypes::BLEND_MODE].get());
+    blendMode = blendEffect->mBlendMode;
+  }
+
+  ShaderConfigOGL config = GetShaderConfigFor(aEffectChain.mPrimaryEffect, maskType, blendMode);
   config.SetOpacity(aOpacity != 1.f);
   ShaderProgramOGL *program = GetShaderProgramFor(config);
   program->Activate();
@@ -978,27 +1031,28 @@ CompositorOGL::DrawQuadInternal(const Rect& aRect,
     program->SetTexCoordMultiplier(source->GetSize().width, source->GetSize().height);
   }
 
+  bool didSetBlendMode = false;
+
   switch (aEffectChain.mPrimaryEffect->mType) {
-    case EFFECT_SOLID_COLOR: {
+    case EffectTypes::SOLID_COLOR: {
       program->SetRenderColor(color);
 
-      if (maskType != MaskNone) {
+      if (maskType != MaskType::MaskNone) {
         BindMaskForProgram(program, sourceMask, LOCAL_GL_TEXTURE0, maskQuadTransform);
       }
+
+      didSetBlendMode = SetBlendMode(gl(), blendMode);
 
       BindAndDrawQuad(program, aDrawMode);
     }
     break;
 
-  case EFFECT_RGB: {
+  case EffectTypes::RGB: {
       TexturedEffect* texturedEffect =
           static_cast<TexturedEffect*>(aEffectChain.mPrimaryEffect.get());
       TextureSource *source = texturedEffect->mTexture;
 
-      if (!texturedEffect->mPremultiplied) {
-        mGLContext->fBlendFuncSeparate(LOCAL_GL_SRC_ALPHA, LOCAL_GL_ONE_MINUS_SRC_ALPHA,
-                                       LOCAL_GL_ONE, LOCAL_GL_ONE);
-      }
+      didSetBlendMode = SetBlendMode(gl(), blendMode, texturedEffect->mPremultiplied);
 
       gfx::Filter filter = texturedEffect->mFilter;
       gfx3DMatrix textureTransform;
@@ -1020,20 +1074,15 @@ CompositorOGL::DrawQuadInternal(const Rect& aRect,
 
       program->SetTextureUnit(0);
 
-      if (maskType != MaskNone) {
+      if (maskType != MaskType::MaskNone) {
         BindMaskForProgram(program, sourceMask, LOCAL_GL_TEXTURE1, maskQuadTransform);
       }
 
       BindAndDrawQuadWithTextureRect(program, textureTransform,
                                      texturedEffect->mTextureCoords, source);
-
-      if (!texturedEffect->mPremultiplied) {
-        mGLContext->fBlendFuncSeparate(LOCAL_GL_ONE, LOCAL_GL_ONE_MINUS_SRC_ALPHA,
-                                       LOCAL_GL_ONE, LOCAL_GL_ONE);
-      }
     }
     break;
-  case EFFECT_YCBCR: {
+  case EffectTypes::YCBCR: {
       EffectYCbCr* effectYCbCr =
         static_cast<EffectYCbCr*>(aEffectChain.mPrimaryEffect.get());
       TextureSource* sourceYCbCr = effectYCbCr->mTexture;
@@ -1053,16 +1102,17 @@ CompositorOGL::DrawQuadInternal(const Rect& aRect,
 
       program->SetYCbCrTextureUnits(Y, Cb, Cr);
 
-      if (maskType != MaskNone) {
+      if (maskType != MaskType::MaskNone) {
         BindMaskForProgram(program, sourceMask, LOCAL_GL_TEXTURE3, maskQuadTransform);
       }
+      didSetBlendMode = SetBlendMode(gl(), blendMode);
       BindAndDrawQuadWithTextureRect(program,
                                      gfx3DMatrix(),
                                      effectYCbCr->mTextureCoords,
                                      sourceYCbCr->GetSubSource(Y));
     }
     break;
-  case EFFECT_RENDER_TARGET: {
+  case EffectTypes::RENDER_TARGET: {
       EffectRenderTarget* effectRenderTarget =
         static_cast<EffectRenderTarget*>(aEffectChain.mPrimaryEffect.get());
       RefPtr<CompositingRenderTargetOGL> surface
@@ -1078,7 +1128,7 @@ CompositorOGL::DrawQuadInternal(const Rect& aRect,
       program->SetTextureTransform(Matrix4x4::From2D(transform));
       program->SetTextureUnit(0);
 
-      if (maskType != MaskNone) {
+      if (maskType != MaskType::MaskNone) {
         sourceMask->BindTexture(LOCAL_GL_TEXTURE1, gfx::Filter::LINEAR);
         program->SetMaskTextureUnit(1);
         program->SetMaskLayerTransform(maskQuadTransform);
@@ -1092,11 +1142,13 @@ CompositorOGL::DrawQuadInternal(const Rect& aRect,
       // Drawing is always flipped, but when copying between surfaces we want to avoid
       // this. Pass true for the flip parameter to introduce a second flip
       // that cancels the other one out.
+      didSetBlendMode = SetBlendMode(gl(), blendMode);
       BindAndDrawQuad(program);
     }
     break;
-  case EFFECT_COMPONENT_ALPHA: {
+  case EffectTypes::COMPONENT_ALPHA: {
       MOZ_ASSERT(gfxPrefs::ComponentAlphaEnabled());
+      MOZ_ASSERT(blendMode == gfx::CompositionOp::OP_OVER, "Can't support blend modes with component alpha!");
       EffectComponentAlpha* effectComponentAlpha =
         static_cast<EffectComponentAlpha*>(aEffectChain.mPrimaryEffect.get());
       TextureSourceOGL* sourceOnWhite = effectComponentAlpha->mOnWhite->AsSourceOGL();
@@ -1115,7 +1167,7 @@ CompositorOGL::DrawQuadInternal(const Rect& aRect,
       program->SetWhiteTextureUnit(1);
       program->SetTextureTransform(gfx::Matrix4x4());
 
-      if (maskType != MaskNone) {
+      if (maskType != MaskType::MaskNone) {
         BindMaskForProgram(program, sourceMask, LOCAL_GL_TEXTURE2, maskQuadTransform);
       }
       // Pass 1.
@@ -1143,6 +1195,11 @@ CompositorOGL::DrawQuadInternal(const Rect& aRect,
   default:
     MOZ_ASSERT(false, "Unhandled effect type");
     break;
+  }
+
+  if (didSetBlendMode) {
+    gl()->fBlendFuncSeparate(LOCAL_GL_ONE, LOCAL_GL_ONE_MINUS_SRC_ALPHA,
+                             LOCAL_GL_ONE, LOCAL_GL_ONE);
   }
 
   // in case rendering has used some other GL context
@@ -1329,16 +1386,7 @@ CompositorOGL::CopyToTarget(DrawTarget *aTarget, const gfx::Matrix& aTransform)
   RefPtr<DataSourceSurface> source =
         Factory::CreateDataSourceSurface(rect.Size(), gfx::SurfaceFormat::B8G8R8A8);
 
-  DataSourceSurface::MappedSurface map;
-  source->Map(DataSourceSurface::MapType::WRITE, &map);
-  // XXX we should do this properly one day without using the gfxImageSurface
-  nsRefPtr<gfxImageSurface> surf =
-    new gfxImageSurface(map.mData,
-                        gfxIntSize(width, height),
-                        map.mStride,
-                        gfxImageFormat::ARGB32);
-  ReadPixelsIntoImageSurface(mGLContext, surf);
-  source->Unmap();
+  ReadPixelsIntoDataSurface(mGLContext, source);
 
   // Map from GL space to Cairo space and reverse the world transform.
   Matrix glToCairoTransform = aTransform;

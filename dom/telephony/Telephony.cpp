@@ -30,14 +30,6 @@ using namespace mozilla::dom;
 using mozilla::ErrorResult;
 using mozilla::dom::telephony::kOutgoingPlaceholderCallIndex;
 
-namespace {
-
-typedef nsAutoTArray<Telephony*, 2> TelephonyList;
-
-TelephonyList* gTelephonyList;
-
-} // anonymous namespace
-
 class Telephony::Listener : public nsITelephonyListener
 {
   Telephony* mTelephony;
@@ -121,26 +113,11 @@ public:
 Telephony::Telephony(nsPIDOMWindow* aOwner)
   : DOMEventTargetHelper(aOwner), mActiveCall(nullptr), mEnumerated(false)
 {
-  if (!gTelephonyList) {
-    gTelephonyList = new TelephonyList();
-  }
-
-  gTelephonyList->AppendElement(this);
 }
 
 Telephony::~Telephony()
 {
   Shutdown();
-
-  NS_ASSERTION(gTelephonyList, "This should never be null!");
-  NS_ASSERTION(gTelephonyList->Contains(this), "Should be in the list!");
-
-  if (gTelephonyList->Length() == 1) {
-    delete gTelephonyList;
-    gTelephonyList = nullptr;
-  } else {
-    gTelephonyList->RemoveElement(this);
-  }
 }
 
 void
@@ -159,9 +136,9 @@ Telephony::Shutdown()
 }
 
 JSObject*
-Telephony::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+Telephony::WrapObject(JSContext* aCx)
 {
-  return TelephonyBinding::Wrap(aCx, aScope, this);
+  return TelephonyBinding::Wrap(aCx, this);
 }
 
 // static
@@ -402,8 +379,8 @@ NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
 NS_IMPL_ADDREF_INHERITED(Telephony, DOMEventTargetHelper)
 NS_IMPL_RELEASE_INHERITED(Telephony, DOMEventTargetHelper)
 
-NS_IMPL_ISUPPORTS1(Telephony::Listener, nsITelephonyListener)
-NS_IMPL_ISUPPORTS1(Telephony::Callback, nsITelephonyCallback)
+NS_IMPL_ISUPPORTS(Telephony::Listener, nsITelephonyListener)
+NS_IMPL_ISUPPORTS(Telephony::Callback, nsITelephonyCallback)
 
 // Telephony WebIDL
 
@@ -532,9 +509,6 @@ Telephony::CallStateChanged(uint32_t aServiceId, uint32_t aCallIndex,
                             bool aIsActive, bool aIsOutgoing, bool aIsEmergency,
                             bool aIsConference, bool aIsSwitchable, bool aIsMergeable)
 {
-  NS_ASSERTION(aCallIndex != kOutgoingPlaceholderCallIndex,
-               "This should never happen!");
-
   nsRefPtr<TelephonyCall> modifiedCall
       = GetCallFromEverywhere(aServiceId, aCallIndex);
 

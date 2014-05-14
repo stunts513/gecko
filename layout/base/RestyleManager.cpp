@@ -350,13 +350,20 @@ RestyleManager::RecomputePosition(nsIFrame* aFrame)
 
     // Move the frame
     if (display->mPosition == NS_STYLE_POSITION_STICKY) {
-      // Update sticky positioning for an entire element at once when
-      // RecomputePosition is called with the first continuation in a chain.
-      StickyScrollContainer::ComputeStickyOffsets(aFrame);
+      // Update sticky positioning for an entire element at once, starting with
+      // the first continuation or ib-split sibling.
+      // It's rare that the frame we already have isn't already the first
+      // continuation or ib-split sibling, but it can happen when styles differ
+      // across continuations such as ::first-line or ::first-letter, and in
+      // those cases we will generally (but maybe not always) do the work twice.
+      nsIFrame *firstContinuation =
+        nsLayoutUtils::FirstContinuationOrIBSplitSibling(aFrame);
+
+      StickyScrollContainer::ComputeStickyOffsets(firstContinuation);
       StickyScrollContainer* ssc =
-        StickyScrollContainer::GetStickyScrollContainerForFrame(aFrame);
+        StickyScrollContainer::GetStickyScrollContainerForFrame(firstContinuation);
       if (ssc) {
-        ssc->PositionContinuations(aFrame);
+        ssc->PositionContinuations(firstContinuation);
       }
     } else {
       MOZ_ASSERT(NS_STYLE_POSITION_RELATIVE == display->mPosition,
@@ -389,8 +396,8 @@ RestyleManager::RecomputePosition(nsIFrame* aFrame)
   // the frame, and then get the offsets and size from it. If the frame's size
   // doesn't need to change, we can simply update the frame position. Otherwise
   // we fall back to a reflow.
-  nsRefPtr<nsRenderingContext> rc = aFrame->PresContext()->GetPresShell()->
-    GetReferenceRenderingContext();
+  nsRefPtr<nsRenderingContext> rc =
+    aFrame->PresContext()->PresShell()->CreateReferenceRenderingContext();
 
   // Construct a bogus parent reflow state so that there's a usable
   // containing block reflow state.
@@ -472,13 +479,13 @@ RestyleManager::RecomputePosition(nsIFrame* aFrame)
   return false;
 }
 
-nsresult
+void
 RestyleManager::StyleChangeReflow(nsIFrame* aFrame, nsChangeHint aHint)
 {
   // If the frame hasn't even received an initial reflow, then don't
   // send it a style-change reflow!
   if (aFrame->GetStateBits() & NS_FRAME_FIRST_REFLOW)
-    return NS_OK;
+    return;
 
   nsIPresShell::IntrinsicDirty dirtyType;
   if (aHint & nsChangeHint_ClearDescendantIntrinsics) {
@@ -503,7 +510,7 @@ RestyleManager::StyleChangeReflow(nsIFrame* aFrame, nsChangeHint aHint)
     aFrame = nsLayoutUtils::GetNextContinuationOrIBSplitSibling(aFrame);
   } while (aFrame);
 
-  return NS_OK;
+  return;
 }
 
 NS_DECLARE_FRAME_PROPERTY(ChangeListProperty, nullptr)
@@ -687,7 +694,15 @@ RestyleManager::ProcessRestyledFrames(nsStyleChangeList& aChangeList)
         // FinishAndStoreOverflow on it:
         hint = NS_SubtractHint(hint,
                  NS_CombineHint(nsChangeHint_UpdateOverflow,
-                                nsChangeHint_ChildrenOnlyTransform));
+                   NS_CombineHint(nsChangeHint_ChildrenOnlyTransform,
+                                  nsChangeHint_UpdatePostTransformOverflow)));
+      }
+
+      if (!(frame->GetStateBits() & NS_FRAME_MAY_BE_TRANSFORMED)) {
+        // Frame can not be transformed, and thus a change in transform will
+        // have no effect and we should not use the
+        // nsChangeHint_UpdatePostTransformOverflow hint.
+        hint = NS_SubtractHint(hint, nsChangeHint_UpdatePostTransformOverflow);
       }
 
       if (hint & nsChangeHint_UpdateEffects) {
@@ -715,7 +730,10 @@ RestyleManager::ProcessRestyledFrames(nsStyleChangeList& aChangeList)
       NS_ASSERTION(!(hint & nsChangeHint_ChildrenOnlyTransform) ||
                    (hint & nsChangeHint_UpdateOverflow),
                    "nsChangeHint_UpdateOverflow should be passed too");
-      if ((hint & nsChangeHint_UpdateOverflow) && !didReflowThisFrame) {
+      if (!didReflowThisFrame &&
+          (hint & (nsChangeHint_UpdateOverflow |
+                   nsChangeHint_UpdatePostTransformOverflow))) {
+        OverflowChangedTracker::ChangeKind changeKind;
         if (hint & nsChangeHint_ChildrenOnlyTransform) {
           // The overflow areas of the child frames need to be updated:
           nsIFrame* hintFrame = GetFrameForChildrenOnlyTransformHint(frame);
@@ -733,7 +751,8 @@ RestyleManager::ProcessRestyledFrames(nsStyleChangeList& aChangeList)
             // updating overflows since that will happen when it's reflowed.
             if (!(childFrame->GetStateBits() &
                   (NS_FRAME_IS_DIRTY | NS_FRAME_HAS_DIRTY_CHILDREN))) {
-              mOverflowChangedTracker.AddFrame(childFrame);
+              mOverflowChangedTracker.AddFrame(childFrame,
+                           OverflowChangedTracker::CHILDREN_AND_PARENT_CHANGED);
             }
             NS_ASSERTION(!nsLayoutUtils::GetNextContinuationOrIBSplitSibling(childFrame),
                          "SVG frames should not have continuations "
@@ -746,9 +765,17 @@ RestyleManager::ProcessRestyledFrames(nsStyleChangeList& aChangeList)
         // overflows since that will happen when it's reflowed.
         if (!(frame->GetStateBits() &
               (NS_FRAME_IS_DIRTY | NS_FRAME_HAS_DIRTY_CHILDREN))) {
+          // If we have both nsChangeHint_UpdateOverflow and
+          // nsChangeHint_UpdatePostTransformOverflow, CHILDREN_AND_PARENT_CHANGED
+          // is selected as it is stronger.
+          if (hint & nsChangeHint_UpdateOverflow) {
+            changeKind = OverflowChangedTracker::CHILDREN_AND_PARENT_CHANGED;
+          } else {
+            changeKind = OverflowChangedTracker::TRANSFORM_CHANGED;
+          }
           for (nsIFrame *cont = frame; cont; cont =
                  nsLayoutUtils::GetNextContinuationOrIBSplitSibling(cont)) {
-            mOverflowChangedTracker.AddFrame(cont);
+            mOverflowChangedTracker.AddFrame(cont, changeKind);
           }
         }
       }
@@ -1391,6 +1418,10 @@ RestyleManager::ProcessPendingRestyles()
   NS_PRECONDITION(mPresContext->Document(), "No document?  Pshaw!");
   NS_PRECONDITION(!nsContentUtils::IsSafeToRunScript(),
                   "Missing a script blocker!");
+
+  // First do any queued-up frame creation.  (We should really
+  // merge this into the rest of the process, though; see bug 827239.)
+  mPresContext->FrameConstructor()->CreateNeededFrames();
 
   // Process non-animation restyles...
   NS_ABORT_IF_FALSE(!mPresContext->IsProcessingRestyles(),
@@ -2424,9 +2455,9 @@ ElementRestyler::RestyleSelf(nsIFrame* aSelf, nsRestyleHint aRestyleHint)
       NS_ASSERTION(aSelf->GetContent(),
                    "non pseudo-element frame without content node");
       // Skip flex-item style fixup for anonymous subtrees:
-      TreeMatchContext::AutoFlexItemStyleFixupSkipper
-        flexFixupSkipper(mTreeMatchContext,
-                         element->IsRootOfNativeAnonymousSubtree());
+      TreeMatchContext::AutoFlexOrGridItemStyleFixupSkipper
+        flexOrGridFixupSkipper(mTreeMatchContext,
+                               element->IsRootOfNativeAnonymousSubtree());
       newContext = styleSet->ResolveStyleFor(element, parentContext,
                                              mTreeMatchContext);
     }

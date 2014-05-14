@@ -67,7 +67,6 @@
 #include "nsDirectoryServiceUtils.h"
 #include "nsDirectoryServiceDefs.h"
 #include "mozISpellI18NManager.h"
-#include "nsICharsetConverterManager.h"
 #include "nsUnicharUtilCIID.h"
 #include "nsUnicharUtils.h"
 #include "nsCRT.h"
@@ -76,6 +75,9 @@
 #include <stdlib.h>
 #include "nsIPrefService.h"
 #include "nsIPrefBranch.h"
+#include "mozilla/dom/EncodingUtils.h"
+
+using mozilla::dom::EncodingUtils;
 
 static NS_DEFINE_CID(kUnicharUtilCID, NS_UNICHARUTIL_CID);
 
@@ -91,27 +93,19 @@ NS_INTERFACE_MAP_BEGIN(mozHunspell)
   NS_INTERFACE_MAP_ENTRIES_CYCLE_COLLECTION(mozHunspell)
 NS_INTERFACE_MAP_END
 
-NS_IMPL_CYCLE_COLLECTION_3(mozHunspell,
-                           mPersonalDictionary,
-                           mEncoder,
-                           mDecoder)
+NS_IMPL_CYCLE_COLLECTION(mozHunspell,
+                         mPersonalDictionary,
+                         mEncoder,
+                         mDecoder)
 
-int64_t mozHunspell::sAmount = 0;
-
-// WARNING: hunspell_alloc_hooks.h uses these two functions.
-void HunspellReportMemoryAllocation(void* ptr) {
-  mozHunspell::OnAlloc(ptr);
-}
-void HunspellReportMemoryDeallocation(void* ptr) {
-  mozHunspell::OnFree(ptr);
-}
+template<> mozilla::Atomic<size_t> mozilla::CountingAllocatorBase<HunspellAllocator>::sAmount(0);
 
 mozHunspell::mozHunspell()
   : mHunspell(nullptr)
 {
 #ifdef DEBUG
-  // There must be only one instance of this class, due to |sAmount|
-  // being static.
+  // There must be only one instance of this class: it reports memory based on
+  // a single static count in HunspellAllocator.
   static bool hasRun = false;
   MOZ_ASSERT(!hasRun);
   hasRun = true;
@@ -213,18 +207,13 @@ NS_IMETHODIMP mozHunspell::SetDictionary(const char16_t *aDictionary)
   if (!mHunspell)
     return NS_ERROR_OUT_OF_MEMORY;
 
-  nsCOMPtr<nsICharsetConverterManager> ccm =
-    do_GetService(NS_CHARSETCONVERTERMANAGER_CONTRACTID, &rv);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  rv = ccm->GetUnicodeDecoder(mHunspell->get_dic_encoding(),
-                              getter_AddRefs(mDecoder));
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  rv = ccm->GetUnicodeEncoder(mHunspell->get_dic_encoding(),
-                              getter_AddRefs(mEncoder));
-  NS_ENSURE_SUCCESS(rv, rv);
-
+  nsDependentCString label(mHunspell->get_dic_encoding());
+  nsAutoCString encoding;
+  if (!EncodingUtils::FindEncodingForLabelNoReplacement(label, encoding)) {
+    return NS_ERROR_UCONV_NOCONV;
+  }
+  mEncoder = EncodingUtils::EncoderForEncoding(encoding);
+  mDecoder = EncodingUtils::DecoderForEncoding(encoding);
 
   if (mEncoder)
     mEncoder->SetOutputErrorBehavior(mEncoder->kOnError_Signal, nullptr, '?');

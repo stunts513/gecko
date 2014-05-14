@@ -25,7 +25,7 @@ const { windowIterator } = require('./deprecated/window-utils');
 const { isBrowser, getFrames } = require('./window/utils');
 const { getTabs, getTabContentWindow, getTabForContentWindow,
         getURI: getTabURI } = require('./tabs/utils');
-const { ignoreWindow } = require('sdk/private-browsing/utils');
+const { ignoreWindow } = require('./private-browsing/utils');
 const { Style } = require("./stylesheet/style");
 const { attach, detach } = require("./content/mod");
 const { has, hasAny } = require("./util/array");
@@ -167,22 +167,8 @@ function onContentWindow({ subject: document }) {
   }
 }
 
-// Returns all tabs on all currently opened windows
-function getAllTabs() {
-  let tabs = [];
-  // Iterate over all chrome windows
-  for (let window in windowIterator()) {
-    if (!isBrowser(window))
-      continue;
-    tabs = tabs.concat(getTabs(window));
-  }
-  return tabs;
-}
-
 function applyOnExistingDocuments (mod) {
-  let tabs = getAllTabs();
-
-  tabs.forEach(function (tab) {
+  getTabs().forEach(tab => {
     // Fake a newly created document
     let window = getTabContentWindow(tab);
     if (has(mod.attachTo, "top") && mod.include.matchesAny(getTabURI(tab)))
@@ -201,6 +187,10 @@ function createWorker (mod, window) {
     contentScript: mod.contentScript,
     contentScriptFile: mod.contentScriptFile,
     contentScriptOptions: mod.contentScriptOptions,
+    // Bug 980468: Syntax errors from scripts can happen before the worker
+    // can set up an error handler. They are per-mod rather than per-worker
+    // so are best handled at the mod level.
+    onError: (e) => emit(mod, 'error', e)
   });
   workers.set(mod, worker);
   pipe(worker, mod);

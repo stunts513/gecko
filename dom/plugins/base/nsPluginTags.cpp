@@ -8,18 +8,18 @@
 #include "prlink.h"
 #include "plstr.h"
 #include "nsIPluginInstanceOwner.h"
-#include "nsServiceManagerUtils.h"
 #include "nsPluginsDir.h"
 #include "nsPluginHost.h"
 #include "nsIBlocklistService.h"
 #include "nsIUnicodeDecoder.h"
 #include "nsIPlatformCharset.h"
-#include "nsICharsetConverterManager.h"
 #include "nsPluginLogging.h"
 #include "nsNPAPIPlugin.h"
 #include "mozilla/Preferences.h"
 #include <cctype>
+#include "mozilla/dom/EncodingUtils.h"
 
+using mozilla::dom::EncodingUtils;
 using namespace mozilla;
 
 // These legacy flags are used in the plugin registry. The states are now
@@ -29,6 +29,9 @@ using namespace mozilla;
 #define NS_PLUGIN_FLAG_FROMCACHE    0x0004    // this plugintag info was loaded from cache
 // no longer used                   0x0008    // reuse only if regenerating pluginreg.dat
 #define NS_PLUGIN_FLAG_CLICKTOPLAY  0x0020    // this is a click-to-play plugin
+
+static const char kPrefDefaultEnabledState[] = "plugin.default.state";
+static const char kPrefDefaultEnabledStateXpi[] = "plugin.defaultXpi.state";
 
 inline char* new_str(const char* str)
 {
@@ -62,7 +65,9 @@ GetStatePrefNameForPlugin(nsPluginTag* aTag)
 
 /* nsPluginTag */
 
-nsPluginTag::nsPluginTag(nsPluginInfo* aPluginInfo, int64_t aLastModifiedTime)
+nsPluginTag::nsPluginTag(nsPluginInfo* aPluginInfo,
+                         int64_t aLastModifiedTime,
+                         bool fromExtension)
   : mName(aPluginInfo->fName),
     mDescription(aPluginInfo->fDescription),
     mLibrary(nullptr),
@@ -74,7 +79,8 @@ nsPluginTag::nsPluginTag(nsPluginInfo* aPluginInfo, int64_t aLastModifiedTime)
     mLastModifiedTime(aLastModifiedTime),
     mNiceFileName(),
     mCachedBlocklistState(nsIBlocklistService::STATE_NOT_BLOCKED),
-    mCachedBlocklistStateValid(false)
+    mCachedBlocklistStateValid(false),
+    mIsFromExtension(fromExtension)
 {
   InitMime(aPluginInfo->fMimeTypeArray,
            aPluginInfo->fMimeDescriptionArray,
@@ -94,6 +100,7 @@ nsPluginTag::nsPluginTag(const char* aName,
                          const char* const* aExtensions,
                          int32_t aVariants,
                          int64_t aLastModifiedTime,
+                         bool fromExtension,
                          bool aArgsAreUTF8)
   : mName(aName),
     mDescription(aDescription),
@@ -106,7 +113,8 @@ nsPluginTag::nsPluginTag(const char* aName,
     mLastModifiedTime(aLastModifiedTime),
     mNiceFileName(),
     mCachedBlocklistState(nsIBlocklistService::STATE_NOT_BLOCKED),
-    mCachedBlocklistStateValid(false)
+    mCachedBlocklistStateValid(false),
+    mIsFromExtension(fromExtension)
 {
   InitMime(aMimeTypes, aMimeDescriptions, aExtensions,
            static_cast<uint32_t>(aVariants));
@@ -120,7 +128,7 @@ nsPluginTag::~nsPluginTag()
   NS_ASSERTION(!mNext, "Risk of exhausting the stack space, bug 486349");
 }
 
-NS_IMPL_ISUPPORTS1(nsPluginTag, nsIPluginTag)
+NS_IMPL_ISUPPORTS(nsPluginTag, nsIPluginTag)
 
 void nsPluginTag::InitMime(const char* const* aMimeTypes,
                            const char* const* aMimeDescriptions,
@@ -228,17 +236,12 @@ nsresult nsPluginTag::EnsureMembersAreUTF8()
   do_GetService(NS_PLATFORMCHARSET_CONTRACTID, &rv);
   NS_ENSURE_SUCCESS(rv, rv);
   nsCOMPtr<nsIUnicodeDecoder> decoder;
-  nsCOMPtr<nsICharsetConverterManager> ccm =
-  do_GetService(NS_CHARSETCONVERTERMANAGER_CONTRACTID, &rv);
-  NS_ENSURE_SUCCESS(rv, rv);
-  
+
   nsAutoCString charset;
   rv = pcs->GetCharset(kPlatformCharsetSel_FileName, charset);
   NS_ENSURE_SUCCESS(rv, rv);
   if (!charset.LowerCaseEqualsLiteral("utf-8")) {
-    rv = ccm->GetUnicodeDecoderRaw(charset.get(), getter_AddRefs(decoder));
-    NS_ENSURE_SUCCESS(rv, rv);
-    
+    decoder = EncodingUtils::DecoderForEncoding(charset);
     ConvertToUTF8(decoder, mFileName);
     ConvertToUTF8(decoder, mFullPath);
   }
@@ -249,9 +252,7 @@ nsresult nsPluginTag::EnsureMembersAreUTF8()
   rv = pcs->GetCharset(kPlatformCharsetSel_PlainTextInFile, charset);
   NS_ENSURE_SUCCESS(rv, rv);
   if (!charset.LowerCaseEqualsLiteral("utf-8")) {
-    rv = ccm->GetUnicodeDecoderRaw(charset.get(), getter_AddRefs(decoder));
-    NS_ENSURE_SUCCESS(rv, rv);
-    
+    decoder = EncodingUtils::DecoderForEncoding(charset);
     ConvertToUTF8(decoder, mName);
     ConvertToUTF8(decoder, mDescription);
     for (uint32_t i = 0; i < mMimeDescriptions.Length(); ++i) {
@@ -365,8 +366,10 @@ nsPluginTag::GetEnabledState(uint32_t *aEnabledState) {
     return rv;
   }
 
-  enabledState = Preferences::GetInt("plugin.default.state",
-                                     nsIPluginTag::STATE_ENABLED);
+  const char* const pref = mIsFromExtension ? kPrefDefaultEnabledStateXpi
+                                            : kPrefDefaultEnabledState;
+
+  enabledState = Preferences::GetInt(pref, nsIPluginTag::STATE_ENABLED);
   if (enabledState >= nsIPluginTag::STATE_DISABLED &&
       enabledState <= nsIPluginTag::STATE_ENABLED) {
     *aEnabledState = (uint32_t)enabledState;
@@ -573,4 +576,9 @@ nsPluginTag::GetLastModifiedTime(PRTime* aLastModifiedTime)
   MOZ_ASSERT(aLastModifiedTime);
   *aLastModifiedTime = mLastModifiedTime;
   return NS_OK;
+}
+
+bool nsPluginTag::IsFromExtension() const
+{
+  return mIsFromExtension;
 }

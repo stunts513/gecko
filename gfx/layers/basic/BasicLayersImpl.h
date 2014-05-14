@@ -9,9 +9,7 @@
 #include "BasicImplData.h"              // for BasicImplData
 #include "BasicLayers.h"                // for BasicLayerManager
 #include "ReadbackLayer.h"              // for ReadbackLayer
-#include "gfxASurface.h"                // for gfxASurface
 #include "gfxContext.h"                 // for gfxContext, etc
-#include "ipc/AutoOpenSurface.h"        // for AutoOpenSurface
 #include "mozilla/Attributes.h"         // for MOZ_DELETE, MOZ_STACK_CLASS
 #include "mozilla/Maybe.h"              // for Maybe
 #include "nsAutoPtr.h"                  // for nsRefPtr
@@ -26,7 +24,6 @@ class DrawTarget;
 
 namespace layers {
 
-class AutoMaskData;
 class AutoMoz2DMaskData;
 class BasicContainerLayer;
 class Layer;
@@ -85,9 +82,9 @@ protected:
  * The transform for the layer will be put in aMaskData
  */
 bool
-GetMaskData(Layer* aMaskLayer, AutoMaskData* aMaskData);
-bool
-GetMaskData(Layer* aMaskLayer, AutoMoz2DMaskData* aMaskData);
+GetMaskData(Layer* aMaskLayer,
+            const gfx::Point& aDeviceOffset,
+            AutoMoz2DMaskData* aMaskData);
 
 // Paint the current source to a context using a mask, if present
 void
@@ -97,12 +94,31 @@ PaintWithMask(gfxContext* aContext, float aOpacity, Layer* aMaskLayer);
 void
 FillRectWithMask(gfx::DrawTarget* aDT,
                  const gfx::Rect& aRect,
+                 const gfx::Color& aColor,
+                 const gfx::DrawOptions& aOptions,
+                 gfx::SourceSurface* aMaskSource = nullptr,
+                 const gfx::Matrix* aMaskTransform = nullptr);
+void
+FillRectWithMask(gfx::DrawTarget* aDT,
+                 const gfx::Rect& aRect,
+                 gfx::SourceSurface* aSurface,
+                 gfx::Filter aFilter,
+                 const gfx::DrawOptions& aOptions,
+                 gfx::ExtendMode aExtendMode,
+                 gfx::SourceSurface* aMaskSource = nullptr,
+                 const gfx::Matrix* aMaskTransform = nullptr,
+                 const gfx::Matrix* aSurfaceTransform = nullptr);
+void
+FillRectWithMask(gfx::DrawTarget* aDT,
+                 const gfx::Point& aDeviceOffset,
+                 const gfx::Rect& aRect,
                  gfx::SourceSurface* aSurface,
                  gfx::Filter aFilter,
                  const gfx::DrawOptions& aOptions,
                  Layer* aMaskLayer);
 void
 FillRectWithMask(gfx::DrawTarget* aDT,
+                 const gfx::Point& aDeviceOffset,
                  const gfx::Rect& aRect,
                  const gfx::Color& aColor,
                  const gfx::DrawOptions& aOptions,

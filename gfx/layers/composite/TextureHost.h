@@ -26,7 +26,6 @@
 #include "nscore.h"                     // for nsACString
 #include "mozilla/layers/AtomicRefCountedWithFinalize.h"
 
-class gfxImageSurface;
 class gfxReusableSurfaceWrapper;
 struct nsIntPoint;
 struct nsIntSize;
@@ -42,6 +41,7 @@ namespace layers {
 class Compositor;
 class CompositableHost;
 class CompositableBackendSpecificData;
+class CompositableParentManager;
 class SurfaceDescriptor;
 class ISurfaceAllocator;
 class TextureHostOGL;
@@ -61,11 +61,11 @@ class TextureParent;
  * device texture, which forces us to split it in smaller parts.
  * Tiled Compositable is a different thing.
  */
-class TileIterator
+class BigImageIterator
 {
 public:
-  virtual void BeginTileIteration() = 0;
-  virtual void EndTileIteration() {};
+  virtual void BeginBigImageIteration() = 0;
+  virtual void EndBigImageIteration() {};
   virtual nsIntRect GetTileRect() = 0;
   virtual size_t GetTileCount() = 0;
   virtual bool NextTile() = 0;
@@ -80,12 +80,15 @@ public:
  *
  * This class is used on the compositor side.
  */
-class TextureSource : public RefCounted<TextureSource>
+class TextureSource
 {
-public:
-  MOZ_DECLARE_REFCOUNTED_TYPENAME(TextureSource)
-  TextureSource();
+protected:
   virtual ~TextureSource();
+
+public:
+  NS_INLINE_DECL_REFCOUNTING(TextureSource)
+
+  TextureSource();
 
   /**
    * Return the size of the texture in texels.
@@ -121,7 +124,7 @@ public:
    * Overload this if the TextureSource supports big textures that don't fit in
    * one device texture and must be tiled internally.
    */
-  virtual TileIterator* AsTileIterator() { return nullptr; }
+  virtual BigImageIterator* AsBigImageIterator() { return nullptr; }
 
   virtual void SetCompositableBackendSpecificData(CompositableBackendSpecificData* aBackendData);
 
@@ -390,7 +393,7 @@ public:
    * are for use with the managing IPDL protocols only (so that they can
    * implement AllocPTextureParent and DeallocPTextureParent).
    */
-  static PTextureParent* CreateIPDLActor(ISurfaceAllocator* aAllocator,
+  static PTextureParent* CreateIPDLActor(CompositableParentManager* aManager,
                                          const SurfaceDescriptor& aSharedData,
                                          TextureFlags aFlags);
   static bool DestroyIPDLActor(PTextureParent* actor);
@@ -412,6 +415,8 @@ public:
    * pointer.
    */
   PTextureParent* GetIPDLActor();
+
+  static void SendFenceHandleIfPresent(PTextureParent* actor);
 
   /**
    * Specific to B2G's Composer2D

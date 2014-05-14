@@ -120,7 +120,6 @@ public:
   MediaDecoderStateMachine(MediaDecoder* aDecoder,
                                MediaDecoderReader* aReader,
                                bool aRealTime = false);
-  ~MediaDecoderStateMachine();
 
   nsresult Init(MediaDecoderStateMachine* aCloneDonor);
 
@@ -242,7 +241,7 @@ public:
   }
 
   // Should be called by main thread.
-  bool HaveNextFrameData() const;
+  bool HaveNextFrameData();
 
   // Must be called with the decode monitor held.
   bool IsBuffering() const {
@@ -307,7 +306,7 @@ public:
   nsresult ScheduleStateMachine(int64_t aUsecs = 0);
 
   // Timer function to implement ScheduleStateMachine(aUsecs).
-  void TimeoutExpired();
+  nsresult TimeoutExpired(int aGeneration);
 
   // Set the media fragment end time. aEndTime is in microseconds.
   void SetFragmentEndTime(int64_t aEndTime);
@@ -359,10 +358,10 @@ public:
   void SetMinimizePrerollUntilPlaybackStarts();
 
 protected:
+  virtual ~MediaDecoderStateMachine();
 
   void AssertCurrentThreadInMonitor() const { mDecoder->GetReentrantMonitor().AssertCurrentThreadIn(); }
 
-private:
   class WakeDecoderRunnable : public nsRunnable {
   public:
     WakeDecoderRunnable(MediaDecoderStateMachine* aSM)
@@ -398,6 +397,9 @@ private:
   };
   WakeDecoderRunnable* GetWakeDecoderRunnable();
 
+  MediaQueue<AudioData>& AudioQueue() { return mReader->AudioQueue(); }
+  MediaQueue<VideoData>& VideoQueue() { return mReader->VideoQueue(); }
+
   // True if our buffers of decoded audio are not full, and we should
   // decode more.
   bool NeedToDecodeAudio();
@@ -414,24 +416,24 @@ private:
 
   // Returns true if we've got less than aAudioUsecs microseconds of decoded
   // and playable data. The decoder monitor must be held.
-  bool HasLowDecodedData(int64_t aAudioUsecs) const;
+  bool HasLowDecodedData(int64_t aAudioUsecs);
 
   // Returns true if we're running low on data which is not yet decoded.
   // The decoder monitor must be held.
-  bool HasLowUndecodedData() const;
+  bool HasLowUndecodedData();
 
   // Returns true if we have less than aUsecs of undecoded data available.
-  bool HasLowUndecodedData(double aUsecs) const;
+  bool HasLowUndecodedData(double aUsecs);
 
   // Returns the number of unplayed usecs of audio we've got decoded and/or
   // pushed to the hardware waiting to play. This is how much audio we can
   // play without having to run the audio decoder. The decoder monitor
   // must be held.
-  int64_t AudioDecodedUsecs() const;
+  int64_t AudioDecodedUsecs();
 
   // Returns true when there's decoded audio waiting to play.
   // The decoder monitor must be held.
-  bool HasFutureAudio() const;
+  bool HasFutureAudio();
 
   // Returns true if we recently exited "quick buffering" mode.
   bool JustExitedQuickBuffering();
@@ -731,7 +733,7 @@ private:
   // This is created and destroyed on the audio thread, while holding the
   // decoder monitor, so if this is used off the audio thread, you must
   // first acquire the decoder monitor and check that it is non-null.
-  nsAutoPtr<AudioStream> mAudioStream;
+  RefPtr<AudioStream> mAudioStream;
 
   // The reader, don't call its methods with the decoder monitor held.
   // This is created in the play state machine's constructor, and destroyed
@@ -930,6 +932,16 @@ private:
   // True is we are decoding a realtime stream, like a camera stream
   bool mRealTime;
 
+  // True if we've dispatched a task to the decode task queue to call
+  // ReadMetadata on the reader. We maintain a flag to ensure that we don't
+  // dispatch multiple tasks to re-do the metadata loading.
+  bool mDispatchedDecodeMetadataTask;
+
+  // True if we've dispatched a task to the decode task queue to call
+  // Seek on the reader. We maintain a flag to ensure that we don't
+  // dispatch multiple tasks to re-do the seek.
+  bool mDispatchedDecodeSeekTask;
+
   // Stores presentation info required for playback. The decoder monitor
   // must be held when accessing this.
   MediaInfo mInfo;
@@ -937,6 +949,9 @@ private:
   mozilla::MediaMetadataManager mMetadataManager;
 
   MediaDecoderOwner::NextFrameStatus mLastFrameStatus;
+
+  // The id of timer tasks, used to ignore tasks that are scheduled previously.
+  int mTimerId;
 };
 
 } // namespace mozilla;

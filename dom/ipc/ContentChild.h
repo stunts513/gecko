@@ -10,7 +10,12 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/dom/PContentChild.h"
 #include "mozilla/dom/ipc/Blob.h"
+#include "nsHashKeys.h"
+#include "nsIObserver.h"
+#include "nsTHashtable.h"
+
 #include "nsWeakPtr.h"
+
 
 struct ChromePackage;
 class nsIDOMBlob;
@@ -84,6 +89,11 @@ public:
     PCompositorChild*
     AllocPCompositorChild(mozilla::ipc::Transport* aTransport,
                           base::ProcessId aOtherProcess) MOZ_OVERRIDE;
+
+    PSharedBufferManagerChild*
+    AllocPSharedBufferManagerChild(mozilla::ipc::Transport* aTransport,
+                                    base::ProcessId aOtherProcess) MOZ_OVERRIDE;
+
     PImageBridgeChild*
     AllocPImageBridgeChild(mozilla::ipc::Transport* aTransport,
                            base::ProcessId aOtherProcess) MOZ_OVERRIDE;
@@ -132,13 +142,20 @@ public:
                                         const bool &minimizeMemoryUsage,
                                         const nsString &aDMDDumpIdent) MOZ_OVERRIDE;
 
+    virtual PCycleCollectWithLogsChild*
+    AllocPCycleCollectWithLogsChild(const bool& aDumpAllTraces,
+                                    const FileDescriptor& aGCLog,
+                                    const FileDescriptor& aCCLog) MOZ_OVERRIDE;
     virtual bool
-    RecvAudioChannelNotify() MOZ_OVERRIDE;
+    DeallocPCycleCollectWithLogsChild(PCycleCollectWithLogsChild* aActor) MOZ_OVERRIDE;
+    virtual bool
+    RecvPCycleCollectWithLogsConstructor(PCycleCollectWithLogsChild* aChild,
+                                         const bool& aDumpAllTraces,
+                                         const FileDescriptor& aGCLog,
+                                         const FileDescriptor& aCCLog) MOZ_OVERRIDE;
 
     virtual bool
-    RecvDumpGCAndCCLogsToFile(const nsString& aIdentifier,
-                              const bool& aDumpAllTraces,
-                              const bool& aDumpChildProcesses) MOZ_OVERRIDE;
+    RecvAudioChannelNotify() MOZ_OVERRIDE;
 
     virtual PTestShellChild* AllocPTestShellChild() MOZ_OVERRIDE;
     virtual bool DeallocPTestShellChild(PTestShellChild*) MOZ_OVERRIDE;
@@ -239,7 +256,8 @@ public:
                                       const int32_t& aMountGeneration,
                                       const bool& aIsMediaPresent,
                                       const bool& aIsSharing,
-                                      const bool& aIsFormatting) MOZ_OVERRIDE;
+                                      const bool& aIsFormatting,
+                                      const bool& aIsFake) MOZ_OVERRIDE;
 
     virtual bool RecvNuwaFork() MOZ_OVERRIDE;
 
@@ -297,6 +315,8 @@ private:
 
     InfallibleTArray<nsAutoPtr<AlertObserver> > mAlertObservers;
     nsRefPtr<ConsoleListener> mConsoleListener;
+
+    nsTHashtable<nsPtrHashKey<nsIObserver>> mIdleObservers;
 
     /**
      * An ID unique to the process containing our corresponding

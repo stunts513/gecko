@@ -676,13 +676,6 @@ const KTableValue nsCSSProps::kBackgroundAttachmentKTable[] = {
   eCSSKeyword_UNKNOWN,-1
 };
 
-const KTableValue nsCSSProps::kBackgroundInlinePolicyKTable[] = {
-  eCSSKeyword_each_box,     NS_STYLE_BG_INLINE_POLICY_EACH_BOX,
-  eCSSKeyword_continuous,   NS_STYLE_BG_INLINE_POLICY_CONTINUOUS,
-  eCSSKeyword_bounding_box, NS_STYLE_BG_INLINE_POLICY_BOUNDING_BOX,
-  eCSSKeyword_UNKNOWN,-1
-};
-
 static_assert(NS_STYLE_BG_CLIP_BORDER == NS_STYLE_BG_ORIGIN_BORDER &&
               NS_STYLE_BG_CLIP_PADDING == NS_STYLE_BG_ORIGIN_PADDING &&
               NS_STYLE_BG_CLIP_CONTENT == NS_STYLE_BG_ORIGIN_CONTENT,
@@ -793,6 +786,12 @@ const KTableValue nsCSSProps::kBorderWidthKTable[] = {
 const KTableValue nsCSSProps::kBoxPropSourceKTable[] = {
   eCSSKeyword_physical,     NS_BOXPROP_SOURCE_PHYSICAL,
   eCSSKeyword_logical,      NS_BOXPROP_SOURCE_LOGICAL,
+  eCSSKeyword_UNKNOWN,-1
+};
+
+const KTableValue nsCSSProps::kBoxDecorationBreakKTable[] = {
+  eCSSKeyword_slice, NS_STYLE_BOX_DECORATION_BREAK_SLICE,
+  eCSSKeyword_clone, NS_STYLE_BOX_DECORATION_BREAK_CLONE,
   eCSSKeyword_UNKNOWN,-1
 };
 
@@ -1239,9 +1238,9 @@ const KTableValue nsCSSProps::kFontWeightKTable[] = {
 };
 
 const KTableValue nsCSSProps::kGridAutoFlowKTable[] = {
-  eCSSKeyword_none, NS_STYLE_GRID_AUTO_FLOW_NONE,
-  eCSSKeyword_column, NS_STYLE_GRID_AUTO_FLOW_COLUMN,
+  eCSSKeyword_stack, NS_STYLE_GRID_AUTO_FLOW_STACK,
   eCSSKeyword_row, NS_STYLE_GRID_AUTO_FLOW_ROW,
+  eCSSKeyword_column, NS_STYLE_GRID_AUTO_FLOW_COLUMN,
   eCSSKeyword_dense, NS_STYLE_GRID_AUTO_FLOW_DENSE,
   eCSSKeyword_UNKNOWN,-1
 };
@@ -1570,10 +1569,10 @@ KTableValue nsCSSProps::kTextAlignLastKTable[] = {
   eCSSKeyword_UNKNOWN,-1
 };
 
-const KTableValue nsCSSProps::kTextCombineHorizontalKTable[] = {
-  eCSSKeyword_none, NS_STYLE_TEXT_COMBINE_HORIZ_NONE,
-  eCSSKeyword_all, NS_STYLE_TEXT_COMBINE_HORIZ_ALL,
-  eCSSKeyword_digits, NS_STYLE_TEXT_COMBINE_HORIZ_DIGITS_2,  // w/o number ==> 2
+const KTableValue nsCSSProps::kTextCombineUprightKTable[] = {
+  eCSSKeyword_none, NS_STYLE_TEXT_COMBINE_UPRIGHT_NONE,
+  eCSSKeyword_all, NS_STYLE_TEXT_COMBINE_UPRIGHT_ALL,
+  eCSSKeyword_digits, NS_STYLE_TEXT_COMBINE_UPRIGHT_DIGITS_2,  // w/o number ==> 2
   eCSSKeyword_UNKNOWN,-1
 };
 
@@ -1620,9 +1619,12 @@ const KTableValue nsCSSProps::kTextTransformKTable[] = {
 };
 
 const KTableValue nsCSSProps::kTouchActionKTable[] = {
-  eCSSKeyword_pan_x, NS_STYLE_TOUCH_ACTION_PAN_X,
-  eCSSKeyword_pan_y, NS_STYLE_TOUCH_ACTION_PAN_Y,
-  eCSSKeyword_UNKNOWN, -1
+  eCSSKeyword_none,         NS_STYLE_TOUCH_ACTION_NONE,
+  eCSSKeyword_auto,         NS_STYLE_TOUCH_ACTION_AUTO,
+  eCSSKeyword_pan_x,        NS_STYLE_TOUCH_ACTION_PAN_X,
+  eCSSKeyword_pan_y,        NS_STYLE_TOUCH_ACTION_PAN_Y,
+  eCSSKeyword_manipulation, NS_STYLE_TOUCH_ACTION_MANIPULATION,
+  eCSSKeyword_UNKNOWN,      -1
 };
 
 const KTableValue nsCSSProps::kTransitionTimingFunctionKTable[] = {

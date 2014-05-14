@@ -5,6 +5,7 @@
 
 package org.mozilla.gecko.gfx;
 
+import org.mozilla.gecko.AndroidGamepadManager;
 import org.mozilla.gecko.GeckoAccessibility;
 import org.mozilla.gecko.GeckoAppShell;
 import org.mozilla.gecko.GeckoEvent;
@@ -23,7 +24,6 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.PixelFormat;
 import android.graphics.Point;
 import android.graphics.PointF;
 import android.graphics.Rect;
@@ -64,7 +64,7 @@ public class LayerView extends FrameLayout implements Tabs.OnTabsChangedListener
     /* Must be a PAINT_xxx constant */
     private int mPaintState;
     private int mBackgroundColor;
-    private boolean mFullScreen;
+    private FullScreenState mFullScreenState;
 
     private SurfaceView mSurfaceView;
     private TextureView mTextureView;
@@ -109,6 +109,7 @@ public class LayerView extends FrameLayout implements Tabs.OnTabsChangedListener
         mGLController = GLController.getInstance(this);
         mPaintState = PAINT_START;
         mBackgroundColor = Color.WHITE;
+        mFullScreenState = FullScreenState.NONE;
 
         mTouchInterceptors = new ArrayList<TouchEventInterceptor>();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.ICE_CREAM_SANDWICH) {
@@ -292,6 +293,9 @@ public class LayerView extends FrameLayout implements Tabs.OnTabsChangedListener
 
     @Override
     public boolean onGenericMotionEvent(MotionEvent event) {
+        if (AndroidGamepadManager.handleMotionEvent(event)) {
+            return true;
+        }
         if (mPanZoomController != null && mPanZoomController.onMotionEvent(event)) {
             return true;
         }
@@ -325,12 +329,13 @@ public class LayerView extends FrameLayout implements Tabs.OnTabsChangedListener
 
             SurfaceHolder holder = mSurfaceView.getHolder();
             holder.addCallback(new SurfaceListener());
-            holder.setFormat(PixelFormat.RGB_565);
         }
     }
 
-    @RobocopTarget
-    public GeckoLayerClient getLayerClient() { return mLayerClient; }
+    // Don't expose GeckoLayerClient to things outside this package; only expose it as an Object
+    GeckoLayerClient getLayerClient() { return mLayerClient; }
+    public Object getLayerClientObject() { return mLayerClient; }
+
     public PanZoomController getPanZoomController() { return mPanZoomController; }
     public LayerMarginsAnimator getLayerMarginsAnimator() { return mMarginsAnimator; }
 
@@ -645,6 +650,21 @@ public class LayerView extends FrameLayout implements Tabs.OnTabsChangedListener
         }
     }
 
+    @RobocopTarget
+    public void addDrawListener(DrawListener listener) {
+        mLayerClient.addDrawListener(listener);
+    }
+
+    @RobocopTarget
+    public void removeDrawListener(DrawListener listener) {
+        mLayerClient.removeDrawListener(listener);
+    }
+
+    @RobocopTarget
+    public static interface DrawListener {
+        public void drawFinished();
+    }
+
     @Override
     public void setOverScrollMode(int overscrollMode) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.GINGERBREAD) {
@@ -673,12 +693,16 @@ public class LayerView extends FrameLayout implements Tabs.OnTabsChangedListener
         GeckoAccessibility.onLayerViewFocusChanged(this, gainFocus);
     }
 
-    public void setFullScreen(boolean fullScreen) {
-        mFullScreen = fullScreen;
+    public void setFullScreenState(FullScreenState state) {
+        mFullScreenState = state;
     }
 
     public boolean isFullScreen() {
-        return mFullScreen;
+        return mFullScreenState != FullScreenState.NONE;
+    }
+
+    public FullScreenState getFullScreenState() {
+        return mFullScreenState;
     }
 
     @Override
@@ -687,5 +711,16 @@ public class LayerView extends FrameLayout implements Tabs.OnTabsChangedListener
             setZoomConstraints(tab.getZoomConstraints());
             setIsRTL(tab.getIsRTL());
         }
+    }
+
+    // Public hooks for listening to metrics changing
+
+    public interface OnMetricsChangedListener {
+        public void onMetricsChanged(ImmutableViewportMetrics viewport);
+        public void onPanZoomStopped();
+    }
+
+    public void setOnMetricsChangedListener(OnMetricsChangedListener listener) {
+        mLayerClient.setOnMetricsChangedListener(listener);
     }
 }

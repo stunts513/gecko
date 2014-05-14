@@ -161,7 +161,7 @@ private:
 
 NS_IMPL_ADDREF(nsWatcherWindowEnumerator)
 NS_IMPL_RELEASE(nsWatcherWindowEnumerator)
-NS_IMPL_QUERY_INTERFACE1(nsWatcherWindowEnumerator, nsISimpleEnumerator)
+NS_IMPL_QUERY_INTERFACE(nsWatcherWindowEnumerator, nsISimpleEnumerator)
 
 nsWatcherWindowEnumerator::nsWatcherWindowEnumerator(nsWindowWatcher *inWatcher)
   : mWindowWatcher(inWatcher),
@@ -240,10 +240,10 @@ void nsWatcherWindowEnumerator::WindowRemoved(nsWatcherWindowEntry *inInfo) {
 
 NS_IMPL_ADDREF(nsWindowWatcher)
 NS_IMPL_RELEASE(nsWindowWatcher)
-NS_IMPL_QUERY_INTERFACE3(nsWindowWatcher,
-                         nsIWindowWatcher,
-                         nsIPromptFactory,
-                         nsPIWindowWatcher)
+NS_IMPL_QUERY_INTERFACE(nsWindowWatcher,
+                        nsIWindowWatcher,
+                        nsIPromptFactory,
+                        nsPIWindowWatcher)
 
 nsWindowWatcher::nsWindowWatcher() :
         mEnumeratorList(),
@@ -785,15 +785,14 @@ nsWindowWatcher::OpenWindowInternal(nsIDOMWindow *aParent,
 
   // Now we have to set the right opener principal on the new window.  Note
   // that we have to do this _before_ starting any URI loads, thanks to the
-  // sync nature of javascript: loads.  Since this is the only place where we
-  // set said opener principal, we need to do it for all URIs, including
-  // chrome ones.  So to deal with the mess that is bug 79775, just press on in
-  // a reasonable way even if GetSubjectPrincipal fails.  In that case, just
-  // use a null subjectPrincipal.
-  nsCOMPtr<nsIPrincipal> subjectPrincipal;
-  if (NS_FAILED(sm->GetSubjectPrincipal(getter_AddRefs(subjectPrincipal)))) {
-    subjectPrincipal = nullptr;
-  }
+  // sync nature of javascript: loads.
+  //
+  // Note: The check for the current JSContext isn't necessarily sensical.
+  // It's just designed to preserve old semantics during a mass-conversion
+  // patch.
+  nsCOMPtr<nsIPrincipal> subjectPrincipal =
+    nsContentUtils::GetCurrentJSContext() ? nsContentUtils::GetSubjectPrincipal()
+                                          : nullptr;
 
   if (windowIsNew) {
     // Now set the opener principal on the new window.  Note that we need to do

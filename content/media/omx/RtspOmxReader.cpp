@@ -303,10 +303,10 @@ nsresult
 RtspOmxReader::ReadMetadata(MediaInfo* aInfo,
                             MetadataTags** aTags)
 {
+  SetActive();
+
   nsresult rv = MediaOmxReader::ReadMetadata(aInfo, aTags);
   NS_ENSURE_SUCCESS(rv, rv);
-
-  SetActive();
 
   return NS_OK;
 }
@@ -322,6 +322,7 @@ void RtspOmxReader::SetIdle() {
     if (controller) {
       controller->Pause();
     }
+    mRtspResource->SetSuspend(true);
   }
 }
 
@@ -333,6 +334,7 @@ void RtspOmxReader::SetActive() {
     if (controller) {
       controller->Play();
     }
+    mRtspResource->SetSuspend(false);
   }
 
   // Call parent class to set OMXCodec active.

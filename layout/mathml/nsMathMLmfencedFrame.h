@@ -32,7 +32,7 @@ public:
   SetInitialChildList(ChildListID     aListID,
                       nsFrameList&    aChildList) MOZ_OVERRIDE;
 
-  virtual nsresult
+  virtual void
   Reflow(nsPresContext*          aPresContext,
          nsHTMLReflowMetrics&     aDesiredSize,
          const nsHTMLReflowState& aReflowState,
@@ -79,6 +79,17 @@ public:
             nscoord            aDesiredSize,
             nsBoundingMetrics& bm,
             nscoord&           dx);
+
+  virtual bool
+  IsMrowLike() MOZ_OVERRIDE
+  {
+    // Always treated as an mrow with > 1 child as
+    // <mfenced> <mo>%</mo> </mfenced>
+    // renders equivalently to
+    // <mrow> <mo> ( </mo> <mo>%</mo> <mo> ) </mo> </mrow>
+    // This also holds with multiple children.  (MathML3 3.3.8.1)
+    return true;
+  }
 
 protected:
   nsMathMLmfencedFrame(nsStyleContext* aContext) : nsMathMLContainerFrame(aContext) {}

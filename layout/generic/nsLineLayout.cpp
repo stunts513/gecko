@@ -711,7 +711,7 @@ IsPercentageAware(const nsIFrame* aFrame)
   return false;
 }
 
-nsresult
+void
 nsLineLayout::ReflowFrame(nsIFrame* aFrame,
                           nsReflowStatus& aReflowStatus,
                           nsHTMLReflowMetrics* aMetrics,
@@ -839,12 +839,8 @@ nsLineLayout::ReflowFrame(nsIFrame* aFrame,
                                  &savedOptionalBreakPriority);
 
   if (!isText) {
-    nsresult rv = aFrame->Reflow(mPresContext, metrics, reflowStateHolder.ref(),
-                                 aReflowStatus);
-    if (NS_FAILED(rv)) {
-      NS_WARNING( "Reflow of frame failed in nsLineLayout" );
-      return rv;
-    }
+    aFrame->Reflow(mPresContext, metrics, reflowStateHolder.ref(),
+                   aReflowStatus);
   } else {
     static_cast<nsTextFrame*>(aFrame)->
       ReflowText(*this, availableSpaceOnLine, psd->mReflowState->rendContext,
@@ -1056,8 +1052,6 @@ nsLineLayout::ReflowFrame(nsIFrame* aFrame,
   nsFrame::ListTag(stdout, aFrame);
   printf(" status=%x\n", aReflowStatus);
 #endif
-
-  return NS_OK;
 }
 
 void
@@ -1076,9 +1070,12 @@ nsLineLayout::ApplyStartMargin(PerFrameData* pfd,
   // in an ib split.  Note that the ib sibling (block-in-inline
   // sibling) annotations only live on the first continuation, but we
   // don't want to apply the start margin for later continuations
-  // anyway.
-  if (pfd->mFrame->GetPrevContinuation() ||
-      pfd->mFrame->FrameIsNonFirstInIBSplit()) {
+  // anyway.  For box-decoration-break:clone we apply the start-margin
+  // on all continuations.
+  if ((pfd->mFrame->GetPrevContinuation() ||
+       pfd->mFrame->FrameIsNonFirstInIBSplit()) &&
+      aReflowState.mStyleBorder->mBoxDecorationBreak ==
+        NS_STYLE_BOX_DECORATION_BREAK_SLICE) {
     // Zero this out so that when we compute the max-element-width of
     // the frame we will properly avoid adding in the starting margin.
     pfd->mMargin.IStart(frameWM) = 0;
@@ -1160,6 +1157,9 @@ nsLineLayout::CanPlaceFrame(PerFrameData* pfd,
    * 3) The frame is in an {ib} split and is not the last part.
    *
    * However, none of that applies if this is a letter frame (XXXbz why?)
+   *
+   * For box-decoration-break:clone we apply the end margin on all
+   * continuations (that are not letter frames).
    */
   if (pfd->mFrame->GetPrevContinuation() ||
       pfd->mFrame->FrameIsNonFirstInIBSplit()) {
@@ -1167,8 +1167,10 @@ nsLineLayout::CanPlaceFrame(PerFrameData* pfd,
   }
   if ((NS_FRAME_IS_NOT_COMPLETE(aStatus) ||
        pfd->mFrame->LastInFlow()->GetNextContinuation() ||
-       pfd->mFrame->FrameIsNonLastInIBSplit())
-      && !pfd->GetFlag(PFD_ISLETTERFRAME)) {
+       pfd->mFrame->FrameIsNonLastInIBSplit()) &&
+      !pfd->GetFlag(PFD_ISLETTERFRAME) &&
+      pfd->mFrame->StyleBorder()->mBoxDecorationBreak ==
+        NS_STYLE_BOX_DECORATION_BREAK_SLICE) {
     pfd->mMargin.IEnd(frameWM) = 0;
   }
   LogicalMargin usedMargins = pfd->mMargin.ConvertTo(lineWM, frameWM);
@@ -1481,18 +1483,18 @@ nsLineLayout::BlockDirAlignLine()
   }
 
   // Fill in returned line-box and max-element-width data
-  mLineBox->mBounds.x = psd->mIStart;
-  mLineBox->mBounds.y = mBStartEdge;
-  mLineBox->mBounds.width = psd->mICoord - psd->mIStart;
-  mLineBox->mBounds.height = lineBSize;
+  mLineBox->SetBounds(lineWM,
+                      psd->mIStart, mBStartEdge,
+                      psd->mICoord - psd->mIStart, lineBSize,
+                      mContainerWidth);
 
   mFinalLineBSize = lineBSize;
   mLineBox->SetAscent(baselineBCoord - mBStartEdge);
 #ifdef NOISY_BLOCKDIR_ALIGN
   printf(
     "  [line]==> bounds{x,y,w,h}={%d,%d,%d,%d} lh=%d a=%d\n",
-    mLineBox->mBounds.x, mLineBox->mBounds.y,
-    mLineBox->mBounds.width, mLineBox->mBounds.height,
+    mLineBox->mBounds.IStart(lineWM), mLineBox->mBounds.BStart(lineWM),
+    mLineBox->mBounds.ISize(lineWM), mLineBox->mBounds.BSize(lineWM),
     mFinalLineBSize, mLineBox->GetAscent());
 #endif
 
@@ -2509,28 +2511,26 @@ nsLineLayout::ApplyFrameJustification(PerSpanData* aPSD, FrameJustificationState
 }
 
 void
-nsLineLayout::InlineDirAlignFrames(nsRect& aLineBounds,
-                                    bool aIsLastLine,
-                                    int32_t aFrameCount)
+nsLineLayout::InlineDirAlignFrames(nsLineBox* aLine,
+                                   bool aIsLastLine)
 {
   /**
    * NOTE: aIsLastLine ain't necessarily so: it is correctly set by caller
    * only in cases where the last line needs special handling.
    */
   PerSpanData* psd = mRootSpan;
+  WritingMode lineWM = psd->mWritingMode;
   NS_WARN_IF_FALSE(psd->mIEnd != NS_UNCONSTRAINEDSIZE,
                    "have unconstrained width; this should only result from "
                    "very large sizes, not attempts at intrinsic width "
                    "calculation");
-  nscoord availWidth = psd->mIEnd - psd->mIStart;
-  nscoord remainingWidth = availWidth - aLineBounds.width;
+  nscoord availISize = psd->mIEnd - psd->mIStart;
+  nscoord remainingISize = availISize - aLine->ISize();
 #ifdef NOISY_INLINEDIR_ALIGN
   nsFrame::ListTag(stdout, mBlockReflowState->frame);
-  printf(": availWidth=%d lineBounds.x=%d lineWidth=%d delta=%d\n",
-         availWidth, aLineBounds.x, aLineBounds.width, remainingWidth);
+  printf(": availISize=%d lineBounds.IStart=%d lineISize=%d delta=%d\n",
+         availISize, aLine->IStart(), aLine->ISize(), remainingISize);
 #endif
-
-  WritingMode lineWM = psd->mWritingMode;
 
   // 'text-align-last: auto' is equivalent to the value of the 'text-align'
   // property except when 'text-align' is set to 'justify', in which case it
@@ -2552,24 +2552,25 @@ nsLineLayout::InlineDirAlignFrames(nsRect& aLineBounds,
     }
   }
 
-  if ((remainingWidth > 0 || textAlignTrue) &&
+  if ((remainingISize > 0 || textAlignTrue) &&
       !(mBlockReflowState->frame->IsSVGText())) {
 
     switch (textAlign) {
       case NS_STYLE_TEXT_ALIGN_JUSTIFY:
         int32_t numSpaces;
         int32_t numLetters;
-            
+
         ComputeJustificationWeights(psd, &numSpaces, &numLetters);
 
         if (numSpaces > 0) {
           FrameJustificationState state =
-            { numSpaces, numLetters, remainingWidth, 0, 0, 0, 0, 0 };
+            { numSpaces, numLetters, remainingISize, 0, 0, 0, 0, 0 };
 
           // Apply the justification, and make sure to update our linebox
           // width to account for it.
-          aLineBounds.width += ApplyFrameJustification(psd, &state);
-          remainingWidth = availWidth - aLineBounds.width;
+          aLine->ExpandBy(ApplyFrameJustification(psd, &state),
+                          mContainerWidth);
+          remainingISize = availISize - aLine->ISize();
           break;
         }
         // Fall through to the default case if we could not justify to fill
@@ -2582,25 +2583,25 @@ nsLineLayout::InlineDirAlignFrames(nsRect& aLineBounds,
       case NS_STYLE_TEXT_ALIGN_LEFT:
       case NS_STYLE_TEXT_ALIGN_MOZ_LEFT:
         if (!lineWM.IsBidiLTR()) {
-          dx = remainingWidth;
+          dx = remainingISize;
         }
         break;
 
       case NS_STYLE_TEXT_ALIGN_RIGHT:
       case NS_STYLE_TEXT_ALIGN_MOZ_RIGHT:
         if (lineWM.IsBidiLTR()) {
-          dx = remainingWidth;
+          dx = remainingISize;
         }
         break;
 
       case NS_STYLE_TEXT_ALIGN_END:
-        dx = remainingWidth;
+        dx = remainingISize;
         break;
 
 
       case NS_STYLE_TEXT_ALIGN_CENTER:
       case NS_STYLE_TEXT_ALIGN_MOZ_CENTER:
-        dx = remainingWidth / 2;
+        dx = remainingISize / 2;
         break;
     }
   }
@@ -2610,12 +2611,13 @@ nsLineLayout::InlineDirAlignFrames(nsRect& aLineBounds,
       pfd->mBounds.IStart(lineWM) += dx;
       pfd->mFrame->SetRect(lineWM, pfd->mBounds, mContainerWidth);
     }
-    aLineBounds.x += dx;
+    aLine->IndentBy(dx, mContainerWidth);
   }
 
   if (mPresContext->BidiEnabled() &&
       (!mPresContext->IsVisualMode() || !lineWM.IsBidiLTR())) {
-    nsBidiPresUtils::ReorderFrames(psd->mFirstFrame->mFrame, aFrameCount,
+    nsBidiPresUtils::ReorderFrames(psd->mFirstFrame->mFrame,
+                                   aLine->GetChildCount(),
                                    lineWM, mContainerWidth);
   }
 }

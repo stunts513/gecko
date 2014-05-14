@@ -713,7 +713,7 @@ nsMenuFrame::CloseMenu(bool aDeselectMenu)
   // Close the menu asynchronously
   nsXULPopupManager* pm = nsXULPopupManager::GetInstance();
   if (pm && HasPopup())
-    pm->HidePopup(GetPopup()->GetContent(), false, aDeselectMenu, true);
+    pm->HidePopup(GetPopup()->GetContent(), false, aDeselectMenu, true, false);
 }
 
 bool
@@ -807,7 +807,7 @@ nsMenuFrame::Enter(WidgetGUIEvent* aEvent)
       if (pm) {
         nsIFrame* popup = pm->GetTopPopup(ePopupTypeAny);
         if (popup)
-          pm->HidePopup(popup->GetContent(), true, true, true);
+          pm->HidePopup(popup->GetContent(), true, true, true, false);
       }
     }
 #endif   // #ifdef XP_WIN
@@ -1467,7 +1467,7 @@ nsIScrollableFrame* nsMenuFrame::GetScrollTargetFrame()
 }
 
 // nsMenuTimerMediator implementation.
-NS_IMPL_ISUPPORTS1(nsMenuTimerMediator, nsITimerCallback)
+NS_IMPL_ISUPPORTS(nsMenuTimerMediator, nsITimerCallback)
 
 /**
  * Constructs a wrapper around an nsMenuFrame.

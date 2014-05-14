@@ -13,11 +13,8 @@
 #include "SharedSurfaceGL.h"            // for SharedSurface_GLTexture, etc
 #include "SurfaceStream.h"              // for SurfaceStream
 #include "SurfaceTypes.h"               // for SharedSurfaceType, etc
-#include "TiledLayerBuffer.h"           // for TILEDLAYERBUFFER_TILE_SIZE
 #include "gfx2DGlue.h"                  // for ContentForFormat, etc
-#include "gfxImageSurface.h"            // for gfxImageSurface
 #include "gfxReusableSurfaceWrapper.h"  // for gfxReusableSurfaceWrapper
-#include "ipc/AutoOpenSurface.h"        // for AutoOpenSurface
 #include "mozilla/gfx/2D.h"             // for DataSourceSurface
 #include "mozilla/gfx/BaseSize.h"       // for BaseSize
 #include "mozilla/layers/CompositorOGL.h"  // for CompositorOGL
@@ -109,20 +106,20 @@ FlagsToGLFlags(TextureFlags aFlags)
 {
   uint32_t result = TextureImage::NoFlags;
 
-  if (aFlags & TEXTURE_USE_NEAREST_FILTER)
+  if (aFlags & TextureFlags::USE_NEAREST_FILTER)
     result |= TextureImage::UseNearestFilter;
-  if (aFlags & TEXTURE_NEEDS_Y_FLIP)
+  if (aFlags & TextureFlags::NEEDS_Y_FLIP)
     result |= TextureImage::NeedsYFlip;
-  if (aFlags & TEXTURE_DISALLOW_BIGIMAGE)
+  if (aFlags & TextureFlags::DISALLOW_BIGIMAGE)
     result |= TextureImage::DisallowBigImage;
 
   return static_cast<gl::TextureImage::Flags>(result);
 }
 
-GLenum
-WrapMode(gl::GLContext *aGl, bool aAllowRepeat)
+static GLenum
+WrapMode(gl::GLContext *aGl, TextureFlags aFlags)
 {
-  if (aAllowRepeat &&
+  if ((aFlags & TextureFlags::ALLOW_REPEAT) &&
       (aGl->IsExtensionSupported(GLContext::ARB_texture_non_power_of_two) ||
        aGl->IsExtensionSupported(GLContext::OES_texture_npot))) {
     return LOCAL_GL_REPEAT;
@@ -131,10 +128,12 @@ WrapMode(gl::GLContext *aGl, bool aAllowRepeat)
 }
 
 CompositableDataGonkOGL::CompositableDataGonkOGL()
+ : mTexture(0)
 {
 }
 CompositableDataGonkOGL::~CompositableDataGonkOGL()
 {
+  DeleteTextureIfPresent();
 }
 
 gl::GLContext*
@@ -151,6 +150,28 @@ void CompositableDataGonkOGL::SetCompositor(Compositor* aCompositor)
 void CompositableDataGonkOGL::ClearData()
 {
   CompositableBackendSpecificData::ClearData();
+  DeleteTextureIfPresent();
+}
+
+GLuint CompositableDataGonkOGL::GetTexture()
+{
+  if (!mTexture) {
+    if (gl()->MakeCurrent()) {
+      gl()->fGenTextures(1, &mTexture);
+    }
+  }
+  return mTexture;
+}
+
+void
+CompositableDataGonkOGL::DeleteTextureIfPresent()
+{
+  if (mTexture) {
+    if (gl()->MakeCurrent()) {
+      gl()->fDeleteTextures(1, &mTexture);
+    }
+    mTexture = 0;
+  }
 }
 
 #if defined(MOZ_WIDGET_GONK) && ANDROID_VERSION >= 17
@@ -208,10 +229,10 @@ TextureImageTextureSourceOGL::Update(gfx::DataSourceSurface* aSurface,
   if (!mTexImage ||
       (mTexImage->GetSize() != size && !aSrcOffset) ||
       mTexImage->GetContentType() != gfx::ContentForFormat(aSurface->GetFormat())) {
-    if (mFlags & TEXTURE_DISALLOW_BIGIMAGE) {
+    if (mFlags & TextureFlags::DISALLOW_BIGIMAGE) {
       mTexImage = CreateBasicTextureImage(mGL, size,
                                           gfx::ContentForFormat(aSurface->GetFormat()),
-                                          WrapMode(mGL, mFlags & TEXTURE_ALLOW_REPEAT),
+                                          WrapMode(mGL, mFlags),
                                           FlagsToGLFlags(mFlags),
                                           SurfaceFormatToImageFormat(aSurface->GetFormat()));
     } else {
@@ -222,7 +243,7 @@ TextureImageTextureSourceOGL::Update(gfx::DataSourceSurface* aSurface,
       mTexImage = CreateTextureImage(mGL,
                                      size,
                                      gfx::ContentForFormat(aSurface->GetFormat()),
-                                     WrapMode(mGL, mFlags & TEXTURE_ALLOW_REPEAT),
+                                     WrapMode(mGL, mFlags),
                                      FlagsToGLFlags(mFlags),
                                      SurfaceFormatToImageFormat(aSurface->GetFormat()));
     }
@@ -247,7 +268,7 @@ TextureImageTextureSourceOGL::EnsureBuffer(const nsIntSize& aSize,
     mTexImage = CreateTextureImage(mGL,
                                    aSize.ToIntSize(),
                                    aContentType,
-                                   WrapMode(mGL, mFlags & TEXTURE_ALLOW_REPEAT),
+                                   WrapMode(mGL, mFlags),
                                    FlagsToGLFlags(mFlags));
   }
   mTexImage->Resize(aSize.ToIntSize());

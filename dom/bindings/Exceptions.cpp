@@ -18,26 +18,6 @@
 #include "WorkerPrivate.h"
 #include "nsContentUtils.h"
 
-namespace {
-
-// We can't use nsContentUtils::IsCallerChrome because it might not exist in
-// xpcshell.
-bool
-IsCallerChrome()
-{
-  nsCOMPtr<nsIScriptSecurityManager> secMan;
-  secMan = XPCWrapper::GetSecurityManager();
-
-  if (!secMan) {
-    return false;
-  }
-
-  bool isChrome;
-  return NS_SUCCEEDED(secMan->SubjectPrincipalIsSystem(&isChrome)) && isChrome;
-}
-
-} // anonymous namespace
-
 namespace mozilla {
 namespace dom {
 
@@ -56,11 +36,12 @@ ThrowExceptionObject(JSContext* aCx, nsIException* aException)
 
   JS::Rooted<JSObject*> glob(aCx, JS::CurrentGlobalOrNull(aCx));
   if (!glob) {
+    // XXXbz Can this really be null here?
     return false;
   }
 
   JS::Rooted<JS::Value> val(aCx);
-  if (!WrapObject(aCx, glob, aException, &NS_GET_IID(nsIException), &val)) {
+  if (!WrapObject(aCx, aException, &NS_GET_IID(nsIException), &val)) {
     return false;
   }
 
@@ -79,7 +60,7 @@ ThrowExceptionObject(JSContext* aCx, Exception* aException)
   // (i.e., not chrome), rethrow the original value. This only applies to JS
   // implemented components so we only need to check for this on the main
   // thread.
-  if (NS_IsMainThread() && !IsCallerChrome() &&
+  if (NS_IsMainThread() && !nsContentUtils::IsCallerChrome() &&
       aException->StealJSVal(thrown.address())) {
     if (!JS_WrapValue(aCx, &thrown)) {
       return false;
@@ -90,10 +71,11 @@ ThrowExceptionObject(JSContext* aCx, Exception* aException)
 
   JS::Rooted<JSObject*> glob(aCx, JS::CurrentGlobalOrNull(aCx));
   if (!glob) {
+    // XXXbz Can this actually be null here?
     return false;
   }
 
-  if (!WrapNewBindingObject(aCx, glob, aException, &thrown)) {
+  if (!WrapNewBindingObject(aCx, aException, &thrown)) {
     return false;
   }
 
@@ -129,28 +111,7 @@ Throw(JSContext* aCx, nsresult aRv, const char* aMessage)
     }
   }
 
-  nsRefPtr<Exception> finalException;
-
-  // Do we use DOM exceptions for this error code?
-  switch (NS_ERROR_GET_MODULE(aRv)) {
-  case NS_ERROR_MODULE_DOM:
-  case NS_ERROR_MODULE_SVG:
-  case NS_ERROR_MODULE_DOM_XPATH:
-  case NS_ERROR_MODULE_DOM_INDEXEDDB:
-  case NS_ERROR_MODULE_DOM_FILEHANDLE:
-    finalException = DOMException::Create(aRv);
-    break;
-
-  default:
-      break;
-  }
-
-  // If not, use the default.
-  if (!finalException) {
-    // aMessage can be null.
-    finalException = new Exception(nsCString(aMessage), aRv,
-                                   EmptyCString(), nullptr, nullptr);
-  }
+  nsRefPtr<Exception> finalException = CreateException(aCx, aRv, aMessage);
 
   MOZ_ASSERT(finalException);
   if (!ThrowExceptionObject(aCx, finalException)) {
@@ -162,6 +123,29 @@ Throw(JSContext* aCx, nsresult aRv, const char* aMessage)
   return false;
 }
 
+already_AddRefed<Exception>
+CreateException(JSContext* aCx, nsresult aRv, const char* aMessage)
+{
+  // Do we use DOM exceptions for this error code?
+  switch (NS_ERROR_GET_MODULE(aRv)) {
+  case NS_ERROR_MODULE_DOM:
+  case NS_ERROR_MODULE_SVG:
+  case NS_ERROR_MODULE_DOM_XPATH:
+  case NS_ERROR_MODULE_DOM_INDEXEDDB:
+  case NS_ERROR_MODULE_DOM_FILEHANDLE:
+    return DOMException::Create(aRv);
+  default:
+    break;
+  }
+
+  // If not, use the default.
+  // aMessage can be null, so we can't use nsDependentCString on it.
+  nsRefPtr<Exception> exception =
+    new Exception(nsCString(aMessage), aRv,
+                  EmptyCString(), nullptr, nullptr);
+  return exception.forget();
+}
+
 already_AddRefed<nsIStackFrame>
 GetCurrentJSStack()
 {
@@ -169,14 +153,8 @@ GetCurrentJSStack()
   JSContext* cx = nullptr;
 
   if (NS_IsMainThread()) {
-    // Note, in xpcshell nsContentUtils is never initialized, but we still need
-    // to report exceptions.
-    if (nsContentUtils::XPConnect()) {
-      cx = nsContentUtils::XPConnect()->GetCurrentJSContext();
-    } else {
-      nsCOMPtr<nsIXPConnect> xpc = do_GetService(nsIXPConnect::GetCID());
-      cx = xpc->GetCurrentJSContext();
-    }
+    MOZ_ASSERT(nsContentUtils::XPConnect());
+    cx = nsContentUtils::GetCurrentJSContext();
   } else {
     cx = workers::GetCurrentThreadJSContext();
   }
@@ -300,8 +278,8 @@ private:
   nsCOMPtr<nsIStackFrame> mCaller;
 
   // Cached values
-  nsCString mFilename;
-  nsCString mFunname;
+  nsString mFilename;
+  nsString mFunname;
   int32_t mLineno;
   uint32_t mLanguage;
 
@@ -340,7 +318,7 @@ JSStackFrame::~JSStackFrame()
 {
 }
 
-NS_IMPL_CYCLE_COLLECTION_2(JSStackFrame, mStackDescription, mCaller)
+NS_IMPL_CYCLE_COLLECTION(JSStackFrame, mStackDescription, mCaller)
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(JSStackFrame)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(JSStackFrame)
@@ -372,13 +350,13 @@ NS_IMETHODIMP JSStackFrame::GetLanguageName(nsACString& aLanguageName)
   return NS_OK;
 }
 
-/* readonly attribute string filename; */
-NS_IMETHODIMP JSStackFrame::GetFilename(nsACString& aFilename)
+/* readonly attribute AString filename; */
+NS_IMETHODIMP JSStackFrame::GetFilename(nsAString& aFilename)
 {
   if (!mFilenameInitialized) {
     JS::FrameDescription& desc = mStackDescription->FrameAt(mIndex);
     if (const char *filename = desc.filename()) {
-      mFilename.Assign(filename);
+      CopyUTF8toUTF16(filename, mFilename);
     }
     mFilenameInitialized = true;
   }
@@ -393,13 +371,15 @@ NS_IMETHODIMP JSStackFrame::GetFilename(nsACString& aFilename)
   return NS_OK;
 }
 
-/* readonly attribute string name; */
-NS_IMETHODIMP JSStackFrame::GetName(nsACString& aFunction)
+/* readonly attribute AString name; */
+NS_IMETHODIMP JSStackFrame::GetName(nsAString& aFunction)
 {
   if (!mFunnameInitialized) {
     JS::FrameDescription& desc = mStackDescription->FrameAt(mIndex);
     if (JSFlatString *name = desc.funDisplayName()) {
-      CopyUTF16toUTF8(JS_GetFlatStringChars(name), mFunname);
+      mFunname.Assign(JS_GetFlatStringChars(name),
+                      // XXXbz Can't JS_GetStringLength on JSFlatString!
+                      JS_GetStringLength(JS_FORGET_STRING_FLATNESS(name)));
     }
     mFunnameInitialized = true;
   }
@@ -458,24 +438,26 @@ NS_IMETHODIMP JSStackFrame::ToString(nsACString& _retval)
 
   const char* frametype = IsJSFrame() ? "JS" : "native";
 
-  nsCString filename;
+  nsString filename;
   nsresult rv = GetFilename(filename);
   NS_ENSURE_SUCCESS(rv, rv);
 
   if (filename.IsEmpty()) {
-    filename.AssignASCII("<unknown filename>");
+    filename.AssignLiteral("<unknown filename>");
   }
 
-  nsCString funname;
+  nsString funname;
   rv = GetName(funname);
   NS_ENSURE_SUCCESS(rv, rv);
 
   if (funname.IsEmpty()) {
-    funname.AssignASCII("<TOP_LEVEL>");
+    funname.AssignLiteral("<TOP_LEVEL>");
   }
   static const char format[] = "%s frame :: %s :: %s :: line %d";
-  _retval.AppendPrintf(format, frametype, filename.get(),
-                       funname.get(), GetLineno());
+  _retval.AppendPrintf(format, frametype,
+                       NS_ConvertUTF16toUTF8(filename).get(),
+                       NS_ConvertUTF16toUTF8(funname).get(),
+                       GetLineno());
   return NS_OK;
 }
 
@@ -509,8 +491,8 @@ JSStackFrame::CreateStackFrameLocation(uint32_t aLanguage,
 
   self->mLanguage = aLanguage;
   self->mLineno = aLineNumber;
-  self->mFilename = aFilename;
-  self->mFunname = aFunctionName;
+  CopyUTF8toUTF16(aFilename, self->mFilename);
+  CopyUTF8toUTF16(aFunctionName, self->mFunname);
 
   self->mCaller = aCaller;
 

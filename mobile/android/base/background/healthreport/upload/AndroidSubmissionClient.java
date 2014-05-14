@@ -12,12 +12,15 @@ import java.util.Collection;
 
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.mozilla.gecko.BrowserLocaleManager;
 import org.mozilla.gecko.background.bagheera.BagheeraClient;
 import org.mozilla.gecko.background.bagheera.BagheeraRequestDelegate;
 import org.mozilla.gecko.background.common.GlobalConstants;
 import org.mozilla.gecko.background.common.log.Logger;
+import org.mozilla.gecko.background.healthreport.AndroidConfigurationProvider;
 import org.mozilla.gecko.background.healthreport.Environment;
 import org.mozilla.gecko.background.healthreport.EnvironmentBuilder;
+import org.mozilla.gecko.background.healthreport.EnvironmentBuilder.ConfigurationProvider;
 import org.mozilla.gecko.background.healthreport.HealthReportConstants;
 import org.mozilla.gecko.background.healthreport.HealthReportDatabaseStorage;
 import org.mozilla.gecko.background.healthreport.HealthReportGenerator;
@@ -41,11 +44,17 @@ public class AndroidSubmissionClient implements SubmissionClient {
   protected final Context context;
   protected final SharedPreferences sharedPreferences;
   protected final String profilePath;
+  protected final ConfigurationProvider config;
 
   public AndroidSubmissionClient(Context context, SharedPreferences sharedPreferences, String profilePath) {
+    this(context, sharedPreferences, profilePath, new AndroidConfigurationProvider(context));
+  }
+
+  public AndroidSubmissionClient(Context context, SharedPreferences sharedPreferences, String profilePath, ConfigurationProvider config) {
     this.context = context;
     this.sharedPreferences = sharedPreferences;
     this.profilePath = profilePath;
+    this.config = config;
   }
 
   public SharedPreferences getSharedPreferences() {
@@ -87,7 +96,7 @@ public class AndroidSubmissionClient implements SubmissionClient {
       final SubmissionsTracker tracker) throws JSONException {
     final long since = localTime - GlobalConstants.MILLISECONDS_PER_SIX_MONTHS;
     final HealthReportGenerator generator = tracker.getGenerator();
-    return generator.generateDocument(since, last, profilePath);
+    return generator.generateDocument(since, last, profilePath, config);
   }
 
   protected void uploadPayload(String id, String payload, Collection<String> oldIds, BagheeraRequestDelegate uploadDelegate) {
@@ -347,7 +356,7 @@ public class AndroidSubmissionClient implements SubmissionClient {
     }
 
     protected int registerCurrentEnvironment() {
-      return EnvironmentBuilder.registerCurrentEnvironment(storage, profileCache);
+      return EnvironmentBuilder.registerCurrentEnvironment(storage, profileCache, config);
     }
 
     protected void incrementFirstUploadAttemptCount() {
@@ -398,14 +407,18 @@ public class AndroidSubmissionClient implements SubmissionClient {
 
       @Override
       public JSONObject generateDocument(long since, long lastPingTime,
-          String generationProfilePath) throws JSONException {
+          String generationProfilePath, ConfigurationProvider providedConfig) throws JSONException {
+
+        // Let's make sure we have an accurate locale.
+        BrowserLocaleManager.getInstance().getAndApplyPersistedLocale(context);
+
         final JSONObject document;
         // If the given profilePath matches the one we cached for the tracker, use the cached env.
         if (profilePath != null && profilePath.equals(generationProfilePath)) {
           final Environment environment = getCurrentEnvironment();
           document = super.generateDocument(since, lastPingTime, environment);
         } else {
-          document = super.generateDocument(since, lastPingTime, generationProfilePath);
+          document = super.generateDocument(since, lastPingTime, generationProfilePath, providedConfig);
         }
 
         if (document == null) {
@@ -415,7 +428,7 @@ public class AndroidSubmissionClient implements SubmissionClient {
       }
 
       protected Environment getCurrentEnvironment() {
-        return EnvironmentBuilder.getCurrentEnvironment(profileCache);
+        return EnvironmentBuilder.getCurrentEnvironment(profileCache, config);
       }
     }
 

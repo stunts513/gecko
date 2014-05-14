@@ -466,20 +466,26 @@ nsImageLoadingContent::FrameDestroyed(nsIFrame* aFrame)
   mFrameCreateCalled = false;
 
   // We need to make sure that our image request is deregistered.
+  nsPresContext* presContext = GetFramePresContext();
   if (mCurrentRequest) {
-    nsLayoutUtils::DeregisterImageRequest(GetFramePresContext(),
+    nsLayoutUtils::DeregisterImageRequest(presContext,
                                           mCurrentRequest,
                                           &mCurrentRequestRegistered);
   }
 
   if (mPendingRequest) {
-    nsLayoutUtils::DeregisterImageRequest(GetFramePresContext(),
+    nsLayoutUtils::DeregisterImageRequest(presContext,
                                           mPendingRequest,
                                           &mPendingRequestRegistered);
   }
 
   UntrackImage(mCurrentRequest);
   UntrackImage(mPendingRequest);
+
+  nsIPresShell* presShell = presContext ? presContext->GetPresShell() : nullptr;
+  if (presShell) {
+    presShell->RemoveImageFromVisibleList(this);
+  }
 
   if (aFrame->HasAnyStateBits(NS_FRAME_IN_POPUP)) {
     // We assume all images in popups are visible, so this decrement balances
@@ -816,12 +822,16 @@ nsImageLoadingContent::LoadImage(nsIURI* aNewURI,
 
   // Not blocked. Do the load.
   nsRefPtr<imgRequestProxy>& req = PrepareNextRequest();
+  nsCOMPtr<nsIContent> content =
+      do_QueryInterface(static_cast<nsIImageLoadingContent*>(this));
   nsresult rv;
   rv = nsContentUtils::LoadImage(aNewURI, aDocument,
                                  aDocument->NodePrincipal(),
                                  aDocument->GetDocumentURI(),
                                  this, loadFlags,
+                                 content->LocalName(),
                                  getter_AddRefs(req));
+
   if (NS_SUCCEEDED(rv)) {
     TrackImage(req);
     ResetAnimationIfNeeded();

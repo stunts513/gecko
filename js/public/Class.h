@@ -127,18 +127,15 @@ typedef bool
 typedef bool
 (* JSResolveOp)(JSContext *cx, JS::HandleObject obj, JS::HandleId id);
 
-// Like JSResolveOp, but flags provide contextual information as follows:
-//
-//  JSRESOLVE_ASSIGNING   obj[id] is on the left-hand side of an assignment
-//
-// The *objp out parameter, on success, should be null to indicate that id
-// was not resolved; and non-null, referring to obj or one of its prototypes,
-// if id was resolved.  The hook may assume *objp is null on entry.
+// Like JSResolveOp, except the *objp out parameter, on success, should be null
+// to indicate that id was not resolved; and non-null, referring to obj or one
+// of its prototypes, if id was resolved.  The hook may assume *objp is null on
+// entry.
 //
 // This hook instead of JSResolveOp is called via the JSClass.resolve member
 // if JSCLASS_NEW_RESOLVE is set in JSClass.flags.
 typedef bool
-(* JSNewResolveOp)(JSContext *cx, JS::HandleObject obj, JS::HandleId id, unsigned flags,
+(* JSNewResolveOp)(JSContext *cx, JS::HandleObject obj, JS::HandleId id,
                    JS::MutableHandleObject objp);
 
 // Convert obj to the given type, returning true with the resulting value in
@@ -179,11 +176,6 @@ typedef bool
 // marking its native structures.
 typedef void
 (* JSTraceOp)(JSTracer *trc, JSObject *obj);
-
-// A generic type for functions mapping an object to another object, or null
-// if an error or exception was thrown on cx.
-typedef JSObject *
-(* JSObjectOp)(JSContext *cx, JS::HandleObject obj);
 
 // Hook that creates an iterator object for a given object. Returns the
 // iterator object or null if an error or exception was thrown on cx.
@@ -255,8 +247,15 @@ typedef bool
 (* SliceOp)(JSContext *cx, JS::HandleObject obj, uint32_t begin, uint32_t end,
             JS::HandleObject result); // result is actually preallocted.
 
+// A generic type for functions mapping an object to another object, or null
+// if an error or exception was thrown on cx.
 typedef JSObject *
 (* ObjectOp)(JSContext *cx, JS::HandleObject obj);
+
+// Hook to map an object to its inner object. Infallible.
+typedef JSObject *
+(* InnerObjectOp)(JSObject *obj);
+
 typedef void
 (* FinalizeOp)(FreeOp *fop, JSObject *obj);
 
@@ -299,8 +298,8 @@ struct ClassSpec
 
 struct ClassExtension
 {
-    JSObjectOp          outerObject;
-    JSObjectOp          innerObject;
+    ObjectOp            outerObject;
+    InnerObjectOp       innerObject;
     JSIteratorOp        iteratorObject;
 
     /*
@@ -424,7 +423,11 @@ struct JSClass {
 // with the following flags. Failure to use JSCLASS_GLOBAL_FLAGS was
 // previously allowed, but is now an ES5 violation and thus unsupported.
 //
-#define JSCLASS_GLOBAL_SLOT_COUNT      (3 + JSProto_LIMIT * 3 + 31)
+// JSCLASS_GLOBAL_APPLICATION_SLOTS is the number of slots reserved at
+// the beginning of every global object's slots for use by the
+// application.
+#define JSCLASS_GLOBAL_APPLICATION_SLOTS 3
+#define JSCLASS_GLOBAL_SLOT_COUNT      (JSCLASS_GLOBAL_APPLICATION_SLOTS + JSProto_LIMIT * 3 + 31)
 #define JSCLASS_GLOBAL_FLAGS_WITH_SLOTS(n)                                    \
     (JSCLASS_IS_GLOBAL | JSCLASS_HAS_RESERVED_SLOTS(JSCLASS_GLOBAL_SLOT_COUNT + (n)))
 #define JSCLASS_GLOBAL_FLAGS                                                  \
@@ -477,6 +480,10 @@ struct Class
 
     bool isProxy() const {
         return flags & JSCLASS_IS_PROXY;
+    }
+
+    bool isDOMClass() const {
+        return flags & JSCLASS_IS_DOMJSCLASS;
     }
 
     static size_t offsetOfFlags() { return offsetof(Class, flags); }

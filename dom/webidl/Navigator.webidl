@@ -28,6 +28,7 @@ Navigator implements NavigatorLanguage;
 Navigator implements NavigatorOnLine;
 Navigator implements NavigatorContentUtils;
 Navigator implements NavigatorStorageUtils;
+Navigator implements NavigatorFeatures;
 
 [NoInterfaceObject]
 interface NavigatorID {
@@ -52,6 +53,7 @@ interface NavigatorID {
 [NoInterfaceObject]
 interface NavigatorLanguage {
   readonly attribute DOMString? language;
+  [Pure, Cached, Frozen] readonly attribute sequence<DOMString> languages;
 };
 
 [NoInterfaceObject]
@@ -77,6 +79,12 @@ interface NavigatorContentUtils {
 interface NavigatorStorageUtils {
   // NOT IMPLEMENTED
   //void yieldForStorageUpdates();
+};
+
+[NoInterfaceObject]
+interface NavigatorFeatures {
+  [Func="Navigator::HasFeatureDetectionSupport"]
+  Promise getFeature(DOMString name);
 };
 
 // Things that definitely need to be in the spec and and are not for some
@@ -273,8 +281,6 @@ partial interface Navigator {
   readonly attribute MozVoicemail mozVoicemail;
 };
 
-// nsIMozNavigatorIccManager
-interface MozIccManager;
 partial interface Navigator {
   [Throws, Func="Navigator::HasIccManagerSupport"]
   readonly attribute MozIccManager? mozIccManager;
@@ -339,7 +345,7 @@ partial interface Navigator {
 callback MozGetUserMediaDevicesSuccessCallback = void (nsIVariant? devices);
 partial interface Navigator {
   [Throws, ChromeOnly]
-  void mozGetUserMediaDevices(MediaStreamConstraintsInternal constraints,
+  void mozGetUserMediaDevices(MediaStreamConstraints constraints,
                               MozGetUserMediaDevicesSuccessCallback onsuccess,
                               NavigatorUserMediaErrorCallback onerror,
                               // The originating innerWindowID is needed to
@@ -348,6 +354,12 @@ partial interface Navigator {
                               optional unsigned long long innerWindowID = 0);
 };
 #endif // MOZ_MEDIA_NAVIGATOR
+
+// Service Workers/Navigation Controllers
+partial interface Navigator {
+  [Pref="dom.serviceWorkers.enabled"]
+  readonly attribute ServiceWorkerContainer serviceWorker;
+};
 
 partial interface Navigator {
   [Throws, Pref="beacon.enabled"]

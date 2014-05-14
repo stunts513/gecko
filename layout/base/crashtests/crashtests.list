@@ -44,7 +44,7 @@ load 265973-1.html
 asserts(6-12) load 265986-1.html # Bug 512405
 load 265999-1.html
 load 266222-1.html
-asserts(2-7) load 266360-1.html # bug 576358
+asserts(1-7) load 266360-1.html # bug 576358
 load 266445-1.html
 load 268157-1.html
 load 269566-1.html
@@ -288,9 +288,9 @@ load 471594-1.xhtml
 asserts(0-1) load 474075.html # bug 847368
 load 479114-1.html
 load 477333-1.xhtml
-asserts-if(Android,6) load 477731-1.html
+load 477731-1.html
 load 479360-1.xhtml
-asserts-if(Android,6) load 480686-1.html
+load 480686-1.html
 load 481806-1.html
 load 483604-1.xhtml
 load 485501-1.html
@@ -423,9 +423,11 @@ pref(layers.force-active,true) load 859630-1.html
 load 866588.html
 load 897852.html
 asserts(4-6) load 898913.html # bug 847368
+pref(layout.css.sticky.enabled,true) load 926728.html
 load 931464.html
 load 936988-1.html
 load 931460-1.html
 load 935765-1.html
 load 942690.html
 load 973390-1.html
+load 1001237.html

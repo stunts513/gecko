@@ -11,12 +11,13 @@
 #include "nsIInterfaceRequestorUtils.h"
 #include "nsIDocShell.h"
 #include "AudioChannelService.h"
+#include "mozilla/Services.h"
 
 namespace mozilla {
 namespace dom {
 
-NS_IMPL_QUERY_INTERFACE_INHERITED1(SpeakerManager, DOMEventTargetHelper,
-                                   nsIDOMEventListener)
+NS_IMPL_QUERY_INTERFACE_INHERITED(SpeakerManager, DOMEventTargetHelper,
+                                  nsIDOMEventListener)
 NS_IMPL_ADDREF_INHERITED(SpeakerManager, DOMEventTargetHelper)
 NS_IMPL_RELEASE_INHERITED(SpeakerManager, DOMEventTargetHelper)
 
@@ -147,8 +148,7 @@ SpeakerManager::Constructor(const GlobalObject& aGlobal, ErrorResult& aRv)
     return nullptr;
   }
 
-  nsCOMPtr<nsIPermissionManager> permMgr =
-    do_GetService(NS_PERMISSIONMANAGER_CONTRACTID);
+  nsCOMPtr<nsIPermissionManager> permMgr = services::GetPermissionManager();
   NS_ENSURE_TRUE(permMgr, nullptr);
 
   uint32_t permission = nsIPermissionManager::DENY_ACTION;
@@ -168,9 +168,9 @@ SpeakerManager::Constructor(const GlobalObject& aGlobal, ErrorResult& aRv)
 }
 
 JSObject*
-SpeakerManager::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+SpeakerManager::WrapObject(JSContext* aCx)
 {
-  return MozSpeakerManagerBinding::Wrap(aCx, aScope, this);
+  return MozSpeakerManagerBinding::Wrap(aCx, this);
 }
 
 NS_IMETHODIMP

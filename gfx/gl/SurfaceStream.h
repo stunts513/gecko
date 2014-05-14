@@ -191,6 +191,9 @@ protected:
     SharedSurface* mStaging;
     SharedSurface* mConsumer;
 
+    // Returns true if we were able to wait, false if not
+    virtual void WaitForCompositor() {}
+
     // To support subclasses initializing the mType.
     SurfaceStream_TripleBuffer(SurfaceStreamType type, SurfaceStream* prevStream);
 
@@ -213,6 +216,18 @@ public:
 
     virtual void SurrenderSurfaces(SharedSurface*& producer, SharedSurface*& consumer);
 };
+
+class SurfaceStream_TripleBuffer_Async
+    : public SurfaceStream_TripleBuffer
+{
+protected:
+    virtual void WaitForCompositor() MOZ_OVERRIDE;
+
+public:
+    SurfaceStream_TripleBuffer_Async(SurfaceStream* prevStream);
+    virtual ~SurfaceStream_TripleBuffer_Async();
+};
+
 
 } /* namespace gfx */
 } /* namespace mozilla */

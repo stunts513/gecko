@@ -21,9 +21,9 @@ namespace mozilla {
 namespace dom {
 
 JSObject*
-SVGAElement::WrapNode(JSContext *aCx, JS::Handle<JSObject*> aScope)
+SVGAElement::WrapNode(JSContext *aCx)
 {
-  return SVGAElementBinding::Wrap(aCx, aScope, this);
+  return SVGAElementBinding::Wrap(aCx, this);
 }
 
 nsSVGElement::StringInfo SVGAElement::sStringInfo[2] =
@@ -37,11 +37,11 @@ nsSVGElement::StringInfo SVGAElement::sStringInfo[2] =
 // nsISupports methods
 
 NS_INTERFACE_TABLE_HEAD_CYCLE_COLLECTION_INHERITED(SVGAElement)
-  NS_INTERFACE_TABLE_INHERITED4(SVGAElement,
-                                nsIDOMNode,
-                                nsIDOMElement,
-                                nsIDOMSVGElement,
-                                Link)
+  NS_INTERFACE_TABLE_INHERITED(SVGAElement,
+                               nsIDOMNode,
+                               nsIDOMElement,
+                               nsIDOMSVGElement,
+                               Link)
 NS_INTERFACE_TABLE_TAIL_INHERITING(SVGAElementBase)
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(SVGAElement)

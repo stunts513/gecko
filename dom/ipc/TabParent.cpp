@@ -38,6 +38,7 @@
 #include "nsIDOMElement.h"
 #include "nsIDOMEvent.h"
 #include "nsIDOMWindow.h"
+#include "nsIDOMWindowUtils.h"
 #include "nsIInterfaceRequestorUtils.h"
 #include "nsIPromptFactory.h"
 #include "nsIURI.h"
@@ -198,7 +199,7 @@ TabParent* sEventCapturer;
 
 TabParent *TabParent::mIMETabParent = nullptr;
 
-NS_IMPL_ISUPPORTS3(TabParent, nsITabParent, nsIAuthPromptProvider, nsISecureBrowserUI)
+NS_IMPL_ISUPPORTS(TabParent, nsITabParent, nsIAuthPromptProvider, nsISecureBrowserUI)
 
 TabParent::TabParent(ContentParent* aManager, const TabContext& aContext, uint32_t aChromeFlags)
   : TabContext(aContext)
@@ -553,17 +554,12 @@ void TabParent::HandleLongTapUp(const CSSPoint& aPoint,
   }
 }
 
-void TabParent::NotifyTransformBegin(ViewID aViewId)
+void TabParent::NotifyAPZStateChange(ViewID aViewId,
+                                     APZStateChange aChange,
+                                     int aArg)
 {
   if (!mIsDestroyed) {
-    unused << SendNotifyTransformBegin(aViewId);
-  }
-}
-
-void TabParent::NotifyTransformEnd(ViewID aViewId)
-{
-  if (!mIsDestroyed) {
-    unused << SendNotifyTransformEnd(aViewId);
+    unused << SendNotifyAPZStateChange(aViewId, aChange, aArg);
   }
 }
 
@@ -793,6 +789,41 @@ static void
 DoCommandCallback(mozilla::Command aCommand, void* aData)
 {
   static_cast<InfallibleTArray<mozilla::CommandInt>*>(aData)->AppendElement(aCommand);
+}
+
+bool
+TabParent::RecvRequestNativeKeyBindings(const WidgetKeyboardEvent& aEvent,
+                                        MaybeNativeKeyBinding* aBindings)
+{
+  AutoInfallibleTArray<mozilla::CommandInt, 4> singleLine;
+  AutoInfallibleTArray<mozilla::CommandInt, 4> multiLine;
+  AutoInfallibleTArray<mozilla::CommandInt, 4> richText;
+
+  *aBindings = mozilla::void_t();
+
+  nsCOMPtr<nsIWidget> widget = GetWidget();
+  if (!widget) {
+    return true;
+  }
+
+  WidgetKeyboardEvent localEvent(aEvent);
+
+  if (NS_FAILED(widget->AttachNativeKeyEvent(localEvent))) {
+    return true;
+  }
+
+  widget->ExecuteNativeKeyBinding(nsIWidget::NativeKeyBindingsForSingleLineEditor,
+                                  localEvent, DoCommandCallback, &singleLine);
+  widget->ExecuteNativeKeyBinding(nsIWidget::NativeKeyBindingsForMultiLineEditor,
+                                  localEvent, DoCommandCallback, &multiLine);
+  widget->ExecuteNativeKeyBinding(nsIWidget::NativeKeyBindingsForRichTextEditor,
+                                  localEvent, DoCommandCallback, &richText);
+
+  if (!singleLine.IsEmpty() || !multiLine.IsEmpty() || !richText.IsEmpty()) {
+    *aBindings = NativeKeyBinding(singleLine, multiLine, richText);
+  }
+
+  return true;
 }
 
 bool TabParent::SendRealKeyEvent(WidgetKeyboardEvent& event)
@@ -1505,6 +1536,18 @@ TabParent::RecvSetInputContext(const int32_t& aIMEEnabled,
 }
 
 bool
+TabParent::RecvIsParentWindowMainWidgetVisible(bool* aIsVisible)
+{
+  nsCOMPtr<nsIContent> frame = do_QueryInterface(mFrameElement);
+  if (!frame)
+    return true;
+  nsCOMPtr<nsIDOMWindowUtils> windowUtils =
+    do_QueryInterface(frame->OwnerDoc()->GetWindow());
+  nsresult rv = windowUtils->GetIsParentWindowMainWidgetVisible(aIsVisible);
+  return NS_SUCCEEDED(rv);
+}
+
+bool
 TabParent::RecvGetDPI(float* aValue)
 {
   TryCacheDPIAndScale();
@@ -1697,36 +1740,19 @@ TabParent::DeallocPColorPickerParent(PColorPickerParent* actor)
   return true;
 }
 
-bool
-TabParent::RecvInitRenderFrame(PRenderFrameParent* aFrame,
-                               ScrollingBehavior* aScrolling,
-                               TextureFactoryIdentifier* aTextureFactoryIdentifier,
-                               uint64_t* aLayersId,
-                               bool *aSuccess)
-{
-  *aScrolling = UseAsyncPanZoom() ? ASYNC_PAN_ZOOM : DEFAULT_SCROLLING;
-  *aTextureFactoryIdentifier = TextureFactoryIdentifier();
-  *aLayersId = 0;
-
-  nsRefPtr<nsFrameLoader> frameLoader = GetFrameLoader();
-  if (!frameLoader) {
-    NS_WARNING("Can't allocate graphics resources. May already be shutting down.");
-    *aSuccess = false;
-    return true;
-  }
-
-  static_cast<RenderFrameParent*>(aFrame)->Init(frameLoader, *aScrolling,
-                                                aTextureFactoryIdentifier, aLayersId);
-
-  *aSuccess = true;
-  return true;
-}
-
 PRenderFrameParent*
-TabParent::AllocPRenderFrameParent()
+TabParent::AllocPRenderFrameParent(ScrollingBehavior* aScrolling,
+                                   TextureFactoryIdentifier* aTextureFactoryIdentifier,
+                                   uint64_t* aLayersId, bool* aSuccess)
 {
   MOZ_ASSERT(ManagedPRenderFrameParent().IsEmpty());
-  return new RenderFrameParent();
+
+  nsRefPtr<nsFrameLoader> frameLoader = GetFrameLoader();
+  *aScrolling = UseAsyncPanZoom() ? ASYNC_PAN_ZOOM : DEFAULT_SCROLLING;
+  return new RenderFrameParent(frameLoader,
+                               *aScrolling,
+                               aTextureFactoryIdentifier, aLayersId,
+                               aSuccess);
 }
 
 bool
@@ -1876,7 +1902,11 @@ TabParent::RecvBrowserFrameOpenWindow(PBrowserParent* aOpener,
 }
 
 bool
-TabParent::RecvPRenderFrameConstructor(PRenderFrameParent* actor)
+TabParent::RecvPRenderFrameConstructor(PRenderFrameParent* aActor,
+                                       ScrollingBehavior* aScrolling,
+                                       TextureFactoryIdentifier* aFactoryIdentifier,
+                                       uint64_t* aLayersId,
+                                       bool* aSuccess)
 {
   return true;
 }

@@ -207,13 +207,17 @@ IsGStreamerSupportedType(const nsACString& aMimeType)
 #endif
 
 #ifdef MOZ_OMX_DECODER
-static const char* const gOmxTypes[7] = {
+static const char* const gOmxTypes[] = {
   "audio/mpeg",
   "audio/mp4",
   "audio/amr",
   "video/mp4",
   "video/3gpp",
   "video/quicktime",
+#ifdef MOZ_OMX_WEBM_DECODER
+  "video/webm",
+  "audio/webm",
+#endif
   nullptr
 };
 
@@ -243,6 +247,16 @@ static char const *const gMpegAudioCodecs[2] = {
   "mp3",          // MP3
   nullptr
 };
+
+#ifdef MOZ_OMX_WEBM_DECODER
+static char const *const gOMXWebMCodecs[4] = {
+  "vorbis",
+  "vp8",
+  "vp8.0",
+  nullptr
+};
+#endif //MOZ_OMX_WEBM_DECODER
+
 #endif
 
 #ifdef NECKO_PROTOCOL_rtsp
@@ -380,7 +394,7 @@ DecoderTraits::CanHandleMediaType(const char* aMIMEType,
     result = CANPLAY_MAYBE;
   }
 #endif
-#ifdef MOZ_WEBM
+#if defined(MOZ_WEBM) && !defined(MOZ_OMX_WEBM_DECODER)
   if (IsWebMType(nsDependentCString(aMIMEType))) {
     codecList = gWebMCodecs;
     result = CANPLAY_MAYBE;
@@ -399,9 +413,21 @@ DecoderTraits::CanHandleMediaType(const char* aMIMEType,
     result = CANPLAY_MAYBE;
     if (nsDependentCString(aMIMEType).EqualsASCII("audio/mpeg")) {
       codecList = gMpegAudioCodecs;
+#ifdef MOZ_OMX_WEBM_DECODER
+    } else if (nsDependentCString(aMIMEType).EqualsASCII("audio/webm") ||
+               nsDependentCString(aMIMEType).EqualsASCII("video/webm")) {
+      codecList = gOMXWebMCodecs;
+#endif
     } else {
       codecList = gH264Codecs;
     }
+  }
+#endif
+#ifdef MOZ_DIRECTSHOW
+  // Note: DirectShow should come before WMF, so that we prefer DirectShow's
+  // MP3 support over WMF's.
+  if (DirectShowDecoder::GetSupportedCodecs(nsDependentCString(aMIMEType), &codecList)) {
+    result = CANPLAY_MAYBE;
   }
 #endif
 #ifdef MOZ_WMF
@@ -414,11 +440,6 @@ DecoderTraits::CanHandleMediaType(const char* aMIMEType,
            ? CANPLAY_YES : CANPLAY_NO;
   }
 #endif
-#ifdef MOZ_DIRECTSHOW
-  if (DirectShowDecoder::GetSupportedCodecs(nsDependentCString(aMIMEType), &codecList)) {
-    result = CANPLAY_MAYBE;
-  }
-#endif
 #ifdef MOZ_APPLEMEDIA
   if (IsAppleMediaSupportedType(nsDependentCString(aMIMEType), &codecList)) {
     result = CANPLAY_MAYBE;
@@ -428,6 +449,11 @@ DecoderTraits::CanHandleMediaType(const char* aMIMEType,
   if (MediaDecoder::IsMediaPluginsEnabled() &&
       GetMediaPluginHost()->FindDecoder(nsDependentCString(aMIMEType), &codecList))
     result = CANPLAY_MAYBE;
+#endif
+#ifdef NECKO_PROTOCOL_rtsp
+  if (IsRtspSupportedType(nsDependentCString(aMIMEType))) {
+    result = CANPLAY_MAYBE;
+  }
 #endif
   if (result == CANPLAY_NO || !aHaveRequestedCodecs || !codecList) {
     return result;
@@ -523,8 +549,8 @@ InstantiateDecoder(const nsACString& aType, MediaDecoderOwner* aOwner)
   }
 #endif
 #ifdef MOZ_DIRECTSHOW
-  // Note: DirectShow decoder must come before WMFDecoder, else the pref
-  // "media.directshow.preferred" won't be honored.
+  // Note: DirectShow should come before WMF, so that we prefer DirectShow's
+  // MP3 support over WMF's.
   if (IsDirectShowSupportedType(aType)) {
     decoder = new DirectShowDecoder();
     return decoder.forget();
@@ -662,6 +688,9 @@ bool DecoderTraits::IsSupportedInVideoDocument(const nsACString& aType)
 #endif
 #ifdef MOZ_APPLEMEDIA
     IsAppleMediaSupportedType(aType) ||
+#endif
+#ifdef NECKO_PROTOCOL_rtsp
+    IsRtspSupportedType(aType) ||
 #endif
     false;
 }

@@ -8,18 +8,18 @@
 #include "CacheFileIOManager.h"
 #include "CacheStorageService.h"
 #include "CacheHashUtils.h"
+#include "CacheFileUtils.h"
 #include "nsAutoPtr.h"
 #include "mozilla/Mutex.h"
 
 namespace mozilla {
 namespace net {
 
-#define kChunkSize        16384
-#define kEmptyChunkHash   0xA8CA
+#define kChunkSize        (256 * 1024)
+#define kEmptyChunkHash   0x1826
 
 class CacheFileChunk;
 class CacheFile;
-class ValidityPair;
 
 
 #define CACHEFILECHUNKLISTENER_IID \
@@ -97,10 +97,13 @@ public:
   bool   IsReady() const;
   bool   IsDirty() const;
 
+  nsresult GetStatus();
+  void     SetError(nsresult aStatus);
+
   char *       BufForWriting() const;
   const char * BufForReading() const;
   void         EnsureBufSize(uint32_t aBufSize);
-  uint32_t     MemorySize() const { return mRWBufSize + mBufSize; }
+  uint32_t     MemorySize() const { return sizeof(CacheFileChunk) + mRWBufSize + mBufSize; }
 
   // Memory reporting
   size_t SizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf) const;
@@ -123,6 +126,7 @@ private:
 
   uint32_t mIndex;
   EState   mState;
+  nsresult mStatus;
   bool     mIsDirty;
   bool     mRemovingChunk;
   uint32_t mDataSize;
@@ -138,7 +142,7 @@ private:
                                           // prevent reference cycles
   nsCOMPtr<CacheFileChunkListener> mListener;
   nsTArray<ChunkListenerItem *>    mUpdateListeners;
-  nsTArray<ValidityPair>           mValidityMap;
+  CacheFileUtils::ValidityMap      mValidityMap;
 };
 
 

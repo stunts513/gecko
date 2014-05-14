@@ -6,7 +6,9 @@
 
 EXTRA_JS_MODULES += [
     'Accounts.jsm',
+    'AndroidLog.jsm',
     'ContactService.jsm',
+    'DownloadNotifications.jsm',
     'HelperApps.jsm',
     'Home.jsm',
     'HomeProvider.jsm',
@@ -16,6 +18,7 @@ EXTRA_JS_MODULES += [
     'Notifications.jsm',
     'OrderedBroadcast.jsm',
     'Prompt.jsm',
+    'RokuApp.jsm',
     'Sanitizer.jsm',
     'SharedPreferences.jsm',
     'SimpleServiceDiscovery.jsm',

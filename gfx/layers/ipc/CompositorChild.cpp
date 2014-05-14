@@ -20,6 +20,7 @@
 #include "nsTArray.h"                   // for nsTArray, nsTArray_Impl
 #include "nsXULAppAPI.h"                // for XRE_GetIOMessageLoop, etc
 #include "FrameLayerBuilder.h"
+#include "mozilla/dom/TabChild.h"
 
 using mozilla::layers::LayerTransactionChild;
 
@@ -47,7 +48,7 @@ CompositorChild::Destroy()
   mLayerManager->Destroy();
   mLayerManager = nullptr;
   while (size_t len = ManagedPLayerTransactionChild().Length()) {
-    LayerTransactionChild* layers =
+    RefPtr<LayerTransactionChild> layers =
       static_cast<LayerTransactionChild*>(ManagedPLayerTransactionChild()[len - 1]);
     layers->Destroy();
   }
@@ -116,8 +117,42 @@ CompositorChild::DeallocPLayerTransactionChild(PLayerTransactionChild* actor)
 bool
 CompositorChild::RecvInvalidateAll()
 {
-  FrameLayerBuilder::InvalidateAllLayers(mLayerManager);
+  if (mLayerManager) {
+    FrameLayerBuilder::InvalidateAllLayers(mLayerManager);
+  }
   return true;
+}
+
+bool
+CompositorChild::RecvDidComposite(const uint64_t& aId)
+{
+  if (mLayerManager) {
+    MOZ_ASSERT(aId == 0);
+    mLayerManager->DidComposite();
+  } else if (aId != 0) {
+    dom::TabChild *child = dom::TabChild::GetFrom(aId);
+    if (child) {
+      child->DidComposite();
+    }
+  }
+  return true;
+}
+
+bool
+CompositorChild::RecvOverfill(const uint32_t &aOverfill)
+{
+  for (size_t i = 0; i < mOverfillObservers.Length(); i++) {
+    mOverfillObservers[i]->RunOverfillCallback(aOverfill);
+  }
+  mOverfillObservers.Clear();
+  return true;
+}
+
+void
+CompositorChild::AddOverfillObserver(ClientLayerManager* aLayerManager)
+{
+  MOZ_ASSERT(aLayerManager);
+  mOverfillObservers.AppendElement(aLayerManager);
 }
 
 void

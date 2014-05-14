@@ -209,7 +209,7 @@ public:
     return GetOwner();
   }
   virtual JSObject*
-  WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   IMPL_EVENT_HANDLER(change)
 
@@ -256,6 +256,9 @@ public:
   already_AddRefed<DOMRequest> Mount(ErrorResult& aRv);
   already_AddRefed<DOMRequest> Unmount(ErrorResult& aRv);
 
+  bool CanBeMounted();
+  bool CanBeFormatted();
+  bool CanBeShared();
   bool Default();
 
   // Uses XPCOM GetStorageName
@@ -305,6 +308,7 @@ private:
   nsString mStorageType;
   nsCOMPtr<nsIFile> mRootDirectory;
   nsString mStorageName;
+  bool mIsShareable;
 
   already_AddRefed<nsDOMDeviceStorage> GetStorage(const nsAString& aFullPath,
                                                   nsAString& aOutStoragePath);
@@ -321,13 +325,7 @@ private:
   friend class WatchFileEvent;
   friend class DeviceStorageRequest;
 
-  class VolumeNameCache : public mozilla::RefCounted<VolumeNameCache>
-  {
-  public:
-    MOZ_DECLARE_REFCOUNTED_TYPENAME(VolumeNameCache)
-    nsTArray<nsString>  mVolumeNames;
-  };
-  static mozilla::StaticRefPtr<VolumeNameCache> sVolumeNameCache;
+  static mozilla::StaticAutoPtr<nsTArray<nsString>> sVolumeNameCache;
 
 #ifdef MOZ_WIDGET_GONK
   nsString mLastStatus;

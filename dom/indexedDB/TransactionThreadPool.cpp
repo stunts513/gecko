@@ -258,7 +258,7 @@ TransactionThreadPool::FinishTransaction(IDBTransaction* aTransaction)
   NS_ASSERTION(info, "We've never heard of this transaction?!?");
 
   const nsTArray<nsString>& objectStoreNames = aTransaction->mObjectStoreNames;
-  for (uint32_t index = 0, count = objectStoreNames.Length(); index < count;
+  for (size_t index = 0, count = objectStoreNames.Length(); index < count;
        index++) {
     TransactionInfoPair* blockInfo =
       dbTransactionInfo->blockingTransactions.Get(objectStoreNames[index]);
@@ -269,7 +269,7 @@ TransactionThreadPool::FinishTransaction(IDBTransaction* aTransaction)
       blockInfo->lastBlockingReads = nullptr;
     }
 
-    uint32_t i = blockInfo->lastBlockingWrites.IndexOf(info);
+    size_t i = blockInfo->lastBlockingWrites.IndexOf(info);
     if (i != blockInfo->lastBlockingWrites.NoIndex) {
       blockInfo->lastBlockingWrites.RemoveElementAt(i);
     }
@@ -565,7 +565,7 @@ TransactionThreadPool::TransactionQueue::Finish(nsIRunnable* aFinishRunnable)
   mMonitor.Notify();
 }
 
-NS_IMPL_ISUPPORTS1(TransactionThreadPool::TransactionQueue, nsIRunnable)
+NS_IMPL_ISUPPORTS(TransactionThreadPool::TransactionQueue, nsIRunnable)
 
 NS_IMETHODIMP
 TransactionThreadPool::TransactionQueue::Run()
@@ -637,7 +637,7 @@ FinishTransactionRunnable::FinishTransactionRunnable(
   mFinishRunnable.swap(aFinishRunnable);
 }
 
-NS_IMPL_ISUPPORTS1(FinishTransactionRunnable, nsIRunnable)
+NS_IMPL_ISUPPORTS(FinishTransactionRunnable, nsIRunnable)
 
 NS_IMETHODIMP
 FinishTransactionRunnable::Run()
@@ -663,7 +663,7 @@ FinishTransactionRunnable::Run()
 
 #ifdef MOZ_ENABLE_PROFILER_SPS
 
-NS_IMPL_ISUPPORTS1(TransactionThreadPoolListener, nsIThreadPoolListener)
+NS_IMPL_ISUPPORTS(TransactionThreadPoolListener, nsIThreadPoolListener)
 
 NS_IMETHODIMP
 TransactionThreadPoolListener::OnThreadCreated()

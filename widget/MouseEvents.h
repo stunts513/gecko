@@ -44,14 +44,16 @@ class WidgetPointerHelper
 {
 public:
   bool convertToPointer;
+  uint32_t pointerId;
   uint32_t tiltX;
   uint32_t tiltY;
 
-  WidgetPointerHelper() : convertToPointer(true), tiltX(0), tiltY(0) {}
+  WidgetPointerHelper() : convertToPointer(true), pointerId(0), tiltX(0), tiltY(0) {}
 
   void AssignPointerHelperData(const WidgetPointerHelper& aEvent)
   {
     convertToPointer = aEvent.convertToPointer;
+    pointerId = aEvent.pointerId;
     tiltX = aEvent.tiltX;
     tiltY = aEvent.tiltY;
   }
@@ -186,9 +188,6 @@ protected:
     reason(aReason), context(eNormal), exit(eChild), clickCount(0)
   {
     switch (aMessage) {
-      case NS_MOUSE_MOVE:
-        mFlags.mCancelable = false;
-        break;
       case NS_MOUSEENTER:
       case NS_MOUSELEAVE:
         mFlags.mBubbles = false;
@@ -209,9 +208,6 @@ public:
     reason(aReason), context(aContext), exit(eChild), clickCount(0)
   {
     switch (aMessage) {
-      case NS_MOUSE_MOVE:
-        mFlags.mCancelable = false;
-        break;
       case NS_MOUSEENTER:
       case NS_MOUSELEAVE:
         mFlags.mBubbles = false;
@@ -560,7 +556,6 @@ public:
 
   WidgetPointerEvent(bool aIsTrusted, uint32_t aMsg, nsIWidget* w)
     : WidgetMouseEvent(aIsTrusted, aMsg, w, NS_POINTER_EVENT, eReal)
-    , pointerId(0)
     , width(0)
     , height(0)
     , isPrimary(true)
@@ -570,7 +565,6 @@ public:
 
   WidgetPointerEvent(const WidgetMouseEvent& aEvent)
     : WidgetMouseEvent(aEvent)
-    , pointerId(0)
     , width(0)
     , height(0)
     , isPrimary(true)
@@ -609,7 +603,6 @@ public:
     return result;
   }
 
-  uint32_t pointerId;
   uint32_t width;
   uint32_t height;
   bool isPrimary;
@@ -620,7 +613,6 @@ public:
   {
     AssignMouseEventData(aEvent, aCopyTargets);
 
-    pointerId = aEvent.pointerId;
     width = aEvent.width;
     height = aEvent.height;
     isPrimary = aEvent.isPrimary;

@@ -71,11 +71,13 @@ IsMainProcess()
   return isMainProcess;
 }
 
+#ifdef DEBUG
 bool
 IsChildProcess()
 {
   return !IsMainProcess();
 }
+#endif
 
 void
 AssertIsInMainProcess()
@@ -1295,7 +1297,7 @@ ParentImpl::ActorDestroy(ActorDestroyReason aWhy)
   MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_DispatchToCurrentThread(destroyRunnable)));
 }
 
-NS_IMPL_ISUPPORTS1(ParentImpl::ShutdownObserver, nsIObserver)
+NS_IMPL_ISUPPORTS(ParentImpl::ShutdownObserver, nsIObserver)
 
 NS_IMETHODIMP
 ParentImpl::ShutdownObserver::Observe(nsISupports* aSubject,
@@ -1947,7 +1949,7 @@ ChildImpl::ActorDestroy(ActorDestroyReason aWhy)
   BackgroundChildImpl::ActorDestroy(aWhy);
 }
 
-NS_IMPL_ISUPPORTS1(ChildImpl::ShutdownObserver, nsIObserver)
+NS_IMPL_ISUPPORTS(ChildImpl::ShutdownObserver, nsIObserver)
 
 NS_IMETHODIMP
 ChildImpl::ShutdownObserver::Observe(nsISupports* aSubject,

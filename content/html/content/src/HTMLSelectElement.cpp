@@ -40,7 +40,7 @@ NS_IMPL_NS_NEW_HTML_ELEMENT_CHECK_PARSER(Select)
 namespace mozilla {
 namespace dom {
 
-NS_IMPL_ISUPPORTS1(SelectState, SelectState)
+NS_IMPL_ISUPPORTS(SelectState, SelectState)
 
 //----------------------------------------------------------------------
 //
@@ -153,9 +153,9 @@ NS_IMPL_RELEASE_INHERITED(HTMLSelectElement, Element)
 
 // QueryInterface implementation for HTMLSelectElement
 NS_INTERFACE_TABLE_HEAD_CYCLE_COLLECTION_INHERITED(HTMLSelectElement)
-  NS_INTERFACE_TABLE_INHERITED2(HTMLSelectElement,
-                                nsIDOMHTMLSelectElement,
-                                nsIConstraintValidation)
+  NS_INTERFACE_TABLE_INHERITED(HTMLSelectElement,
+                               nsIDOMHTMLSelectElement,
+                               nsIConstraintValidation)
 NS_INTERFACE_TABLE_TAIL_INHERITING(nsGenericHTMLFormElementWithState)
 
 
@@ -1908,9 +1908,9 @@ HTMLSelectElement::UpdateSelectedOptions()
 }
 
 JSObject*
-HTMLSelectElement::WrapNode(JSContext* aCx, JS::Handle<JSObject*> aScope)
+HTMLSelectElement::WrapNode(JSContext* aCx)
 {
-  return HTMLSelectElementBinding::Wrap(aCx, aScope, this);
+  return HTMLSelectElementBinding::Wrap(aCx, this);
 }
 
 } // namespace dom

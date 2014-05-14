@@ -4,6 +4,8 @@
 
 "use strict";
 
+let { TabActor } = require("devtools/server/actors/webbrowser");
+
 /**
  * Tab actor for documents living in a child process.
  *
@@ -22,8 +24,8 @@
  */
 function ContentActor(connection, chromeGlobal)
 {
-  TabActor.call(this, connection, chromeGlobal);
   this._chromeGlobal = chromeGlobal;
+  TabActor.call(this, connection, chromeGlobal);
   this.traits.reconfigure = false;
 }
 
@@ -41,7 +43,6 @@ Object.defineProperty(ContentActor.prototype, "docShell", {
 
 ContentActor.prototype.exit = function() {
   TabActor.prototype.exit.call(this);
-  this._chromeGlobal = null;
 };
 
 // Override grip just to rename this._tabActorPool to this._tabActorPool2

@@ -15,7 +15,6 @@
 #include "nsAString.h"
 #include "nsPrintfCString.h"            // for nsPrintfCString
 #include "nsString.h"                   // for nsAutoCString
-#include "ipc/AutoOpenSurface.h"        // for AutoOpenSurface
 #include "mozilla/layers/TextureHostOGL.h"  // for TextureHostOGL
 
 namespace mozilla {
@@ -130,29 +129,29 @@ ContentHostBase::Composite(EffectChain& aEffectChain,
     regionRects.Or(regionRects, regionRect);
   }
 
-  TileIterator* tileIter = source->AsTileIterator();
-  TileIterator* iterOnWhite = nullptr;
-  if (tileIter) {
-    tileIter->BeginTileIteration();
+  BigImageIterator* bigImgIter = source->AsBigImageIterator();
+  BigImageIterator* iterOnWhite = nullptr;
+  if (bigImgIter) {
+    bigImgIter->BeginBigImageIteration();
   }
 
   if (sourceOnWhite) {
-    iterOnWhite = sourceOnWhite->AsTileIterator();
-    MOZ_ASSERT(!tileIter || tileIter->GetTileCount() == iterOnWhite->GetTileCount(),
+    iterOnWhite = sourceOnWhite->AsBigImageIterator();
+    MOZ_ASSERT(!bigImgIter || bigImgIter->GetTileCount() == iterOnWhite->GetTileCount(),
                "Tile count mismatch on component alpha texture");
     if (iterOnWhite) {
-      iterOnWhite->BeginTileIteration();
+      iterOnWhite->BeginBigImageIteration();
     }
   }
 
-  bool usingTiles = (tileIter && tileIter->GetTileCount() > 1);
+  bool usingTiles = (bigImgIter && bigImgIter->GetTileCount() > 1);
   do {
     if (iterOnWhite) {
-      MOZ_ASSERT(iterOnWhite->GetTileRect() == tileIter->GetTileRect(),
+      MOZ_ASSERT(iterOnWhite->GetTileRect() == bigImgIter->GetTileRect(),
                  "component alpha textures should be the same size.");
     }
 
-    nsIntRect texRect = tileIter ? tileIter->GetTileRect()
+    nsIntRect texRect = bigImgIter ? bigImgIter->GetTileRect()
                                  : nsIntRect(0, 0,
                                              texSize.width,
                                              texSize.height);
@@ -199,8 +198,10 @@ ContentHostBase::Composite(EffectChain& aEffectChain,
                                         Float(tileRegionRect.height) / texRect.height);
           GetCompositor()->DrawQuad(rect, aClipRect, aEffectChain, aOpacity, aTransform);
           if (usingTiles) {
-            DiagnosticTypes diagnostics = DIAGNOSTIC_CONTENT | DIAGNOSTIC_BIGIMAGE;
-            diagnostics |= iterOnWhite ? DIAGNOSTIC_COMPONENT_ALPHA : 0;
+            DiagnosticFlags diagnostics = DiagnosticFlags::CONTENT | DiagnosticFlags::BIGIMAGE;
+            if (iterOnWhite) {
+              diagnostics |= DiagnosticFlags::COMPONENT_ALPHA;
+            }
             GetCompositor()->DrawDiagnostics(diagnostics, rect, aClipRect,
                                              aTransform, mFlashCounter);
           }
@@ -211,17 +212,19 @@ ContentHostBase::Composite(EffectChain& aEffectChain,
     if (iterOnWhite) {
       iterOnWhite->NextTile();
     }
-  } while (usingTiles && tileIter->NextTile());
+  } while (usingTiles && bigImgIter->NextTile());
 
-  if (tileIter) {
-    tileIter->EndTileIteration();
+  if (bigImgIter) {
+    bigImgIter->EndBigImageIteration();
   }
   if (iterOnWhite) {
-    iterOnWhite->EndTileIteration();
+    iterOnWhite->EndBigImageIteration();
   }
 
-  DiagnosticTypes diagnostics = DIAGNOSTIC_CONTENT;
-  diagnostics |= iterOnWhite ? DIAGNOSTIC_COMPONENT_ALPHA : 0;
+  DiagnosticFlags diagnostics = DiagnosticFlags::CONTENT;
+  if (iterOnWhite) {
+    diagnostics |= DiagnosticFlags::COMPONENT_ALPHA;
+  }
   GetCompositor()->DrawDiagnostics(diagnostics, *aVisibleRegion, aClipRect,
                                    aTransform, mFlashCounter);
 }
@@ -285,6 +288,16 @@ ContentHostTexture::Dump(FILE* aFile,
 }
 #endif
 
+static inline void
+AddWrappedRegion(const nsIntRegion& aInput, nsIntRegion& aOutput,
+                 const nsIntSize& aSize, const nsIntPoint& aShift)
+{
+  nsIntRegion tempRegion;
+  tempRegion.And(nsIntRect(aShift, aSize), aInput);
+  tempRegion.MoveBy(-aShift);
+  aOutput.Or(aOutput, tempRegion);
+}
+
 bool
 ContentHostSingleBuffered::UpdateThebes(const ThebesBufferData& aData,
                                         const nsIntRegion& aUpdated,
@@ -302,26 +315,38 @@ ContentHostSingleBuffered::UpdateThebes(const ThebesBufferData& aData,
   nsIntRegion destRegion(aUpdated);
   destRegion.MoveBy(-aData.rect().TopLeft());
 
-  // Correct for rotation
-  destRegion.MoveBy(aData.rotation());
-
-  IntSize size = aData.rect().Size().ToIntSize();
-  nsIntRect destBounds = destRegion.GetBounds();
-  destRegion.MoveBy((destBounds.x >= size.width) ? -size.width : 0,
-                    (destBounds.y >= size.height) ? -size.height : 0);
-
-  // We can get arbitrary bad regions from an untrusted client,
-  // which we need to be resilient to. See bug 967330.
-  if((destBounds.x % size.width) + destBounds.width > size.width ||
-     (destBounds.y % size.height) + destBounds.height > size.height)
-  {
-    NS_ERROR("updated region lies across rotation boundaries!");
+  if (!aData.rect().Contains(aUpdated.GetBounds()) ||
+      aData.rotation().x > aData.rect().width ||
+      aData.rotation().y > aData.rect().height) {
+    NS_ERROR("Invalid update data");
     return false;
   }
 
-  mTextureHost->Updated(&destRegion);
+  // destRegion is now in logical coordinates relative to the buffer, but we
+  // need to account for rotation. We do that by moving the region to the
+  // rotation offset and then wrapping any pixels that extend off the
+  // bottom/right edges.
+
+  // Shift to the rotation point
+  destRegion.MoveBy(aData.rotation());
+
+  nsIntSize bufferSize = aData.rect().Size();
+
+  // Select only the pixels that are still within the buffer.
+  nsIntRegion finalRegion;
+  finalRegion.And(nsIntRect(nsIntPoint(), bufferSize), destRegion);
+
+  // For each of the overlap areas (right, bottom-right, bottom), select those
+  // pixels and wrap them around to the opposite edge of the buffer rect.
+  AddWrappedRegion(destRegion, finalRegion, bufferSize, nsIntPoint(aData.rect().width, 0));
+  AddWrappedRegion(destRegion, finalRegion, bufferSize, nsIntPoint(aData.rect().width, aData.rect().height));
+  AddWrappedRegion(destRegion, finalRegion, bufferSize, nsIntPoint(0, aData.rect().height));
+
+  MOZ_ASSERT(nsIntRect(0, 0, aData.rect().width, aData.rect().height).Contains(finalRegion.GetBounds()));
+
+  mTextureHost->Updated(&finalRegion);
   if (mTextureHostOnWhite) {
-    mTextureHostOnWhite->Updated(&destRegion);
+    mTextureHostOnWhite->Updated(&finalRegion);
   }
   mInitialised = true;
 
@@ -389,7 +414,7 @@ ContentHostIncremental::DestroyTextures()
   mUpdateList.Clear();
 }
 
-void
+bool
 ContentHostIncremental::CreatedIncrementalTexture(ISurfaceAllocator* aAllocator,
                                                   const TextureInfo& aTextureInfo,
                                                   const nsIntRect& aBufferRect)
@@ -398,6 +423,7 @@ ContentHostIncremental::CreatedIncrementalTexture(ISurfaceAllocator* aAllocator,
                                                        aBufferRect));
   mDeAllocator = aAllocator;
   FlushUpdateQueue();
+  return true;
 }
 
 void
@@ -466,7 +492,7 @@ ContentHostIncremental::TextureCreationRequest::Execute(ContentHostIncremental* 
     temp->AsSourceOGL()->AsTextureImageTextureSource();
 
   RefPtr<TextureImageTextureSourceOGL> newSourceOnWhite;
-  if (mTextureInfo.mTextureFlags & TEXTURE_COMPONENT_ALPHA) {
+  if (mTextureInfo.mTextureFlags & TextureFlags::COMPONENT_ALPHA) {
     temp =
       compositor->CreateDataTextureSource(mTextureInfo.mTextureFlags);
     MOZ_ASSERT(temp->AsSourceOGL() &&
@@ -474,7 +500,7 @@ ContentHostIncremental::TextureCreationRequest::Execute(ContentHostIncremental* 
     newSourceOnWhite = temp->AsSourceOGL()->AsTextureImageTextureSource();
   }
 
-  if (mTextureInfo.mDeprecatedTextureHostFlags & TEXTURE_HOST_COPY_PREVIOUS) {
+  if (mTextureInfo.mDeprecatedTextureHostFlags & DeprecatedTextureHostFlags::COPY_PREVIOUS) {
     nsIntRect bufferRect = aHost->mBufferRect;
     nsIntPoint bufferRotation = aHost->mBufferRotation;
     nsIntRect overlap;
@@ -622,19 +648,23 @@ ContentHostIncremental::TextureUpdateRequest::Execute(ContentHostIncremental* aH
 
   IntPoint offset = ToIntPoint(-mUpdated.GetBounds().TopLeft());
 
-  AutoOpenSurface surf(OPEN_READ_ONLY, mDescriptor);
+  RefPtr<DataSourceSurface> surf = GetSurfaceForDescriptor(mDescriptor);
 
-  nsRefPtr<gfxImageSurface> thebesSurf = surf.GetAsImage();
-  RefPtr<DataSourceSurface> sourceSurf =
-    gfx::Factory::CreateWrappingDataSourceSurface(thebesSurf->Data(),
-                                                  thebesSurf->Stride(),
-                                                  ToIntSize(thebesSurf->GetSize()),
-                                                  ImageFormatToSurfaceFormat(thebesSurf->Format()));
-
-  if (mTextureId == TextureFront) {
-    aHost->mSource->Update(sourceSurf, &mUpdated, &offset);
+  if (mTextureId == TextureIdentifier::Front) {
+    aHost->mSource->Update(surf, &mUpdated, &offset);
   } else {
-    aHost->mSourceOnWhite->Update(sourceSurf, &mUpdated, &offset);
+    aHost->mSourceOnWhite->Update(surf, &mUpdated, &offset);
+  }
+}
+
+void
+ContentHostIncremental::PrintInfo(nsACString& aTo, const char* aPrefix)
+{
+  aTo += aPrefix;
+  aTo += nsPrintfCString("ContentHostIncremental (0x%p)", this);
+
+  if (PaintWillResample()) {
+    aTo += " [paint-will-resample]";
   }
 }
 
@@ -650,10 +680,10 @@ ContentHostTexture::PrintInfo(nsACString& aTo, const char* aPrefix)
     aTo += " [paint-will-resample]";
   }
 
-  nsAutoCString pfx(aPrefix);
-  pfx += "  ";
-
   if (mTextureHost) {
+    nsAutoCString pfx(aPrefix);
+    pfx += "  ";
+
     aTo += "\n";
     mTextureHost->PrintInfo(aTo, pfx.get());
   }
@@ -670,7 +700,7 @@ ContentHostTexture::GetRenderState()
   LayerRenderState result = mTextureHost->GetRenderState();
 
   if (mBufferRotation != nsIntPoint()) {
-    result.mFlags |= LAYER_RENDER_STATE_BUFFER_ROTATION;
+    result.mFlags |= LayerRenderStateFlags::BUFFER_ROTATION;
   }
   result.SetOffset(GetOriginOffset());
   return result;

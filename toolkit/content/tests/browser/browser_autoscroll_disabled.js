@@ -25,10 +25,6 @@ function test()
     if (Services.prefs.prefHasUserValue(kPrefName_AutoScroll))
       Services.prefs.clearUserPref(kPrefName_AutoScroll);
 
-    // cleaning-up
-    gBrowser.addTab("about:blank");
-    gBrowser.removeCurrentTab();
-
     // waitForFocus() fixes a failure in the next test if the latter runs too soon.
     waitForFocus(finish);
   }

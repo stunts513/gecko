@@ -556,6 +556,8 @@ class AutoDetectInvalidation
     Value *rval_;
     bool disabled_;
 
+    void setReturnOverride();
+
   public:
     AutoDetectInvalidation(JSContext *cx, Value *rval, IonScript *ionScript = nullptr);
 
@@ -566,7 +568,7 @@ class AutoDetectInvalidation
 
     ~AutoDetectInvalidation() {
         if (!disabled_ && ionScript_->invalidated())
-            cx_->runtime()->setIonReturnOverride(*rval_);
+            setReturnOverride();
     }
 };
 
@@ -617,9 +619,9 @@ bool SetProperty(JSContext *cx, HandleObject obj, HandlePropertyName name, Handl
 
 bool InterruptCheck(JSContext *cx);
 
-HeapSlot *NewSlots(JSRuntime *rt, unsigned nslots);
-JSObject *NewCallObject(JSContext *cx, HandleShape shape, HandleTypeObject type, HeapSlot *slots);
-JSObject *NewSingletonCallObject(JSContext *cx, HandleShape shape, HeapSlot *slots);
+void *MallocWrapper(JSRuntime *rt, size_t nbytes);
+JSObject *NewCallObject(JSContext *cx, HandleShape shape, HandleTypeObject type);
+JSObject *NewSingletonCallObject(JSContext *cx, HandleShape shape);
 JSObject *NewStringObject(JSContext *cx, HandleString str);
 
 bool SPSEnter(JSContext *cx, HandleScript script);
@@ -671,11 +673,16 @@ bool InitBaselineFrameForOsr(BaselineFrame *frame, InterpreterFrame *interpFrame
 JSObject *CreateDerivedTypedObj(JSContext *cx, HandleObject descr,
                                 HandleObject owner, int32_t offset);
 
+bool ArraySpliceDense(JSContext *cx, HandleObject obj, uint32_t start, uint32_t deleteCount);
+
 bool Recompile(JSContext *cx);
 JSString *RegExpReplace(JSContext *cx, HandleString string, HandleObject regexp,
                         HandleString repl);
 JSString *StringReplace(JSContext *cx, HandleString string, HandleString pattern,
                         HandleString repl);
+
+bool SetDenseElement(JSContext *cx, HandleObject obj, int32_t index, HandleValue value,
+                     bool strict);
 
 #ifdef DEBUG
 void AssertValidObjectPtr(JSContext *cx, JSObject *obj);

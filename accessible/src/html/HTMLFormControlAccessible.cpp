@@ -180,6 +180,7 @@ HTMLButtonAccessible::
   HTMLButtonAccessible(nsIContent* aContent, DocAccessible* aDoc) :
   HyperTextAccessibleWrap(aContent, aDoc)
 {
+  mGenericTypes |= eButton;
 }
 
 uint8_t
@@ -291,10 +292,10 @@ HTMLTextFieldAccessible::
   mType = eHTMLTextFieldType;
 }
 
-NS_IMPL_ISUPPORTS_INHERITED2(HTMLTextFieldAccessible,
-                             Accessible,                             
-                             nsIAccessibleText,
-                             nsIAccessibleEditableText)
+NS_IMPL_ISUPPORTS_INHERITED(HTMLTextFieldAccessible,
+                            Accessible,                            
+                            nsIAccessibleText,
+                            nsIAccessibleEditableText)
 
 role
 HTMLTextFieldAccessible::NativeRole()
@@ -473,7 +474,7 @@ HTMLTextFieldAccessible::GetEditor() const
   // nsGenericHTMLElement::GetEditor has a security check.
   // Make sure we're not restricted by the permissions of
   // whatever script is currently running.
-  mozilla::dom::AutoSystemCaller asc;
+  mozilla::dom::AutoNoJSAPI nojsapi;
 
   nsCOMPtr<nsIEditor> editor;
   editableElt->GetEditor(getter_AddRefs(editor));

@@ -309,8 +309,15 @@ DrawTargetSkia::DrawSurface(SourceSurface *aSurface,
                             const DrawSurfaceOptions &aSurfOptions,
                             const DrawOptions &aOptions)
 {
+  RefPtr<SourceSurface> dataSurface;
+
   if (!(aSurface->GetType() == SurfaceType::SKIA || aSurface->GetType() == SurfaceType::DATA)) {
-    return;
+    dataSurface = aSurface->GetDataSurface();
+    if (!dataSurface) {
+      gfxDebug() << *this << ": DrawSurface() can't draw surface";
+      return;
+    }
+    aSurface = dataSurface.get();
   }
 
   if (aSource.IsEmpty()) {
@@ -595,16 +602,7 @@ DrawTargetSkia::OptimizeSourceSurface(SourceSurface *aSurface) const
     return aSurface;
   }
 
-  if (aSurface->GetType() != SurfaceType::DATA) {
-    return nullptr;
-  }
-
-  RefPtr<DataSourceSurface> data = aSurface->GetDataSurface();
-  RefPtr<SourceSurface> surface = CreateSourceSurfaceFromData(data->GetData(),
-                                                              data->GetSize(),
-                                                              data->Stride(),
-                                                              data->GetFormat());
-  return data.forget();
+  return aSurface->GetDataSurface();
 }
 
 TemporaryRef<SourceSurface>

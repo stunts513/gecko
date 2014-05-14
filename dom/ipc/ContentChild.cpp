@@ -25,10 +25,12 @@
 #include "mozilla/dom/DOMStorageIPC.h"
 #include "mozilla/hal_sandbox/PHalChild.h"
 #include "mozilla/ipc/BackgroundChild.h"
+#include "mozilla/ipc/FileDescriptorUtils.h"
 #include "mozilla/ipc/GeckoChildProcessHost.h"
 #include "mozilla/ipc/TestShellChild.h"
 #include "mozilla/layers/CompositorChild.h"
 #include "mozilla/layers/ImageBridgeChild.h"
+#include "mozilla/layers/SharedBufferManagerChild.h"
 #include "mozilla/layers/PCompositorChild.h"
 #include "mozilla/net/NeckoChild.h"
 #include "mozilla/Preferences.h"
@@ -45,13 +47,13 @@
 #include "mozilla/unused.h"
 
 #include "nsIConsoleListener.h"
+#include "nsICycleCollectorListener.h"
 #include "nsIIPCBackgroundChildCreateCallback.h"
 #include "nsIInterfaceRequestorUtils.h"
 #include "nsIMemoryReporter.h"
 #include "nsIMemoryInfoDumper.h"
 #include "nsIMutable.h"
 #include "nsIObserverService.h"
-#include "nsIObserver.h"
 #include "nsIScriptSecurityManager.h"
 #include "nsServiceManagerUtils.h"
 #include "nsStyleSheetService.h"
@@ -78,6 +80,7 @@
 
 #include "nsIGeolocationProvider.h"
 #include "mozilla/dom/PMemoryReportRequestChild.h"
+#include "mozilla/dom/PCycleCollectWithLogsChild.h"
 
 #ifdef MOZ_PERMISSIONS
 #include "nsIScriptSecurityManager.h"
@@ -190,7 +193,7 @@ private:
     nsString mDMDDumpIdent;
 };
 
-NS_IMPL_ISUPPORTS1(MemoryReportRequestChild, nsIRunnable)
+NS_IMPL_ISUPPORTS(MemoryReportRequestChild, nsIRunnable)
 
 MemoryReportRequestChild::MemoryReportRequestChild(uint32_t aGeneration, const nsAString& aDMDDumpIdent)
 : mGeneration(aGeneration), mDMDDumpIdent(aDMDDumpIdent)
@@ -202,6 +205,108 @@ MemoryReportRequestChild::~MemoryReportRequestChild()
 {
     MOZ_COUNT_DTOR(MemoryReportRequestChild);
 }
+
+// IPC sender for remote GC/CC logging.
+class CycleCollectWithLogsChild MOZ_FINAL
+    : public PCycleCollectWithLogsChild
+    , public nsICycleCollectorLogSink
+{
+public:
+    NS_DECL_ISUPPORTS
+
+    CycleCollectWithLogsChild(const FileDescriptor& aGCLog,
+                              const FileDescriptor& aCCLog)
+    {
+        mGCLog = FileDescriptorToFILE(aGCLog, "w");
+        mCCLog = FileDescriptorToFILE(aCCLog, "w");
+    }
+
+    NS_IMETHOD Open(FILE** aGCLog, FILE** aCCLog) MOZ_OVERRIDE
+    {
+        if (NS_WARN_IF(!mGCLog) || NS_WARN_IF(!mCCLog)) {
+            return NS_ERROR_FAILURE;
+        }
+        *aGCLog = mGCLog;
+        *aCCLog = mCCLog;
+        return NS_OK;
+    }
+
+    NS_IMETHOD CloseGCLog() MOZ_OVERRIDE
+    {
+        MOZ_ASSERT(mGCLog);
+        fclose(mGCLog);
+        mGCLog = nullptr;
+        SendCloseGCLog();
+        return NS_OK;
+    }
+
+    NS_IMETHOD CloseCCLog() MOZ_OVERRIDE
+    {
+        MOZ_ASSERT(mCCLog);
+        fclose(mCCLog);
+        mCCLog = nullptr;
+        SendCloseCCLog();
+        return NS_OK;
+    }
+
+    NS_IMETHOD GetFilenameIdentifier(nsAString& aIdentifier) MOZ_OVERRIDE
+    {
+        return UnimplementedProperty();
+    }
+
+    NS_IMETHOD SetFilenameIdentifier(const nsAString& aIdentifier) MOZ_OVERRIDE
+    {
+        return UnimplementedProperty();
+    }
+
+    NS_IMETHOD GetProcessIdentifier(int32_t *aIdentifier) MOZ_OVERRIDE
+    {
+        return UnimplementedProperty();
+    }
+
+    NS_IMETHOD SetProcessIdentifier(int32_t aIdentifier) MOZ_OVERRIDE
+    {
+        return UnimplementedProperty();
+    }
+
+    NS_IMETHOD GetGcLog(nsIFile** aPath) MOZ_OVERRIDE
+    {
+        return UnimplementedProperty();
+    }
+
+    NS_IMETHOD GetCcLog(nsIFile** aPath) MOZ_OVERRIDE
+    {
+        return UnimplementedProperty();
+    }
+
+private:
+    ~CycleCollectWithLogsChild()
+    {
+        if (mGCLog) {
+            fclose(mGCLog);
+            mGCLog = nullptr;
+        }
+        if (mCCLog) {
+            fclose(mCCLog);
+            mCCLog = nullptr;
+        }
+        // The XPCOM refcount drives the IPC lifecycle; see also
+        // DeallocPCycleCollectWithLogsChild.
+        unused << Send__delete__(this);
+    }
+
+    nsresult UnimplementedProperty()
+    {
+        MOZ_ASSERT(false, "This object is a remote GC/CC logger;"
+                   " this property isn't meaningful.");
+        return NS_ERROR_UNEXPECTED;
+    }
+
+    FILE* mGCLog;
+    FILE* mCCLog;
+};
+
+NS_IMPL_ISUPPORTS(CycleCollectWithLogsChild, nsICycleCollectorLogSink);
 
 class AlertObserver
 {
@@ -252,7 +357,7 @@ private:
     friend class ContentChild;
 };
 
-NS_IMPL_ISUPPORTS1(ConsoleListener, nsIConsoleListener)
+NS_IMPL_ISUPPORTS(ConsoleListener, nsIConsoleListener)
 
 NS_IMETHODIMP
 ConsoleListener::Observe(nsIConsoleMessage* aMessage)
@@ -333,7 +438,7 @@ SystemMessageHandledObserver::Observe(nsISupports* aSubject,
     return NS_OK;
 }
 
-NS_IMPL_ISUPPORTS1(SystemMessageHandledObserver, nsIObserver)
+NS_IMPL_ISUPPORTS(SystemMessageHandledObserver, nsIObserver)
 
 class BackgroundChildPrimer MOZ_FINAL :
   public nsIIPCBackgroundChildCreateCallback
@@ -361,7 +466,7 @@ private:
     }
 };
 
-NS_IMPL_ISUPPORTS1(BackgroundChildPrimer, nsIIPCBackgroundChildCreateCallback)
+NS_IMPL_ISUPPORTS(BackgroundChildPrimer, nsIIPCBackgroundChildCreateCallback)
 
 ContentChild* ContentChild::sSingleton;
 
@@ -603,7 +708,7 @@ public:
 private:
     const nsCString mProcess;
 };
-NS_IMPL_ISUPPORTS1(
+NS_IMPL_ISUPPORTS(
   MemoryReportCallback
 , nsIMemoryReporterCallback
 )
@@ -669,16 +774,39 @@ ContentChild::DeallocPMemoryReportRequestChild(PMemoryReportRequestChild* actor)
     return true;
 }
 
-bool
-ContentChild::RecvDumpGCAndCCLogsToFile(const nsString& aIdentifier,
-                                        const bool& aDumpAllTraces,
-                                        const bool& aDumpChildProcesses)
+PCycleCollectWithLogsChild*
+ContentChild::AllocPCycleCollectWithLogsChild(const bool& aDumpAllTraces,
+                                              const FileDescriptor& aGCLog,
+                                              const FileDescriptor& aCCLog)
 {
+    CycleCollectWithLogsChild* actor = new CycleCollectWithLogsChild(aGCLog, aCCLog);
+    // Return actor with refcount 0, which is safe because it has a non-XPCOM type.
+    return actor;
+}
+
+bool
+ContentChild::RecvPCycleCollectWithLogsConstructor(PCycleCollectWithLogsChild* aActor,
+                                                   const bool& aDumpAllTraces,
+                                                   const FileDescriptor& aGCLog,
+                                                   const FileDescriptor& aCCLog)
+{
+    // Take a reference here, where the XPCOM type is regained.
+    nsRefPtr<CycleCollectWithLogsChild> sink = static_cast<CycleCollectWithLogsChild*>(aActor);
     nsCOMPtr<nsIMemoryInfoDumper> dumper = do_GetService("@mozilla.org/memory-info-dumper;1");
 
-    nsString gcLogPath, ccLogPath;
-    dumper->DumpGCAndCCLogsToFile(aIdentifier, aDumpAllTraces,
-                                  aDumpChildProcesses, gcLogPath, ccLogPath);
+    dumper->DumpGCAndCCLogsToSink(aDumpAllTraces, sink);
+
+    // The actor's destructor is called when the last reference goes away...
+    return true;
+}
+
+bool
+ContentChild::DeallocPCycleCollectWithLogsChild(PCycleCollectWithLogsChild* /* aActor */)
+{
+    // ...so when we get here, there's nothing for us to do.
+    //
+    // Also, we're already in ~CycleCollectWithLogsChild (q.v.) at
+    // this point, so we shouldn't touch the actor in any case.
     return true;
 }
 
@@ -687,6 +815,13 @@ ContentChild::AllocPCompositorChild(mozilla::ipc::Transport* aTransport,
                                     base::ProcessId aOtherProcess)
 {
     return CompositorChild::Create(aTransport, aOtherProcess);
+}
+
+PSharedBufferManagerChild*
+ContentChild::AllocPSharedBufferManagerChild(mozilla::ipc::Transport* aTransport,
+                                              base::ProcessId aOtherProcess)
+{
+    return SharedBufferManagerChild::StartUpInChildProcess(aTransport, aOtherProcess);
 }
 
 PImageBridgeChild*
@@ -744,6 +879,8 @@ static void FirstIdle(void)
 mozilla::jsipc::PJavaScriptChild *
 ContentChild::AllocPJavaScriptChild()
 {
+    MOZ_ASSERT(!ManagedPJavaScriptChild().Length());
+
     nsCOMPtr<nsIJSRuntimeService> svc = do_GetService("@mozilla.org/js/xpc/RuntimeService;1");
     NS_ENSURE_TRUE(svc, nullptr);
 
@@ -869,43 +1006,6 @@ ContentChild::GetOrCreateActorForBlob(nsIDOMBlob* aBlob)
     return actor;
   }
 
-  // XXX This is only safe so long as all blob implementations in our tree
-  //     inherit nsDOMFileBase. If that ever changes then this will need to grow
-  //     a real interface or something.
-  const nsDOMFileBase* blob = static_cast<nsDOMFileBase*>(aBlob);
-
-  // We often pass blobs that are multipart but that only contain one sub-blob
-  // (WebActivities does this a bunch). Unwrap to reduce the number of actors
-  // that we have to maintain.
-  const nsTArray<nsCOMPtr<nsIDOMBlob> >* subBlobs = blob->GetSubBlobs();
-  if (subBlobs && subBlobs->Length() == 1) {
-    const nsCOMPtr<nsIDOMBlob>& subBlob = subBlobs->ElementAt(0);
-    MOZ_ASSERT(subBlob);
-
-    // We can only take this shortcut if the multipart and the sub-blob are both
-    // Blob objects or both File objects.
-    nsCOMPtr<nsIDOMFile> multipartBlobAsFile = do_QueryInterface(aBlob);
-    nsCOMPtr<nsIDOMFile> subBlobAsFile = do_QueryInterface(subBlob);
-    if (!multipartBlobAsFile == !subBlobAsFile) {
-      // The wrapping was unnecessary, see if we can simply pass an existing
-      // remote blob.
-      if (nsCOMPtr<nsIRemoteBlob> remoteBlob = do_QueryInterface(subBlob)) {
-        BlobChild* actor =
-          static_cast<BlobChild*>(
-            static_cast<PBlobChild*>(remoteBlob->GetPBlob()));
-        MOZ_ASSERT(actor);
-        return actor;
-      }
-
-      // No need to add a reference here since the original blob must have a
-      // strong reference in the caller and it must also have a strong reference
-      // to this sub-blob.
-      aBlob = subBlob;
-      blob = static_cast<nsDOMFileBase*>(aBlob);
-      subBlobs = blob->GetSubBlobs();
-    }
-  }
-
   // All blobs shared between processes must be immutable.
   nsCOMPtr<nsIMutable> mutableBlob = do_QueryInterface(aBlob);
   if (!mutableBlob || NS_FAILED(mutableBlob->SetMutable(false))) {
@@ -913,56 +1013,59 @@ ContentChild::GetOrCreateActorForBlob(nsIDOMBlob* aBlob)
     return nullptr;
   }
 
+#ifdef DEBUG
+  {
+    // XXX This is only safe so long as all blob implementations in our tree
+    //     inherit nsDOMFileBase. If that ever changes then this will need to
+    //     grow a real interface or something.
+    const auto* blob = static_cast<nsDOMFileBase*>(aBlob);
+
+    MOZ_ASSERT(!blob->IsSizeUnknown());
+    MOZ_ASSERT(!blob->IsDateUnknown());
+  }
+#endif
+
   ParentBlobConstructorParams params;
 
-  if (blob->IsSizeUnknown() || blob->IsDateUnknown()) {
-    // We don't want to call GetSize or GetLastModifiedDate
-    // yet since that may stat a file on the main thread
-    // here. Instead we'll learn the size lazily from the
-    // other process.
-    params.blobParams() = MysteryBlobConstructorParams();
-    params.optionalInputStreamParams() = void_t();
-  }
-  else {
-    nsString contentType;
-    nsresult rv = aBlob->GetType(contentType);
+  nsString contentType;
+  nsresult rv = aBlob->GetType(contentType);
+  NS_ENSURE_SUCCESS(rv, nullptr);
+
+  uint64_t length;
+  rv = aBlob->GetSize(&length);
+  NS_ENSURE_SUCCESS(rv, nullptr);
+
+  nsCOMPtr<nsIInputStream> stream;
+  rv = aBlob->GetInternalStream(getter_AddRefs(stream));
+  NS_ENSURE_SUCCESS(rv, nullptr);
+
+  InputStreamParams inputStreamParams;
+  nsTArray<mozilla::ipc::FileDescriptor> fds;
+  SerializeInputStream(stream, inputStreamParams, fds);
+
+  MOZ_ASSERT(fds.IsEmpty());
+
+  params.optionalInputStreamParams() = inputStreamParams;
+
+  nsCOMPtr<nsIDOMFile> file = do_QueryInterface(aBlob);
+  if (file) {
+    FileBlobConstructorParams fileParams;
+
+    rv = file->GetName(fileParams.name());
     NS_ENSURE_SUCCESS(rv, nullptr);
 
-    uint64_t length;
-    rv = aBlob->GetSize(&length);
+    rv = file->GetMozLastModifiedDate(&fileParams.modDate());
     NS_ENSURE_SUCCESS(rv, nullptr);
 
-    nsCOMPtr<nsIInputStream> stream;
-    rv = aBlob->GetInternalStream(getter_AddRefs(stream));
-    NS_ENSURE_SUCCESS(rv, nullptr);
+    fileParams.contentType() = contentType;
+    fileParams.length() = length;
 
-    InputStreamParams inputStreamParams;
-    nsTArray<mozilla::ipc::FileDescriptor> fds;
-    SerializeInputStream(stream, inputStreamParams, fds);
-    MOZ_ASSERT(fds.IsEmpty());
-
-    params.optionalInputStreamParams() = inputStreamParams;
-
-    nsCOMPtr<nsIDOMFile> file = do_QueryInterface(aBlob);
-    if (file) {
-      FileBlobConstructorParams fileParams;
-
-      rv = file->GetName(fileParams.name());
-      NS_ENSURE_SUCCESS(rv, nullptr);
-
-      rv = file->GetMozLastModifiedDate(&fileParams.modDate());
-      NS_ENSURE_SUCCESS(rv, nullptr);
-
-      fileParams.contentType() = contentType;
-      fileParams.length() = length;
-
-      params.blobParams() = fileParams;
-    } else {
-      NormalBlobConstructorParams blobParams;
-      blobParams.contentType() = contentType;
-      blobParams.length() = length;
-      params.blobParams() = blobParams;
-    }
+    params.blobParams() = fileParams;
+  } else {
+    NormalBlobConstructorParams blobParams;
+    blobParams.contentType() = contentType;
+    blobParams.length() = length;
+    params.blobParams() = blobParams;
   }
 
   BlobChild* actor = BlobChild::Create(this, aBlob);
@@ -1282,6 +1385,8 @@ ContentChild::ActorDestroy(ActorDestroyReason why)
 
     mAlertObservers.Clear();
 
+    mIdleObservers.Clear();
+
     nsCOMPtr<nsIConsoleService> svc(do_GetService(NS_CONSOLESERVICE_CONTRACTID));
     if (svc) {
         svc->UnregisterListener(mConsoleListener);
@@ -1405,7 +1510,7 @@ ContentChild::RecvAddPermission(const IPC::Permission& permission)
 {
 #if MOZ_PERMISSIONS
   nsCOMPtr<nsIPermissionManager> permissionManagerIface =
-      do_GetService(NS_PERMISSIONMANAGER_CONTRACTID);
+      services::GetPermissionManager();
   nsPermissionManager* permissionManager =
       static_cast<nsPermissionManager*>(permissionManagerIface.get());
   NS_ABORT_IF_FALSE(permissionManager, 
@@ -1585,12 +1690,13 @@ ContentChild::RecvFileSystemUpdate(const nsString& aFsName,
                                    const int32_t& aMountGeneration,
                                    const bool& aIsMediaPresent,
                                    const bool& aIsSharing,
-                                   const bool& aIsFormatting)
+                                   const bool& aIsFormatting,
+                                   const bool& aIsFake)
 {
 #ifdef MOZ_WIDGET_GONK
     nsRefPtr<nsVolume> volume = new nsVolume(aFsName, aVolumeName, aState,
                                              aMountGeneration, aIsMediaPresent,
-                                             aIsSharing, aIsFormatting);
+                                             aIsSharing, aIsFormatting, aIsFake);
 
     nsRefPtr<nsVolumeService> vs = nsVolumeService::GetSingleton();
     if (vs) {
@@ -1605,6 +1711,7 @@ ContentChild::RecvFileSystemUpdate(const nsString& aFsName,
     unused << aIsMediaPresent;
     unused << aIsSharing;
     unused << aIsFormatting;
+    unused << aIsFake;
 #endif
     return true;
 }
@@ -1660,6 +1767,7 @@ ContentChild::AddIdleObserver(nsIObserver* aObserver, uint32_t aIdleTimeInS)
   // Make sure aObserver isn't released while we wait for the parent
   aObserver->AddRef();
   SendAddIdleObserver(reinterpret_cast<uint64_t>(aObserver), aIdleTimeInS);
+  mIdleObservers.PutEntry(aObserver);
 }
 
 void
@@ -1668,6 +1776,7 @@ ContentChild::RemoveIdleObserver(nsIObserver* aObserver, uint32_t aIdleTimeInS)
   MOZ_ASSERT(aObserver, "null idle observer");
   SendRemoveIdleObserver(reinterpret_cast<uint64_t>(aObserver), aIdleTimeInS);
   aObserver->Release();
+  mIdleObservers.RemoveEntry(aObserver);
 }
 
 bool
@@ -1676,7 +1785,11 @@ ContentChild::RecvNotifyIdleObserver(const uint64_t& aObserver,
                                      const nsString& aTimeStr)
 {
   nsIObserver* observer = reinterpret_cast<nsIObserver*>(aObserver);
-  observer->Observe(nullptr, aTopic.get(), aTimeStr.get());
+  if (mIdleObservers.Contains(observer)) {
+    observer->Observe(nullptr, aTopic.get(), aTimeStr.get());
+  } else {
+    NS_WARNING("Received notification for an idle observer that was removed.");
+  }
   return true;
 }
 

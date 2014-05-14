@@ -1,7 +1,6 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=4 sw=4 et tw=99 ft=cpp:
- *
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* vim: set ts=8 sts=4 et sw=4 tw=99: */
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -74,14 +73,9 @@ AccessCheck::wrapperSubsumes(JSObject *wrapper)
 bool
 AccessCheck::isChrome(JSCompartment *compartment)
 {
-    nsIScriptSecurityManager *ssm = XPCWrapper::GetSecurityManager();
-    if (!ssm) {
-        return false;
-    }
-
     bool privileged;
     nsIPrincipal *principal = GetCompartmentPrincipal(compartment);
-    return NS_SUCCEEDED(ssm->IsSystemPrincipal(principal, &privileged)) && privileged;
+    return NS_SUCCEEDED(nsXPConnect::SecurityManager()->IsSystemPrincipal(principal, &privileged)) && privileged;
 }
 
 bool
@@ -93,12 +87,7 @@ AccessCheck::isChrome(JSObject *obj)
 bool
 AccessCheck::callerIsChrome()
 {
-    nsIScriptSecurityManager *ssm = XPCWrapper::GetSecurityManager();
-    if (!ssm)
-        return false;
-    bool subjectIsSystem;
-    nsresult rv = ssm->SubjectPrincipalIsSystem(&subjectIsSystem);
-    return NS_SUCCEEDED(rv) && subjectIsSystem;
+    return nsContentUtils::IsCallerChrome();
 }
 
 nsIPrincipal *
@@ -181,9 +170,6 @@ bool
 AccessCheck::isCrossOriginAccessPermitted(JSContext *cx, JSObject *wrapperArg, jsid idArg,
                                           Wrapper::Action act)
 {
-    if (!XPCWrapper::GetSecurityManager())
-        return true;
-
     if (act == Wrapper::CALL)
         return false;
 
@@ -297,7 +283,7 @@ ExposedPropertiesOnly::check(JSContext *cx, JSObject *wrapperArg, jsid idArg, Wr
     Access access = NO_ACCESS;
 
     Rooted<JSPropertyDescriptor> desc(cx);
-    if (!JS_GetPropertyDescriptorById(cx, hallpass, id, 0, &desc)) {
+    if (!JS_GetPropertyDescriptorById(cx, hallpass, id, &desc)) {
         return false; // Error
     }
     if (!desc.object() || !desc.isEnumerable())

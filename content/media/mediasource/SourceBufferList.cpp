@@ -111,6 +111,17 @@ SourceBufferList::Evict(double aStart, double aEnd)
   }
 }
 
+bool
+SourceBufferList::AllContainsTime(double aTime)
+{
+  for (uint32_t i = 0; i < mSourceBuffers.Length(); ++i) {
+    if (!mSourceBuffers[i]->ContainsTime(aTime)) {
+      return false;
+    }
+  }
+  return mSourceBuffers.Length() > 0;
+}
+
 void
 SourceBufferList::Ended()
 {
@@ -148,13 +159,13 @@ SourceBufferList::GetParentObject() const
 }
 
 JSObject*
-SourceBufferList::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+SourceBufferList::WrapObject(JSContext* aCx)
 {
-  return SourceBufferListBinding::Wrap(aCx, aScope, this);
+  return SourceBufferListBinding::Wrap(aCx, this);
 }
 
-NS_IMPL_CYCLE_COLLECTION_INHERITED_2(SourceBufferList, DOMEventTargetHelper,
-                                     mMediaSource, mSourceBuffers)
+NS_IMPL_CYCLE_COLLECTION_INHERITED(SourceBufferList, DOMEventTargetHelper,
+                                   mMediaSource, mSourceBuffers)
 
 NS_IMPL_ADDREF_INHERITED(SourceBufferList, DOMEventTargetHelper)
 NS_IMPL_RELEASE_INHERITED(SourceBufferList, DOMEventTargetHelper)

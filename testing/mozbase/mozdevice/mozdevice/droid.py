@@ -3,17 +3,20 @@
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 
 import StringIO
+import moznetwork
 import re
 import threading
 
 from Zeroconf import Zeroconf, ServiceBrowser
-from devicemanager import ZeroconfListener, NetworkTools
+from devicemanager import ZeroconfListener
 from devicemanagerADB import DeviceManagerADB
 from devicemanagerSUT import DeviceManagerSUT
 from devicemanager import DMError
 
 class DroidMixin(object):
     """Mixin to extend DeviceManager with Android-specific functionality"""
+
+    _stopApplicationNeedsRoot = True
 
     def _getExtraAmStartArgs(self):
         return []
@@ -114,7 +117,17 @@ class DroidMixin(object):
 
         return apps
 
+    def stopApplication(self, appName):
+        """
+        Stops the specified application (only works on Android 3.0+).
+
+        :param appName: Name of application (e.g. `com.android.chrome`)
+        """
+        self.shellCheckOutput([ "am", "force-stop", appName ], root=self._stopApplicationNeedsRoot)
+
 class DroidADB(DeviceManagerADB, DroidMixin):
+
+    _stopApplicationNeedsRoot = False
 
     def getTopActivity(self):
         package = None
@@ -169,17 +182,14 @@ class DroidSUT(DeviceManagerSUT, DroidMixin):
 
 def DroidConnectByHWID(hwid, timeout=30, **kwargs):
     """Try to connect to the given device by waiting for it to show up using mDNS with the given timeout."""
-    nt = NetworkTools()
-    local_ip = nt.getLanIp()
-
-    zc = Zeroconf(local_ip)
+    zc = Zeroconf(moznetwork.get_ip())
 
     evt = threading.Event()
     listener = ZeroconfListener(hwid, evt)
     sb = ServiceBrowser(zc, "_sutagent._tcp.local.", listener)
     foundIP = None
     if evt.wait(timeout):
-        # we found the hwid 
+        # we found the hwid
         foundIP = listener.ip
     sb.cancel()
     zc.close()

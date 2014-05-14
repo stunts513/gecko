@@ -42,27 +42,37 @@ var prefs = Cc["@mozilla.org/preferences-service;1"]
 var mozmillInit = {};
 Cu.import('resource://mozmill/modules/init.js', mozmillInit);
 
-const ACTION_ADD              = "add";
-const ACTION_VERIFY           = "verify";
-const ACTION_VERIFY_NOT       = "verify-not";
-const ACTION_MODIFY           = "modify";
-const ACTION_SYNC             = "sync";
-const ACTION_DELETE           = "delete";
-const ACTION_PRIVATE_BROWSING = "private-browsing";
-const ACTION_WIPE_REMOTE      = "wipe-remote";
-const ACTION_WIPE_SERVER      = "wipe-server";
-const ACTION_SET_ENABLED      = "set-enabled";
+// Options for wiping data during a sync
+const SYNC_RESET_CLIENT = "resetClient";
+const SYNC_WIPE_CLIENT  = "wipeClient";
+const SYNC_WIPE_REMOTE  = "wipeRemote";
 
-const ACTIONS = [ACTION_ADD, ACTION_VERIFY, ACTION_VERIFY_NOT,
-                 ACTION_MODIFY, ACTION_SYNC, ACTION_DELETE,
-                 ACTION_PRIVATE_BROWSING, ACTION_WIPE_REMOTE,
-                 ACTION_WIPE_SERVER, ACTION_SET_ENABLED];
+// Actions a test can perform
+const ACTION_ADD                = "add";
+const ACTION_DELETE             = "delete";
+const ACTION_MODIFY             = "modify";
+const ACTION_PRIVATE_BROWSING   = "private-browsing";
+const ACTION_SET_ENABLED        = "set-enabled";
+const ACTION_SYNC               = "sync";
+const ACTION_SYNC_RESET_CLIENT  = SYNC_RESET_CLIENT;
+const ACTION_SYNC_WIPE_CLIENT   = SYNC_WIPE_CLIENT;
+const ACTION_SYNC_WIPE_REMOTE   = SYNC_WIPE_REMOTE;
+const ACTION_VERIFY             = "verify";
+const ACTION_VERIFY_NOT         = "verify-not";
 
-const SYNC_WIPE_CLIENT  = "wipe-client";
-const SYNC_WIPE_REMOTE  = "wipe-remote";
-const SYNC_WIPE_SERVER  = "wipe-server";
-const SYNC_RESET_CLIENT = "reset-client";
-const SYNC_START_OVER   = "start-over";
+const ACTIONS = [
+  ACTION_ADD,
+  ACTION_DELETE,
+  ACTION_MODIFY,
+  ACTION_PRIVATE_BROWSING,
+  ACTION_SET_ENABLED,
+  ACTION_SYNC,
+  ACTION_SYNC_RESET_CLIENT,
+  ACTION_SYNC_WIPE_CLIENT,
+  ACTION_SYNC_WIPE_REMOTE,
+  ACTION_VERIFY,
+  ACTION_VERIFY_NOT,
+];
 
 const OBSERVER_TOPICS = ["fxaccounts:onlogin",
                          "fxaccounts:onlogout",
@@ -92,11 +102,12 @@ let TPS = {
   _setupComplete: false,
   _syncActive: false,
   _syncErrors: 0,
+  _syncWipeAction: null,
   _tabsAdded: 0,
   _tabsFinished: 0,
   _test: null,
+  _triggeredSync: false,
   _usSinceEpoch: 0,
-  _waitingForSync: false,
 
   _init: function TPS__init() {
     // Check if Firefox Accounts is enabled
@@ -104,6 +115,8 @@ let TPS = {
                   .getService(Components.interfaces.nsISupports)
                   .wrappedJSObject;
     this.fxaccounts_enabled = service.fxAccountsEnabled;
+
+    this.delayAutoSync();
 
     OBSERVER_TOPICS.forEach(function (aTopic) {
       Services.obs.addObserver(this, aTopic, true);
@@ -158,40 +171,54 @@ let TPS = {
 
         case "weave:service:setup-complete":
           this._setupComplete = true;
+
+          if (this._syncWipeAction) {
+            Weave.Svc.Prefs.set("firstSync", this._syncWipeAction);
+            this._syncWipeAction = null;
+          }
+
           break;
 
         case "weave:service:sync:error":
           this._syncActive = false;
 
-          if (this._waitingForSync && this._syncErrors == 0) {
-            // if this is the first sync error, retry...
-            Logger.logInfo("sync error; retrying...");
+          this.delayAutoSync();
+
+          // If this is the first sync error, retry...
+          if (this._syncErrors === 0) {
+            Logger.logInfo("Sync error; retrying...");
             this._syncErrors++;
-            this._waitingForSync = false;
             Utils.nextTick(this.RunNextTestAction, this);
           }
-          else if (this._waitingForSync) {
-            // ...otherwise abort the test
-            this.DumpError("sync error; aborting test");
+          else {
+            this._triggeredSync = false;
+            this.DumpError("Sync error; aborting test");
             return;
           }
+
           break;
 
         case "weave:service:sync:finish":
           this._syncActive = false;
           this._syncErrors = 0;
+          this._triggeredSync = false;
 
-          if (this._waitingForSync) {
-            this._waitingForSync = false;
-            // Wait a second before continuing, otherwise we can get
-            // 'sync not complete' errors.
-            Utils.namedTimer(function() {
-              this.FinishAsyncOperation();
-            }, 1000, this, "postsync");
-          }
+          this.delayAutoSync();
+
+          // Wait a second before continuing, otherwise we can get
+          // 'sync not complete' errors.
+          Utils.namedTimer(function () {
+            this.FinishAsyncOperation();
+          }, 1000, this, "postsync");
+
           break;
 
         case "weave:service:sync:start":
+          // Ensure that the sync operation has been started by TPS
+          if (!this._triggeredSync) {
+            this.DumpError("Automatic sync got triggered, which is not allowed.")
+          }
+
           this._syncActive = true;
           break;
 
@@ -208,6 +235,19 @@ let TPS = {
       this.DumpError("Exception caught: " + Utils.exceptionStr(e));
       return;
     }
+  },
+
+  /**
+   * Given that we cannot complely disable the automatic sync operations, we
+   * massively delay the next sync. Sync operations have to only happen when
+   * directly called via TPS.Sync()!
+   */
+  delayAutoSync: function TPS_delayAutoSync() {
+    Weave.Svc.Prefs.set("scheduler.eolInterval", 7200);
+    Weave.Svc.Prefs.set("scheduler.immediateInterval", 7200);
+    Weave.Svc.Prefs.set("scheduler.idleInterval", 7200);
+    Weave.Svc.Prefs.set("scheduler.activeInterval", 7200);
+    Weave.Svc.Prefs.set("syncThreshold", 10000000);
   },
 
   StartAsyncOperation: function TPS__StartAsyncOperation() {
@@ -820,35 +860,36 @@ let TPS = {
     let account = this.fxaccounts_enabled ? this.config.fx_account
                                           : this.config.sync_account;
     Authentication.signIn(account);
-
     this.waitForSetupComplete();
     Logger.AssertEqual(Weave.Status.service, Weave.STATUS_OK, "Weave status OK");
     this.waitForTracking();
   },
 
-  Sync: function TPS__Sync(options) {
-    Logger.logInfo("executing Sync " + (options ? options : ""));
+  /**
+   * Triggers a sync operation
+   *
+   * @param {String} [wipeAction]
+   *        Type of wipe to perform (resetClient, wipeClient, wipeRemote)
+   *
+   */
+  Sync: function TPS__Sync(wipeAction) {
+    Logger.logInfo("Executing Sync" + (wipeAction ? ": " + wipeAction : ""));
 
-    if (options == SYNC_WIPE_REMOTE) {
-      Weave.Svc.Prefs.set("firstSync", "wipeRemote");
+    // Force a wipe action if requested. In case of an initial sync the pref
+    // will be overwritten by Sync itself (see bug 992198), so ensure that we
+    // also handle it via the "weave:service:setup-complete" notification.
+    if (wipeAction) {
+      this._syncWipeAction = wipeAction;
+      Weave.Svc.Prefs.set("firstSync", wipeAction);
     }
-    else if (options == SYNC_WIPE_CLIENT) {
-      Weave.Svc.Prefs.set("firstSync", "wipeClient");
-    }
-    else if (options == SYNC_RESET_CLIENT) {
-      Weave.Svc.Prefs.set("firstSync", "resetClient");
-    }
-    else if (options) {
-      throw new Error("Unhandled options to Sync(): " + options);
-    } else {
+    else {
       Weave.Svc.Prefs.reset("firstSync");
     }
 
     this.Login(false);
 
-    this._waitingForSync = true;
+    this._triggeredSync = true;
     this.StartAsyncOperation();
-
     Weave.Service.sync();
   },
 

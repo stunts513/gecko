@@ -271,7 +271,7 @@ class IonBuilder : public MIRGenerator
                   jsbytecode *loopHead, jsbytecode *initialPc,
                   jsbytecode *bodyStart, jsbytecode *bodyEnd, jsbytecode *exitpc,
                   jsbytecode *continuepc = nullptr);
-    void analyzeNewLoopTypes(MBasicBlock *entry, jsbytecode *start, jsbytecode *end);
+    bool analyzeNewLoopTypes(MBasicBlock *entry, jsbytecode *start, jsbytecode *end);
 
     MBasicBlock *addBlock(MBasicBlock *block, uint32_t loopDepth);
     MBasicBlock *newBlock(MBasicBlock *predecessor, jsbytecode *pc);
@@ -288,6 +288,14 @@ class IonBuilder : public MIRGenerator
     MBasicBlock *newBlockAfter(MBasicBlock *at, jsbytecode *pc) {
         return newBlockAfter(at, nullptr, pc);
     }
+
+    // We want to make sure that our MTest instructions all check whether the
+    // thing being tested might emulate undefined.  So we funnel their creation
+    // through this method, to make sure that happens.  We don't want to just do
+    // the check in MTest::New, because that can run on background compilation
+    // threads, and we're not sure it's safe to touch that part of the typeset
+    // from a background thread.
+    MTest *newTest(MDefinition *ins, MBasicBlock *ifTrue, MBasicBlock *ifFalse);
 
     // Given a list of pending breaks, creates a new block and inserts a Goto
     // linking each break to the new block.
@@ -343,7 +351,7 @@ class IonBuilder : public MIRGenerator
 
     // Add a guard which ensure that the set of type which goes through this
     // generated code correspond to the observed types for the bytecode.
-    bool pushTypeBarrier(MDefinition *def, types::TemporaryTypeSet *observed, bool needBarrier);
+    bool pushTypeBarrier(MDefinition *def, types::TemporaryTypeSet *observed, BarrierKind kind);
 
     // As pushTypeBarrier, but will compute the needBarrier boolean itself based
     // on observed and the JSFunction that we're planning to call. The
@@ -354,7 +362,7 @@ class IonBuilder : public MIRGenerator
     // returns def.  Otherwise, returns an MInstruction that has that definite
     // type, infallibly unboxing ins as needed.  The new instruction will be
     // added to |current| in this case.
-    MDefinition *ensureDefiniteType(MDefinition* def, JSValueType definiteType);
+    MDefinition *ensureDefiniteType(MDefinition* def, MIRType definiteType);
 
     // Creates a MDefinition based on the given def improved with type as TypeSet.
     MDefinition *ensureDefiniteTypeSet(MDefinition* def, types::TemporaryTypeSet *types);
@@ -380,38 +388,42 @@ class IonBuilder : public MIRGenerator
 
     bool hasStaticScopeObject(ScopeCoordinate sc, JSObject **pcall);
     bool loadSlot(MDefinition *obj, size_t slot, size_t nfixed, MIRType rvalType,
-                  bool barrier, types::TemporaryTypeSet *types);
+                  BarrierKind barrier, types::TemporaryTypeSet *types);
     bool loadSlot(MDefinition *obj, Shape *shape, MIRType rvalType,
-                  bool barrier, types::TemporaryTypeSet *types);
+                  BarrierKind barrier, types::TemporaryTypeSet *types);
     bool storeSlot(MDefinition *obj, size_t slot, size_t nfixed,
                    MDefinition *value, bool needsBarrier,
                    MIRType slotType = MIRType_None);
     bool storeSlot(MDefinition *obj, Shape *shape, MDefinition *value, bool needsBarrier,
                    MIRType slotType = MIRType_None);
 
+    MDefinition *tryInnerizeWindow(MDefinition *obj);
+
     // jsop_getprop() helpers.
-    bool getPropTryArgumentsLength(bool *emitted);
-    bool getPropTryConstant(bool *emitted, PropertyName *name,
+    bool getPropTryArgumentsLength(bool *emitted, MDefinition *obj);
+    bool getPropTryConstant(bool *emitted, MDefinition *obj, PropertyName *name,
                             types::TemporaryTypeSet *types);
-    bool getPropTryDefiniteSlot(bool *emitted, PropertyName *name,
-                                bool barrier, types::TemporaryTypeSet *types);
-    bool getPropTryCommonGetter(bool *emitted, PropertyName *name,
+    bool getPropTryDefiniteSlot(bool *emitted, MDefinition *obj, PropertyName *name,
+                                BarrierKind barrier, types::TemporaryTypeSet *types);
+    bool getPropTryCommonGetter(bool *emitted, MDefinition *obj, PropertyName *name,
                                 types::TemporaryTypeSet *types);
-    bool getPropTryInlineAccess(bool *emitted, PropertyName *name,
-                                bool barrier, types::TemporaryTypeSet *types);
-    bool getPropTryTypedObject(bool *emitted, PropertyName *name,
+    bool getPropTryInlineAccess(bool *emitted, MDefinition *obj, PropertyName *name,
+                                BarrierKind barrier, types::TemporaryTypeSet *types);
+    bool getPropTryTypedObject(bool *emitted, MDefinition *obj, PropertyName *name,
                                types::TemporaryTypeSet *resultTypes);
-    bool getPropTryScalarPropOfTypedObject(bool *emitted,
+    bool getPropTryScalarPropOfTypedObject(bool *emitted, MDefinition *typedObj,
                                            int32_t fieldOffset,
                                            TypeDescrSet fieldTypeReprs,
                                            types::TemporaryTypeSet *resultTypes);
-    bool getPropTryComplexPropOfTypedObject(bool *emitted,
+    bool getPropTryComplexPropOfTypedObject(bool *emitted, MDefinition *typedObj,
                                             int32_t fieldOffset,
                                             TypeDescrSet fieldTypeReprs,
                                             size_t fieldIndex,
                                             types::TemporaryTypeSet *resultTypes);
-    bool getPropTryCache(bool *emitted, PropertyName *name,
-                         bool barrier, types::TemporaryTypeSet *types);
+    bool getPropTryInnerize(bool *emitted, MDefinition *obj, PropertyName *name,
+                            types::TemporaryTypeSet *types);
+    bool getPropTryCache(bool *emitted, MDefinition *obj, PropertyName *name,
+                         BarrierKind barrier, types::TemporaryTypeSet *types);
     bool needsToMonitorMissingProperties(types::TemporaryTypeSet *types);
 
     // jsop_setprop() helpers.
@@ -582,7 +594,6 @@ class IonBuilder : public MIRGenerator
     bool jsop_length();
     bool jsop_length_fastPath();
     bool jsop_arguments();
-    bool jsop_arguments_length();
     bool jsop_arguments_getelem();
     bool jsop_runonce();
     bool jsop_rest();
@@ -602,6 +613,7 @@ class IonBuilder : public MIRGenerator
     bool jsop_regexp(RegExpObject *reobj);
     bool jsop_object(JSObject *obj);
     bool jsop_lambda(JSFunction *fun);
+    bool jsop_lambda_arrow(JSFunction *fun);
     bool jsop_this();
     bool jsop_typeof();
     bool jsop_toid();
@@ -648,6 +660,7 @@ class IonBuilder : public MIRGenerator
     InliningStatus inlineArrayPopShift(CallInfo &callInfo, MArrayPopShift::Mode mode);
     InliningStatus inlineArrayPush(CallInfo &callInfo);
     InliningStatus inlineArrayConcat(CallInfo &callInfo);
+    InliningStatus inlineArraySplice(CallInfo &callInfo);
 
     // Math natives.
     InliningStatus inlineMathAbs(CallInfo &callInfo);
@@ -696,6 +709,7 @@ class IonBuilder : public MIRGenerator
 
     // TypedObject intrinsics.
     InliningStatus inlineObjectIsTypeDescr(CallInfo &callInfo);
+    InliningStatus inlineSetTypedObjectOffset(CallInfo &callInfo);
     bool elementAccessIsTypedObjectArrayOfScalarType(MDefinition* obj, MDefinition* id,
                                                      ScalarTypeDescr::Type *arrayType);
 
@@ -714,8 +728,11 @@ class IonBuilder : public MIRGenerator
     InliningStatus inlineBailout(CallInfo &callInfo);
     InliningStatus inlineAssertFloat32(CallInfo &callInfo);
 
+    // Bind function.
+    InliningStatus inlineBoundFunction(CallInfo &callInfo, JSFunction *target);
+
     // Main inlining functions
-    InliningStatus inlineNativeCall(CallInfo &callInfo, JSNative native);
+    InliningStatus inlineNativeCall(CallInfo &callInfo, JSFunction *target);
     bool inlineScriptedCall(CallInfo &callInfo, JSFunction *target);
     InliningStatus inlineSingleCall(CallInfo &callInfo, JSFunction *target);
 
@@ -771,10 +788,13 @@ class IonBuilder : public MIRGenerator
     // updating |current| directly. setCurrent() should only be used in cases
     // where the block cannot have phis whose type needs to be computed.
 
-    void setCurrentAndSpecializePhis(MBasicBlock *block) {
-        if (block)
-            block->specializePhis();
+    bool setCurrentAndSpecializePhis(MBasicBlock *block) {
+        if (block) {
+            if (!block->specializePhis())
+                return false;
+        }
         setCurrent(block);
+        return true;
     }
 
     void setCurrent(MBasicBlock *block) {
@@ -831,6 +851,7 @@ class IonBuilder : public MIRGenerator
 
     types::TemporaryTypeSet *thisTypes, *argTypes, *typeArray;
     uint32_t typeArrayHint;
+    uint32_t *bytecodeTypeMap;
 
     GSNCache gsn;
     ScopeCoordinateNameCache scopeCoordinateNameCache;
@@ -838,6 +859,11 @@ class IonBuilder : public MIRGenerator
     jsbytecode *pc;
     MBasicBlock *current;
     uint32_t loopDepth_;
+
+    BytecodeSite bytecodeSite(jsbytecode *pc) {
+        JS_ASSERT(info().inlineScriptTree()->script()->containsPC(pc));
+        return BytecodeSite(info().inlineScriptTree(), pc);
+    }
 
     /* Information used for inline-call builders. */
     MResumePoint *callerResumePoint_;

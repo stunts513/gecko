@@ -217,6 +217,12 @@ static nsIScriptSecurityManager *sSecurityManager;
 
 static bool sGCOnMemoryPressure;
 
+// In testing, we call RunNextCollectorTimer() to ensure that the collectors are run more
+// aggressively than they would be in regular browsing. sExpensiveCollectorPokes keeps
+// us from triggering expensive full collections too frequently.
+static int32_t sExpensiveCollectorPokes = 0;
+static const int32_t kPokesBetweenExpensiveCollectorTriggers = 5;
+
 static PRTime
 GetCollectionTimeDelta()
 {
@@ -256,7 +262,7 @@ public:
   NS_DECL_NSIOBSERVER
 };
 
-NS_IMPL_ISUPPORTS1(nsJSEnvironmentObserver, nsIObserver)
+NS_IMPL_ISUPPORTS(nsJSEnvironmentObserver, nsIObserver)
 
 NS_IMETHODIMP
 nsJSEnvironmentObserver::Observe(nsISupports* aSubject, const char* aTopic,
@@ -482,7 +488,7 @@ public:
         if (sameOrigin) {
           init.mMessage = mErrorMsg;
           init.mLineno = mLineNumber;
-          init.mColumn = mColumn;
+          init.mColno = mColumn;
           init.mError = mError;
         } else {
           NS_WARNING("Not same origin error!");
@@ -996,19 +1002,17 @@ nsJSContext::SetProperty(JS::Handle<JSObject*> aTarget, const char* aPropName, n
   // got the arguments, now attach them.
 
   for (uint32_t i = 0; i < args.length(); ++i) {
-    if (!JS_WrapValue(mContext, args.handleAt(i))) {
+    if (!JS_WrapValue(mContext, args[i])) {
       return NS_ERROR_FAILURE;
     }
   }
 
-  JSObject* array = ::JS_NewArrayObject(mContext, args);
+  JS::Rooted<JSObject*> array(mContext, ::JS_NewArrayObject(mContext, args));
   if (!array) {
     return NS_ERROR_FAILURE;
   }
-  JS::Rooted<JS::Value> arrayVal(mContext, JS::ObjectValue(*array));
 
-  return JS_DefineProperty(mContext, aTarget, aPropName, arrayVal,
-                           nullptr, nullptr, 0) ? NS_OK : NS_ERROR_FAILURE;
+  return JS_DefineProperty(mContext, aTarget, aPropName, array, 0) ? NS_OK : NS_ERROR_FAILURE;
 }
 
 nsresult
@@ -1062,7 +1066,7 @@ nsJSContext::ConvertSupportsTojsvals(nsISupports* aArgs,
   if (argsArray) {
     for (uint32_t argCtr = 0; argCtr < argCount && NS_SUCCEEDED(rv); argCtr++) {
       nsCOMPtr<nsISupports> arg;
-      JS::MutableHandle<JS::Value> thisVal = aArgsOut.handleAt(argCtr);
+      JS::MutableHandle<JS::Value> thisVal = aArgsOut[argCtr];
       argsArray->QueryElementAt(argCtr, NS_GET_IID(nsISupports),
                                 getter_AddRefs(arg));
       if (!arg) {
@@ -1087,14 +1091,15 @@ nsJSContext::ConvertSupportsTojsvals(nsISupports* aArgs,
           NS_ASSERTION(prim == nullptr,
                        "Don't pass nsISupportsPrimitives - use nsIVariant!");
 #endif
-          rv = nsContentUtils::WrapNative(cx, aScope, arg, thisVal);
+          JSAutoCompartment ac(cx, aScope);
+          rv = nsContentUtils::WrapNative(cx, arg, thisVal);
         }
       }
     }
   } else {
     nsCOMPtr<nsIVariant> variant = do_QueryInterface(aArgs);
     if (variant) {
-      rv = xpc->VariantToJS(cx, aScope, variant, aArgsOut.handleAt(0));
+      rv = xpc->VariantToJS(cx, aScope, variant, aArgsOut[0]);
     } else {
       NS_ERROR("Not an array, not an interface?");
       rv = NS_ERROR_UNEXPECTED;
@@ -1275,10 +1280,10 @@ nsJSContext::AddSupportsPrimitiveTojsvals(nsISupports *aArg, JS::Value *aArgv)
 
       AutoFree iidGuard(iid); // Free iid upon destruction.
 
-      JS::Rooted<JSObject*> global(cx, GetWindowProxy());
+      JS::Rooted<JSObject*> scope(cx, GetWindowProxy());
       JS::Rooted<JS::Value> v(cx);
-      nsresult rv = nsContentUtils::WrapNative(cx, global,
-                                               data, iid, &v);
+      JSAutoCompartment ac(cx, scope);
+      nsresult rv = nsContentUtils::WrapNative(cx, data, iid, &v);
       NS_ENSURE_SUCCESS(rv, rv);
 
       *aArgv = v;
@@ -1693,8 +1698,7 @@ nsJSContext::SetProcessingScriptTag(bool aFlag)
 void
 FullGCTimerFired(nsITimer* aTimer, void* aClosure)
 {
-  NS_RELEASE(sFullGCTimer);
-
+  nsJSContext::KillFullGCTimer();
   uintptr_t reason = reinterpret_cast<uintptr_t>(aClosure);
   nsJSContext::GarbageCollectNow(static_cast<JS::gcreason::Reason>(reason),
                                  nsJSContext::IncrementalGC);
@@ -1973,6 +1977,21 @@ nsJSContext::RunCycleCollectorSlice()
   gCCStats.FinishCycleCollectionSlice();
 }
 
+//static
+void
+nsJSContext::RunCycleCollectorWorkSlice(int64_t aWorkBudget)
+{
+  if (!NS_IsMainThread()) {
+    return;
+  }
+
+  PROFILER_LABEL("CC", "RunCycleCollectorWorkSlice");
+
+  gCCStats.PrepareForCycleCollectionSlice();
+  nsCycleCollector_collectSliceWork(aWorkBudget);
+  gCCStats.FinishCycleCollectionSlice();
+}
+
 static void
 ICCTimerFired(nsITimer* aTimer, void* aClosure)
 {
@@ -2085,12 +2104,12 @@ nsJSContext::EndCycleCollectionCallback(CycleCollectorResults &aResults)
     }
 
     NS_NAMED_MULTILINE_LITERAL_STRING(kFmt,
-      MOZ_UTF16("CC(T+%.1f) max pause: %lums, total time: %lums, suspected: %lu, visited: %lu RCed and %lu%s GCed, collected: %lu RCed and %lu GCed (%lu|%lu waiting for GC)%s\n")
+      MOZ_UTF16("CC(T+%.1f) max pause: %lums, total time: %lums, slices: %lu, suspected: %lu, visited: %lu RCed and %lu%s GCed, collected: %lu RCed and %lu GCed (%lu|%lu waiting for GC)%s\n")
       MOZ_UTF16("ForgetSkippable %lu times before CC, min: %lu ms, max: %lu ms, avg: %lu ms, total: %lu ms, max sync: %lu ms, removed: %lu"));
     nsString msg;
     msg.Adopt(nsTextFormatter::smprintf(kFmt.get(), double(delta) / PR_USEC_PER_SEC,
                                         gCCStats.mMaxSliceTime, gCCStats.mTotalSliceTime,
-                                        gCCStats.mSuspected,
+                                        aResults.mNumSlices, gCCStats.mSuspected,
                                         aResults.mVisitedRefCounted, aResults.mVisitedGCed, mergeMsg.get(),
                                         aResults.mFreedRefCounted, aResults.mFreedGCed,
                                         sCCollectedWaitingForGC, sLikelyShortLivingObjectsNeedingGC,
@@ -2175,7 +2194,7 @@ nsJSContext::EndCycleCollectionCallback(CycleCollectorResults &aResults)
 void
 InterSliceGCTimerFired(nsITimer *aTimer, void *aClosure)
 {
-  NS_RELEASE(sInterSliceGCTimer);
+  nsJSContext::KillInterSliceGCTimer();
   nsJSContext::GarbageCollectNow(JS::gcreason::INTER_SLICE_GC,
                                  nsJSContext::IncrementalGC,
                                  nsJSContext::CompartmentGC,
@@ -2187,8 +2206,7 @@ InterSliceGCTimerFired(nsITimer *aTimer, void *aClosure)
 void
 GCTimerFired(nsITimer *aTimer, void *aClosure)
 {
-  NS_RELEASE(sGCTimer);
-
+  nsJSContext::KillGCTimer();
   uintptr_t reason = reinterpret_cast<uintptr_t>(aClosure);
   nsJSContext::GarbageCollectNow(static_cast<JS::gcreason::Reason>(reason),
                                  nsJSContext::IncrementalGC,
@@ -2198,8 +2216,7 @@ GCTimerFired(nsITimer *aTimer, void *aClosure)
 void
 ShrinkGCBuffersTimerFired(nsITimer *aTimer, void *aClosure)
 {
-  NS_RELEASE(sShrinkGCBuffersTimer);
-
+  nsJSContext::KillShrinkGCBuffersTimer();
   nsJSContext::ShrinkGCBuffersNow();
 }
 
@@ -2322,6 +2339,64 @@ nsJSContext::LoadEnd()
   PokeGC(JS::gcreason::LOAD_END);
 }
 
+// Only trigger expensive timers when they have been checked a number of times.
+static bool
+ReadyToTriggerExpensiveCollectorTimer()
+{
+  bool ready = kPokesBetweenExpensiveCollectorTriggers < ++sExpensiveCollectorPokes;
+  if (ready) {
+    sExpensiveCollectorPokes = 0;
+  }
+  return ready;
+}
+
+
+// Check all of the various collector timers and see if they are waiting to fire.
+// For the synchronous collector timers, sGCTimer and sCCTimer, we only want to trigger
+// the collection occasionally, because they are expensive.  The incremental collector
+// timers, sInterSliceGCTimer and sICCTimer, are fast and need to be run many times, so
+// always run their corresponding timer.
+
+// This does not check sFullGCTimer, as that's an even more expensive collector we run
+// on a long timer.
+
+// static
+void
+nsJSContext::RunNextCollectorTimer()
+{
+  if (sShuttingDown) {
+    return;
+  }
+
+  if (sGCTimer) {
+    if (ReadyToTriggerExpensiveCollectorTimer()) {
+      GCTimerFired(nullptr, reinterpret_cast<void *>(JS::gcreason::DOM_WINDOW_UTILS));
+    }
+    return;
+  }
+
+  if (sInterSliceGCTimer) {
+    InterSliceGCTimerFired(nullptr, nullptr);
+    return;
+  }
+
+  // Check the CC timers after the GC timers, because the CC timers won't do
+  // anything if a GC is in progress.
+  MOZ_ASSERT(!sCCLockedOut, "Don't check the CC timers if the CC is locked out.");
+
+  if (sCCTimer) {
+    if (ReadyToTriggerExpensiveCollectorTimer()) {
+      CCTimerFired(nullptr, nullptr);
+    }
+    return;
+  }
+
+  if (sICCTimer) {
+    ICCTimerFired(nullptr, nullptr);
+    return;
+  }
+}
+
 // static
 void
 nsJSContext::PokeGC(JS::gcreason::Reason aReason, int aDelay)
@@ -2415,7 +2490,6 @@ nsJSContext::KillGCTimer()
 {
   if (sGCTimer) {
     sGCTimer->Cancel();
-
     NS_RELEASE(sGCTimer);
   }
 }
@@ -2444,7 +2518,6 @@ nsJSContext::KillShrinkGCBuffersTimer()
 {
   if (sShrinkGCBuffersTimer) {
     sShrinkGCBuffersTimer->Cancel();
-
     NS_RELEASE(sShrinkGCBuffersTimer);
   }
 }
@@ -2454,10 +2527,8 @@ void
 nsJSContext::KillCCTimer()
 {
   sCCLockedOutTime = 0;
-
   if (sCCTimer) {
     sCCTimer->Cancel();
-
     NS_RELEASE(sCCTimer);
   }
 }
@@ -2470,7 +2541,6 @@ nsJSContext::KillICCTimer()
 
   if (sICCTimer) {
     sICCTimer->Cancel();
-
     NS_RELEASE(sICCTimer);
   }
 }
@@ -2657,6 +2727,7 @@ mozilla::dom::StartupJSEnvironment()
   sContextCount = 0;
   sSecurityManager = nullptr;
   gCCStats.Clear();
+  sExpensiveCollectorPokes = 0;
 }
 
 static void
@@ -2760,11 +2831,7 @@ NS_DOMReadStructuredClone(JSContext* cx,
     nsRefPtr<ImageData> imageData = new ImageData(width, height,
                                                   dataArray.toObject());
     // Wrap it in a JS::Value.
-    JS::Rooted<JSObject*> global(cx, JS::CurrentGlobalOrNull(cx));
-    if (!global) {
-      return nullptr;
-    }
-    return imageData->WrapObject(cx, global);
+    return imageData->WrapObject(cx);
   }
 
   // Don't know what this is. Bail.
@@ -2881,7 +2948,10 @@ nsJSContext::EnsureStatics()
   static JSStructuredCloneCallbacks cloneCallbacks = {
     NS_DOMReadStructuredClone,
     NS_DOMWriteStructuredClone,
-    NS_DOMStructuredCloneError
+    NS_DOMStructuredCloneError,
+    nullptr,
+    nullptr,
+    nullptr
   };
   JS_SetStructuredCloneCallbacks(sRuntime, &cloneCallbacks);
 

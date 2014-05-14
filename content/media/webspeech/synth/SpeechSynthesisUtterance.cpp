@@ -18,8 +18,8 @@
 namespace mozilla {
 namespace dom {
 
-NS_IMPL_CYCLE_COLLECTION_INHERITED_1(SpeechSynthesisUtterance,
-                                     DOMEventTargetHelper, mVoice);
+NS_IMPL_CYCLE_COLLECTION_INHERITED(SpeechSynthesisUtterance,
+                                   DOMEventTargetHelper, mVoice);
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION_INHERITED(SpeechSynthesisUtterance)
   NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
@@ -44,10 +44,9 @@ SpeechSynthesisUtterance::SpeechSynthesisUtterance(nsPIDOMWindow* aOwnerWindow,
 SpeechSynthesisUtterance::~SpeechSynthesisUtterance() {}
 
 JSObject*
-SpeechSynthesisUtterance::WrapObject(JSContext* aCx,
-                                     JS::Handle<JSObject*> aScope)
+SpeechSynthesisUtterance::WrapObject(JSContext* aCx)
 {
-  return SpeechSynthesisUtteranceBinding::Wrap(aCx, aScope, this);
+  return SpeechSynthesisUtteranceBinding::Wrap(aCx, this);
 }
 
 nsISupports*

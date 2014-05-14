@@ -60,6 +60,17 @@ static_assert(1 << defaultShift == sizeof(jsval), "The defaultShift is wrong");
 
 class MacroAssemblerMIPS : public Assembler
 {
+  protected:
+    // higher level tag testing code
+    Operand ToPayload(Operand base);
+    Address ToPayload(Address base) {
+        return ToPayload(Operand(base)).toAddress();
+    }
+    Operand ToType(Operand base);
+    Address ToType(Address base) {
+        return ToType(Operand(base)).toAddress();
+    }
+
   public:
 
     void convertBoolToInt32(Register source, Register dest);
@@ -205,8 +216,22 @@ class MacroAssemblerMIPS : public Assembler
     // branches when done from within mips-specific code
     void ma_b(Register lhs, Register rhs, Label *l, Condition c, JumpKind jumpKind = LongJump);
     void ma_b(Register lhs, Imm32 imm, Label *l, Condition c, JumpKind jumpKind = LongJump);
+    void ma_b(Register lhs, ImmPtr imm, Label *l, Condition c, JumpKind jumpKind = LongJump) {
+        ma_b(lhs, Imm32(uint32_t(imm.value)), l, c, jumpKind);
+    }
+    void ma_b(Register lhs, ImmGCPtr imm, Label *l, Condition c, JumpKind jumpKind = LongJump) {
+        MOZ_ASSERT(lhs != ScratchRegister);
+        ma_li(ScratchRegister, imm);
+        ma_b(lhs, Imm32(uint32_t(imm.value)), l, c, jumpKind);
+    }
     void ma_b(Register lhs, Address addr, Label *l, Condition c, JumpKind jumpKind = LongJump);
     void ma_b(Address addr, Imm32 imm, Label *l, Condition c, JumpKind jumpKind = LongJump);
+    void ma_b(Address addr, Register rhs, Label *l, Condition c, JumpKind jumpKind = LongJump) {
+        MOZ_ASSERT(rhs != ScratchRegister);
+        ma_lw(ScratchRegister, addr);
+        ma_b(ScratchRegister, rhs, l, c, jumpKind);
+    }
+
     void ma_b(Label *l, JumpKind jumpKind = LongJump);
     void ma_bal(Label *l, JumpKind jumpKind = LongJump);
 
@@ -234,6 +259,32 @@ class MacroAssemblerMIPS : public Assembler
     void ma_bc1d(FloatRegister lhs, FloatRegister rhs, Label *label, DoubleCondition c,
                  JumpKind jumpKind = LongJump, FPConditionBit fcc = FCC0);
 
+
+    // These fuctions abstract the access to high part of the double precision
+    // float register. It is intended to work on both 32 bit and 64 bit
+    // floating point coprocessor.
+    // :TODO: (Bug 985881) Modify this for N32 ABI to use mthc1 and mfhc1
+    void moveToDoubleHi(Register src, FloatRegister dest) {
+        as_mtc1(src, getOddPair(dest));
+    }
+    void moveFromDoubleHi(FloatRegister src, Register dest) {
+        as_mfc1(dest, getOddPair(src));
+    }
+
+    void moveToDoubleLo(Register src, FloatRegister dest) {
+        as_mtc1(src, dest);
+    }
+    void moveFromDoubleLo(FloatRegister src, Register dest) {
+        as_mfc1(dest, src);
+    }
+
+    void moveToFloat32(Register src, FloatRegister dest) {
+        as_mtc1(src, dest);
+    }
+    void moveFromFloat32(FloatRegister src, Register dest) {
+        as_mfc1(dest, src);
+    }
+
   protected:
     void branchWithCode(InstImm code, Label *label, JumpKind jumpKind);
     Condition ma_cmp(Register rd, Register lhs, Register rhs, Condition c);
@@ -256,8 +307,16 @@ class MacroAssemblerMIPS : public Assembler
 
     void ma_cmp_set(Register dst, Register lhs, Register rhs, Condition c);
     void ma_cmp_set(Register dst, Register lhs, Imm32 imm, Condition c);
+    void ma_cmp_set(Register dst, Register lhs, ImmPtr imm, Condition c) {
+        ma_cmp_set(dst, lhs, Imm32(uint32_t(imm.value)), c);
+    }
     void ma_cmp_set(Register rd, Register rs, Address addr, Condition c);
-    void ma_cmp_set(Register dst, Address lhs, Register imm, Condition c);
+    void ma_cmp_set(Register dst, Address lhs, Register rhs, Condition c);
+    void ma_cmp_set(Register dst, Address lhs, ImmPtr imm, Condition c) {
+        ma_lw(ScratchRegister, lhs);
+        ma_li(SecondScratchReg, Imm32(uint32_t(imm.value)));
+        ma_cmp_set(dst, ScratchRegister, SecondScratchReg, c);
+    }
     void ma_cmp_set_double(Register dst, FloatRegister lhs, FloatRegister rhs, DoubleCondition c);
     void ma_cmp_set_float32(Register dst, FloatRegister lhs, FloatRegister rhs, DoubleCondition c);
 };
@@ -271,6 +330,7 @@ class MacroAssemblerMIPSCompat : public MacroAssemblerMIPS
     // The actual number of arguments that were passed, used to assert that
     // the initial number of arguments declared was correct.
     uint32_t passedArgs_;
+    uint32_t passedArgTypes_;
 
     uint32_t usedArgSlots_;
     MoveOp::Type firstArgType;
@@ -589,6 +649,7 @@ class MacroAssemblerMIPSCompat : public MacroAssemblerMIPS
     void branchTestNull(Condition cond, const ValueOperand &value, Label *label);
     void branchTestNull(Condition cond, const Register &tag, Label *label);
     void branchTestNull(Condition cond, const BaseIndex &src, Label *label);
+    void testNullSet(Condition cond, const ValueOperand &value, Register dest);
 
     void branchTestObject(Condition cond, const ValueOperand &value, Label *label);
     void branchTestObject(Condition cond, const Register &tag, Label *label);
@@ -602,6 +663,7 @@ class MacroAssemblerMIPSCompat : public MacroAssemblerMIPS
     void branchTestUndefined(Condition cond, const Register &tag, Label *label);
     void branchTestUndefined(Condition cond, const BaseIndex &src, Label *label);
     void branchTestUndefined(Condition cond, const Address &address, Label *label);
+    void testUndefinedSet(Condition cond, const ValueOperand &value, Register dest);
 
     void branchTestNumber(Condition cond, const ValueOperand &value, Label *label);
     void branchTestNumber(Condition cond, const Register &tag, Label *label);
@@ -672,6 +734,9 @@ class MacroAssemblerMIPSCompat : public MacroAssemblerMIPS
     void branchPtr(Condition cond, Register lhs, AsmJSImmPtr imm, Label *label) {
         movePtr(imm, ScratchRegister);
         branchPtr(cond, lhs, ScratchRegister, label);
+    }
+    void branchPtr(Condition cond, Register lhs, Imm32 imm, Label *label) {
+        ma_b(lhs, imm, label, cond);
     }
     void decBranchPtr(Condition cond, const Register &lhs, Imm32 imm, Label *label) {
         subPtr(imm, lhs);
@@ -753,12 +818,30 @@ public:
     void moveValue(const Value &val, const ValueOperand &dest);
 
     void moveValue(const ValueOperand &src, const ValueOperand &dest) {
-        MOZ_ASSERT(src.typeReg() != dest.payloadReg());
-        MOZ_ASSERT(src.payloadReg() != dest.typeReg());
-        if (src.typeReg() != dest.typeReg())
-            ma_move(dest.typeReg(), src.typeReg());
-        if (src.payloadReg() != dest.payloadReg())
-            ma_move(dest.payloadReg(), src.payloadReg());
+        Register s0 = src.typeReg(), d0 = dest.typeReg(),
+                 s1 = src.payloadReg(), d1 = dest.payloadReg();
+
+        // Either one or both of the source registers could be the same as a
+        // destination register.
+        if (s1 == d0) {
+            if (s0 == d1) {
+                // If both are, this is just a swap of two registers.
+                JS_ASSERT(d1 != ScratchRegister);
+                JS_ASSERT(d0 != ScratchRegister);
+                move32(d1, ScratchRegister);
+                move32(d0, d1);
+                move32(ScratchRegister, d0);
+                return;
+            }
+            // If only one is, copy that source first.
+            mozilla::Swap(s0, s1);
+            mozilla::Swap(d0, d1);
+        }
+
+        if (s0 != d0)
+            move32(s0, d0);
+        if (s1 != d1)
+            move32(s1, d1);
     }
 
     void storeValue(ValueOperand val, Operand dst);
@@ -892,6 +975,36 @@ public:
     void sub32(Imm32 imm, Register dest);
     void sub32(Register src, Register dest);
 
+    void incrementInt32Value(const Address &addr) {
+        add32(Imm32(1), ToPayload(addr));
+    }
+
+    template <typename T>
+    void branchAdd32(Condition cond, T src, Register dest, Label *overflow) {
+        switch (cond) {
+          case Overflow:
+            ma_addTestOverflow(dest, dest, src, overflow);
+            break;
+          default:
+            MOZ_ASSUME_UNREACHABLE("NYI");
+        }
+    }
+    template <typename T>
+    void branchSub32(Condition cond, T src, Register dest, Label *overflow) {
+        switch (cond) {
+          case Overflow:
+            ma_subTestOverflow(dest, dest, src, overflow);
+            break;
+          case NonZero:
+          case Zero:
+            sub32(src, dest);
+            ma_b(dest, dest, overflow, cond);
+            break;
+          default:
+            MOZ_ASSUME_UNREACHABLE("NYI");
+        }
+    }
+
     void and32(Imm32 imm, Register dest);
     void and32(Imm32 imm, const Address &dest);
     void or32(Imm32 imm, const Address &dest);
@@ -990,8 +1103,8 @@ public:
     }
 
     void zeroDouble(FloatRegister reg) {
-        as_mtc1(zero, reg);
-        as_mtc1_Odd(zero, reg);
+        moveToDoubleLo(zero, reg);
+        moveToDoubleHi(zero, reg);
     }
 
     void clampIntToUint8(Register reg) {
@@ -1018,6 +1131,7 @@ public:
     }
 
     void subPtr(Imm32 imm, const Register dest);
+    void subPtr(const Register &src, const Address &dest);
     void addPtr(Imm32 imm, const Register dest);
     void addPtr(Imm32 imm, const Address &dest);
     void addPtr(ImmWord imm, const Register dest) {
@@ -1037,6 +1151,8 @@ public:
 
     void checkStackAlignment();
 
+    void alignPointerUp(Register src, Register dest, uint32_t alignment);
+
     void rshiftPtr(Imm32 imm, Register dest) {
         ma_srl(dest, dest, imm);
     }
@@ -1047,6 +1163,18 @@ public:
     // If source is a double, load it into dest. If source is int32,
     // convert it to double. Else, branch to failure.
     void ensureDouble(const ValueOperand &source, FloatRegister dest, Label *failure);
+
+    template <typename T1, typename T2>
+    void cmpPtrSet(Assembler::Condition cond, T1 lhs, T2 rhs, const Register &dest)
+    {
+        ma_cmp_set(dest, lhs, rhs, cond);
+    }
+
+    template <typename T1, typename T2>
+    void cmp32Set(Assembler::Condition cond, T1 lhs, T2 rhs, const Register &dest)
+    {
+        ma_cmp_set(dest, lhs, rhs, cond);
+    }
 
     // Setup a call to C/C++ code, given the number of general arguments it
     // takes. Note that this only supports cdecl.
@@ -1089,15 +1217,17 @@ public:
     }
 
     void memIntToValue(Address Source, Address Dest) {
-        MOZ_ASSUME_UNREACHABLE("NYI");
+        load32(Source, SecondScratchReg);
+        storeValue(JSVAL_TYPE_INT32, SecondScratchReg, Dest);
     }
 
     void lea(Operand addr, Register dest) {
-        MOZ_ASSUME_UNREACHABLE("NYI");
+        ma_addu(dest, addr.baseReg(), Imm32(addr.disp()));
     }
 
     void abiret() {
-        MOZ_ASSUME_UNREACHABLE("NYI");
+        as_jr(ra);
+        as_nop();
     }
 
     void ma_storeImm(Imm32 imm, const Address &addr) {
@@ -1113,6 +1243,12 @@ public:
     void moveFloat32(FloatRegister src, FloatRegister dest) {
         as_movs(dest, src);
     }
+
+#ifdef JSGC_GENERATIONAL
+    void branchPtrInNurseryRange(Condition cond, Register ptr, Register temp, Label *label);
+    void branchValueIsNurseryObject(Condition cond, ValueOperand value, Register temp,
+                                    Label *label);
+#endif
 };
 
 typedef MacroAssemblerMIPSCompat MacroAssemblerSpecific;

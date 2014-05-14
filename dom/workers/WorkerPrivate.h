@@ -62,6 +62,13 @@ class WorkerGlobalScope;
 class WorkerPrivate;
 class WorkerRunnable;
 
+enum WorkerType
+{
+  WorkerTypeDedicated,
+  WorkerTypeShared,
+  WorkerTypeService
+};
+
 // SharedMutex is a small wrapper around an (internal) reference-counted Mutex
 // object. It exists to avoid changing a lot of code to use Mutex* instead of
 // Mutex&.
@@ -194,12 +201,6 @@ public:
     }
   };
 
-  enum WorkerType
-  {
-    WorkerTypeDedicated,
-    WorkerTypeShared
-  };
-
 protected:
   typedef mozilla::ErrorResult ErrorResult;
 
@@ -241,6 +242,7 @@ private:
   bool mIsChromeWorker;
   bool mMainThreadObjectsForgotten;
   WorkerType mWorkerType;
+  TimeStamp mCreationTimeStamp;
 
 protected:
   // The worker is owned by its thread, which is represented here.  This is set
@@ -285,7 +287,7 @@ private:
 
 public:
   virtual JSObject*
-  WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS_INHERITED(WorkerPrivateParent,
@@ -508,6 +510,11 @@ public:
     return mLoadInfo.mResolvedScriptURI;
   }
 
+  TimeStamp CreationTimeStamp() const
+  {
+    return mCreationTimeStamp;
+  }
+
   nsIPrincipal*
   GetPrincipal() const
   {
@@ -632,7 +639,7 @@ public:
   }
 
   // The ability to be a chrome worker is orthogonal to the type of
-  // worker [Dedicated|Shared].
+  // worker [Dedicated|Shared|Service].
   bool
   IsChromeWorker() const
   {
@@ -649,6 +656,12 @@ public:
   IsSharedWorker() const
   {
     return mWorkerType == WorkerTypeShared;
+  }
+
+  bool
+  IsServiceWorker() const
+  {
+    return mWorkerType == WorkerTypeService;
   }
 
   const nsCString&

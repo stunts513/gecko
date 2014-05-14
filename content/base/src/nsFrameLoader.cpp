@@ -86,6 +86,7 @@
 
 #include "jsapi.h"
 #include "mozilla/dom/HTMLIFrameElement.h"
+#include "mozilla/dom/SVGIFrameElement.h"
 #include "nsSandboxFlags.h"
 #include "JavaScriptParent.h"
 
@@ -122,7 +123,7 @@ public:
   nsRefPtr<nsIDocShell> mDocShell;
 };
 
-NS_IMPL_ISUPPORTS1(nsContentView, nsIContentView)
+NS_IMPL_ISUPPORTS(nsContentView, nsIContentView)
 
 nsresult
 nsContentView::Update(const ViewConfig& aConfig)
@@ -250,7 +251,7 @@ nsContentView::GetId(nsContentViewId* aId)
 // we'd need to re-institute a fixed version of bug 98158.
 #define MAX_DEPTH_CONTENT_FRAMES 10
 
-NS_IMPL_CYCLE_COLLECTION_3(nsFrameLoader, mDocShell, mMessageManager, mChildMessageManager)
+NS_IMPL_CYCLE_COLLECTION(nsFrameLoader, mDocShell, mMessageManager, mChildMessageManager)
 NS_IMPL_CYCLE_COLLECTING_ADDREF(nsFrameLoader)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(nsFrameLoader)
 
@@ -318,7 +319,8 @@ nsFrameLoader::LoadFrame()
 
   nsAutoString src;
 
-  bool isSrcdoc = mOwnerContent->IsHTML(nsGkAtoms::iframe) &&
+  bool isSrcdoc = (mOwnerContent->IsHTML(nsGkAtoms::iframe) ||
+                   mOwnerContent->IsSVG(nsGkAtoms::iframe)) &&
                   mOwnerContent->HasAttr(kNameSpaceID_None, nsGkAtoms::srcdoc);
   if (isSrcdoc) {
     src.AssignLiteral("about:srcdoc");
@@ -518,7 +520,8 @@ nsFrameLoader::ReallyStartLoadingInternal()
   nsCOMPtr<nsIURI> referrer;
   
   nsAutoString srcdoc;
-  bool isSrcdoc = mOwnerContent->IsHTML(nsGkAtoms::iframe) &&
+  bool isSrcdoc = (mOwnerContent->IsHTML(nsGkAtoms::iframe) ||
+                   mOwnerContent->IsSVG(nsGkAtoms::iframe)) &&
                   mOwnerContent->GetAttr(kNameSpaceID_None, nsGkAtoms::srcdoc,
                                          srcdoc);
 
@@ -1603,8 +1606,13 @@ nsFrameLoader::MaybeCreateDocShell()
   // Apply sandbox flags even if our owner is not an iframe, as this copies
   // flags from our owning content's owning document.
   uint32_t sandboxFlags = 0;
-  HTMLIFrameElement* iframe = HTMLIFrameElement::FromContent(mOwnerContent);
-  if (iframe) {
+  if (!mOwnerContent->IsSVG(nsGkAtoms::iframe)) {
+    HTMLIFrameElement* iframe = HTMLIFrameElement::FromContent(mOwnerContent);
+    if (iframe) {
+      sandboxFlags = iframe->GetSandboxFlags();
+    }
+  } else {
+    SVGIFrameElement* iframe = static_cast<SVGIFrameElement*>(mOwnerContent);
     sandboxFlags = iframe->GetSandboxFlags();
   }
   ApplySandboxFlags(sandboxFlags);
@@ -1620,7 +1628,8 @@ nsFrameLoader::MaybeCreateDocShell()
   nsAutoString frameName;
 
   int32_t namespaceID = mOwnerContent->GetNameSpaceID();
-  if (namespaceID == kNameSpaceID_XHTML && !mOwnerContent->IsInHTMLDocument()) {
+  if ((namespaceID == kNameSpaceID_XHTML || namespaceID == kNameSpaceID_SVG)
+      && !mOwnerContent->IsInHTMLDocument()) {
     mOwnerContent->GetAttr(kNameSpaceID_None, nsGkAtoms::id, frameName);
   } else {
     mOwnerContent->GetAttr(kNameSpaceID_None, nsGkAtoms::name, frameName);
@@ -2616,7 +2625,7 @@ nsFrameLoader::ResetPermissionManagerStatus()
     return;
   }
 
-  nsCOMPtr<nsIPermissionManager> permMgr = do_GetService(NS_PERMISSIONMANAGER_CONTRACTID);
+  nsCOMPtr<nsIPermissionManager> permMgr = services::GetPermissionManager();
   if (!permMgr) {
     NS_ERROR("No PermissionManager available!");
     return;

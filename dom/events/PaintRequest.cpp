@@ -16,11 +16,11 @@ namespace dom {
  * mozilla::dom::PaintRequest
  *****************************************************************************/
 
-NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_1(PaintRequest, mParent)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(PaintRequest, mParent)
 
 NS_INTERFACE_TABLE_HEAD(PaintRequest)
   NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
-  NS_INTERFACE_TABLE1(PaintRequest, nsIDOMPaintRequest)
+  NS_INTERFACE_TABLE(PaintRequest, nsIDOMPaintRequest)
   NS_INTERFACE_TABLE_TO_MAP_SEGUE_CYCLE_COLLECTION(PaintRequest)
 NS_INTERFACE_MAP_END
 
@@ -28,9 +28,9 @@ NS_IMPL_CYCLE_COLLECTING_ADDREF(PaintRequest)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(PaintRequest)
 
 /* virtual */ JSObject*
-PaintRequest::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+PaintRequest::WrapObject(JSContext* aCx)
 {
-  return PaintRequestBinding::Wrap(aCx, aScope, this);
+  return PaintRequestBinding::Wrap(aCx, this);
 }
 
 already_AddRefed<DOMRect>
@@ -60,7 +60,7 @@ PaintRequest::GetXPCOMReason(nsAString& aResult)
  * mozilla::dom::PaintRequestList
  *****************************************************************************/
 
-NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_1(PaintRequestList, mParent)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(PaintRequestList, mParent)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(PaintRequestList)
   NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
@@ -71,9 +71,9 @@ NS_IMPL_CYCLE_COLLECTING_ADDREF(PaintRequestList)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(PaintRequestList)
 
 JSObject*
-PaintRequestList::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+PaintRequestList::WrapObject(JSContext* aCx)
 {
-  return PaintRequestListBinding::Wrap(aCx, aScope, this);
+  return PaintRequestListBinding::Wrap(aCx, this);
 }
 
 } // namespace dom

@@ -9,7 +9,7 @@
 using namespace mozilla::widget::android;
 
 
-NS_IMPL_ISUPPORTS2(nsAndroidHandlerApp, nsIHandlerApp, nsISharingHandlerApp)
+NS_IMPL_ISUPPORTS(nsAndroidHandlerApp, nsIHandlerApp, nsISharingHandlerApp)
 
 nsAndroidHandlerApp::nsAndroidHandlerApp(const nsAString& aName,
                                          const nsAString& aDescription,
@@ -54,6 +54,13 @@ nsAndroidHandlerApp::SetDetailedDescription(const nsAString & aDescription)
 
   return NS_OK;
 }
+
+// XXX Workaround for bug 986975 to maintain the existing broken semantics
+template<>
+struct nsISharingHandlerApp::COMTypeInfo<nsAndroidHandlerApp, void> {
+  static const nsIID kIID NS_HIDDEN;
+};
+const nsIID nsISharingHandlerApp::COMTypeInfo<nsAndroidHandlerApp, void>::kIID = NS_IHANDLERAPP_IID;
 
 NS_IMETHODIMP
 nsAndroidHandlerApp::Equals(nsIHandlerApp *aHandlerApp, bool *aRetval)

@@ -5,10 +5,11 @@
 #include "DOMCameraManager.h"
 #include "nsDebug.h"
 #include "jsapi.h"
+#include "Navigator.h"
 #include "nsPIDOMWindow.h"
 #include "mozilla/Services.h"
 #include "nsContentPermissionHelper.h"
-#include "nsObserverService.h"
+#include "nsIObserverService.h"
 #include "nsIPermissionManager.h"
 #include "DOMCameraControl.h"
 #include "nsDOMClassInfo.h"
@@ -22,7 +23,7 @@
 using namespace mozilla;
 using namespace mozilla::dom;
 
-NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_1(nsDOMCameraManager, mWindow)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(nsDOMCameraManager, mWindow)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(nsDOMCameraManager)
   NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, nsIObserver)
@@ -70,17 +71,26 @@ nsDOMCameraManager::~nsDOMCameraManager()
   DOM_CAMERA_LOGT("%s:%d : this=%p\n", __func__, __LINE__, this);
 }
 
+/* static */
 void
 nsDOMCameraManager::GetListOfCameras(nsTArray<nsString>& aList, ErrorResult& aRv)
 {
   aRv = ICameraControl::GetListOfCameras(aList);
 }
 
+/* static */
+bool
+nsDOMCameraManager::HasSupport(JSContext* aCx, JSObject* aGlobal)
+{
+  return Navigator::HasCameraSupport(aCx, aGlobal);
+}
+
+/* static */
 bool
 nsDOMCameraManager::CheckPermission(nsPIDOMWindow* aWindow)
 {
   nsCOMPtr<nsIPermissionManager> permMgr =
-    do_GetService(NS_PERMISSIONMANAGER_CONTRACTID);
+    services::GetPermissionManager();
   NS_ENSURE_TRUE(permMgr, false);
 
   uint32_t permission = nsIPermissionManager::DENY_ACTION;
@@ -93,7 +103,7 @@ nsDOMCameraManager::CheckPermission(nsPIDOMWindow* aWindow)
   return true;
 }
 
-// static creator
+/* static */
 already_AddRefed<nsDOMCameraManager>
 nsDOMCameraManager::CreateInstance(nsPIDOMWindow* aWindow)
 {
@@ -164,7 +174,7 @@ protected:
   nsRefPtr<CameraErrorCallback> mOnError;
 };
 
-NS_IMPL_CYCLE_COLLECTION_3(CameraPermissionRequest, mWindow, mOnSuccess, mOnError)
+NS_IMPL_CYCLE_COLLECTION(CameraPermissionRequest, mWindow, mOnSuccess, mOnError)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(CameraPermissionRequest)
   NS_INTERFACE_MAP_ENTRY(nsIContentPermissionRequest)
@@ -437,7 +447,7 @@ nsDOMCameraManager::IsWindowStillActive(uint64_t aWindowId)
 }
 
 JSObject*
-nsDOMCameraManager::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+nsDOMCameraManager::WrapObject(JSContext* aCx)
 {
-  return CameraManagerBinding::Wrap(aCx, aScope, this);
+  return CameraManagerBinding::Wrap(aCx, this);
 }

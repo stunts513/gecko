@@ -930,7 +930,7 @@ StructMetaTypeDescr::create(JSContext *cx,
 
         // userFieldTypes[id] = typeObj
         if (!JSObject::defineGeneric(cx, userFieldTypes, id,
-                                     fieldTypeObjs.handleAt(i), nullptr, nullptr,
+                                     fieldTypeObjs[i], nullptr, nullptr,
                                      JSPROP_READONLY | JSPROP_PERMANENT))
             return nullptr;
 
@@ -1300,7 +1300,7 @@ DefineMetaTypeDescr(JSContext *cx,
     RootedObject protoProto(cx);
     protoProto = NewObjectWithProto<JSObject>(cx, objProto,
                                               global, SingletonObject);
-    if (!proto)
+    if (!protoProto)
         return nullptr;
 
     RootedValue protoProtoValue(cx, ObjectValue(*protoProto));
@@ -2215,16 +2215,22 @@ TypedObject::obj_enumerate(JSContext *cx, HandleObject obj, JSIterateOp enum_op,
 }
 
 /* static */ size_t
-TypedObject::ownerOffset()
+TypedObject::offsetOfOwnerSlot()
 {
     return JSObject::getFixedSlotOffset(JS_TYPEDOBJ_SLOT_OWNER);
 }
 
 /* static */ size_t
-TypedObject::dataOffset()
+TypedObject::offsetOfDataSlot()
 {
     // the offset of 7 is based on the alloc kind
     return JSObject::getPrivateDataOffset(JS_TYPEDOBJ_SLOT_DATA);
+}
+
+/* static */ size_t
+TypedObject::offsetOfByteOffsetSlot()
+{
+    return JSObject::getFixedSlotOffset(JS_TYPEDOBJ_SLOT_BYTEOFFSET);
 }
 
 void
@@ -2255,8 +2261,8 @@ const Class TransparentTypedObject::class_ = {
     JS_ConvertStub,
     nullptr,        /* finalize    */
     nullptr,        /* call        */
-    nullptr,        /* construct   */
     nullptr,        /* hasInstance */
+    nullptr,        /* construct   */
     TypedObject::obj_trace,
     JS_NULL_CLASS_SPEC,
     JS_NULL_CLASS_EXT,
@@ -2712,12 +2718,21 @@ js::SetTypedObjectOffset(ThreadSafeContext *, unsigned argc, Value *vp)
 
     typedObj.setPrivate(typedObj.owner().dataPointer() + offset);
     typedObj.setReservedSlot(JS_TYPEDOBJ_SLOT_BYTEOFFSET, Int32Value(offset));
+    args.rval().setUndefined();
     return true;
 }
 
-JS_JITINFO_NATIVE_PARALLEL_THREADSAFE(js::SetTypedObjectOffsetJitInfo,
+bool
+js::intrinsic_SetTypedObjectOffset(JSContext *cx, unsigned argc, Value *vp)
+{
+    // Do not use JSNativeThreadSafeWrapper<> so that ion can reference
+    // this function more easily when inlining.
+    return SetTypedObjectOffset(cx, argc, vp);
+}
+
+JS_JITINFO_NATIVE_PARALLEL_THREADSAFE(js::intrinsic_SetTypedObjectOffsetJitInfo,
                                       SetTypedObjectJitInfo,
-                                      js::SetTypedObjectOffset);
+                                      SetTypedObjectOffset);
 
 bool
 js::ObjectIsTypeDescr(ThreadSafeContext *, unsigned argc, Value *vp)

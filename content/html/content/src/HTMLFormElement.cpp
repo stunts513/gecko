@@ -177,11 +177,11 @@ NS_IMPL_RELEASE_INHERITED(HTMLFormElement, Element)
 
 // QueryInterface implementation for HTMLFormElement
 NS_INTERFACE_TABLE_HEAD_CYCLE_COLLECTION_INHERITED(HTMLFormElement)
-  NS_INTERFACE_TABLE_INHERITED4(HTMLFormElement,
-                                nsIDOMHTMLFormElement,
-                                nsIForm,
-                                nsIWebProgressListener,
-                                nsIRadioGroupContainer)
+  NS_INTERFACE_TABLE_INHERITED(HTMLFormElement,
+                               nsIDOMHTMLFormElement,
+                               nsIForm,
+                               nsIWebProgressListener,
+                               nsIRadioGroupContainer)
 NS_INTERFACE_TABLE_TAIL_INHERITING(nsGenericHTMLElement)
 
 
@@ -1252,7 +1252,7 @@ HTMLFormElement::RemoveElement(nsGenericHTMLFormElement* aChild,
   
   // Find the index of the child. This will be used later if necessary
   // to find the default submit.
-  uint32_t index = controls.IndexOf(aChild);
+  size_t index = controls.IndexOf(aChild);
   NS_ENSURE_STATE(index != controls.NoIndex);
 
   controls.RemoveElementAt(index);
@@ -1434,8 +1434,14 @@ HTMLFormElement::NamedGetter(const nsAString& aName, bool &aFound)
   return nullptr;
 }
 
+bool
+HTMLFormElement::NameIsEnumerable(const nsAString& aName)
+{
+  return true;
+}
+
 void
-HTMLFormElement::GetSupportedNames(nsTArray<nsString >& aRetval)
+HTMLFormElement::GetSupportedNames(unsigned, nsTArray<nsString >& aRetval)
 {
   // TODO https://www.w3.org/Bugs/Public/show_bug.cgi?id=22320
 }
@@ -2039,6 +2045,7 @@ HTMLFormElement::GetNextRadioButton(const nsAString& aName,
   radioGroup->GetLength(&numRadios);
   nsRefPtr<HTMLInputElement> radio;
 
+  bool isRadio = false;
   do {
     if (aPrevious) {
       if (--index < 0) {
@@ -2052,10 +2059,11 @@ HTMLFormElement::GetNextRadioButton(const nsAString& aName,
     if (!radio)
       continue;
 
-    if (radio->GetType() != NS_FORM_INPUT_RADIO)
+    isRadio = radio->GetType() == NS_FORM_INPUT_RADIO;
+    if (!isRadio)
       continue;
 
-  } while (radio->Disabled() && radio != currentRadio);
+  } while ((radio->Disabled() && radio != currentRadio) || !isRadio);
 
   NS_IF_ADDREF(*aRadioOut = radio);
   return NS_OK;
@@ -2331,7 +2339,7 @@ HTMLFormElement::AddImageElementToTable(HTMLImageElement* aChild,
 nsresult
 HTMLFormElement::RemoveImageElement(HTMLImageElement* aChild)
 {
-  uint32_t index = mImageElements.IndexOf(aChild);
+  size_t index = mImageElements.IndexOf(aChild);
   NS_ENSURE_STATE(index != mImageElements.NoIndex);
 
   mImageElements.RemoveElementAt(index);
@@ -2366,9 +2374,9 @@ HTMLFormElement::AddToPastNamesMap(const nsAString& aName,
 }
  
 JSObject*
-HTMLFormElement::WrapNode(JSContext* aCx, JS::Handle<JSObject*> aScope)
+HTMLFormElement::WrapNode(JSContext* aCx)
 {
-  return HTMLFormElementBinding::Wrap(aCx, aScope, this);
+  return HTMLFormElementBinding::Wrap(aCx, this);
 }
 
 } // namespace dom

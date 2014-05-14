@@ -34,6 +34,7 @@ let ShortcutUtils = {
   prettifyShortcut: function(aElemKey, aNoCloverLeaf) {
     let elemString = "";
     let elemMod = aElemKey.getAttribute("modifiers");
+    let haveCloverLeaf = false;
 
     if (elemMod.match("accel")) {
       if (Services.appinfo.OS == "Darwin") {
@@ -42,8 +43,7 @@ let ShortcutUtils = {
         if (aNoCloverLeaf) {
           elemString += "Cmd-";
         } else {
-          elemString += PlatformKeys.GetStringFromName("VK_META") +
-            PlatformKeys.GetStringFromName("MODIFIER_SEPARATOR");
+          haveCloverLeaf = true;
         }
       } else {
         elemString += PlatformKeys.GetStringFromName("VK_CONTROL") +
@@ -80,6 +80,11 @@ let ShortcutUtils = {
         PlatformKeys.GetStringFromName("MODIFIER_SEPARATOR");
     }
 
+    if (haveCloverLeaf) {
+      elemString += PlatformKeys.GetStringFromName("VK_META") +
+        PlatformKeys.GetStringFromName("MODIFIER_SEPARATOR");
+    }
+
     let key;
     let keyCode = aElemKey.getAttribute("keycode");
     if (keyCode) {
@@ -95,6 +100,11 @@ let ShortcutUtils = {
       key = key.toUpperCase();
     }
     return elemString + key;
+  },
+
+  findShortcut: function(aElemCommand) {
+    let document = aElemCommand.ownerDocument;
+    return document.querySelector("key[command=\"" + aElemCommand.getAttribute("id") + "\"]");
   }
 };
 

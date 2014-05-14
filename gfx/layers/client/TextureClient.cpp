@@ -25,6 +25,7 @@
 #include "ImageContainer.h"             // for PlanarYCbCrImage, etc
 #include "mozilla/gfx/2D.h"
 #include "mozilla/layers/TextureClientOGL.h"
+#include "mozilla/layers/PTextureChild.h"
 
 #ifdef XP_WIN
 #include "mozilla/layers/TextureD3D9.h"
@@ -46,7 +47,6 @@
 
 #ifdef MOZ_ANDROID_OMTC
 #  include "gfxReusableImageSurfaceWrapper.h"
-#  include "gfxImageSurface.h"
 #else
 #  include "gfxReusableSharedImageSurfaceWrapper.h"
 #  include "gfxSharedImageSurface.h"
@@ -75,38 +75,24 @@ namespace layers {
  * TextureClient's data until the compositor side confirmed that it is safe to
  * deallocte or recycle the it.
  */
-class TextureChild : public PTextureChild
-                   , public AtomicRefCounted<TextureChild>
+class TextureChild MOZ_FINAL : public PTextureChild
 {
 public:
-  MOZ_DECLARE_REFCOUNTED_TYPENAME(TextureChild)
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(TextureChild)
+
   TextureChild()
   : mForwarder(nullptr)
   , mTextureData(nullptr)
   , mTextureClient(nullptr)
   , mIPCOpen(false)
   {
-    MOZ_COUNT_CTOR(TextureChild);
-  }
-
-  ~TextureChild()
-  {
-    MOZ_COUNT_DTOR(TextureChild);
   }
 
   bool Recv__delete__() MOZ_OVERRIDE;
 
-  bool RecvCompositorRecycle(const MaybeFenceHandle& aFence)
+  bool RecvCompositorRecycle()
   {
     RECYCLE_LOG("Receive recycle %p (%p)\n", mTextureClient, mWaitForRecycle.get());
-    if (aFence.type() != aFence.Tnull_t) {
-      FenceHandle fence = aFence.get_FenceHandle();
-      if (fence.IsValid() && mTextureClient) {
-        mTextureClient->SetReleaseFenceHandle(aFence);
-        // HWC might not provide Fence.
-        // In this case, HWC implicitly handles buffer's fence.
-      }
-    }
     mWaitForRecycle = nullptr;
     return true;
   }
@@ -284,20 +270,27 @@ TextureClient::CreateTextureClientForDrawing(ISurfaceAllocator* aAllocator,
 
   RefPtr<TextureClient> result;
 
+#if defined(MOZ_WIDGET_GONK) || defined(XP_WIN)
+  int32_t maxTextureSize = aAllocator->GetMaxTextureSize();
+#endif
+
 #ifdef XP_WIN
   LayersBackend parentBackend = aAllocator->GetCompositorBackendType();
   if (parentBackend == LayersBackend::LAYERS_D3D11 &&
       (aMoz2DBackend == gfx::BackendType::DIRECT2D ||
         aMoz2DBackend == gfx::BackendType::DIRECT2D1_1) &&
       gfxWindowsPlatform::GetPlatform()->GetD2DDevice() &&
-
-      !(aTextureFlags & TEXTURE_ALLOC_FALLBACK)) {
+      aSizeHint.width <= maxTextureSize &&
+      aSizeHint.height <= maxTextureSize &&
+      !(aTextureFlags & TextureFlags::ALLOC_FALLBACK)) {
     result = new TextureClientD3D11(aFormat, aTextureFlags);
   }
   if (parentBackend == LayersBackend::LAYERS_D3D9 &&
       aMoz2DBackend == gfx::BackendType::CAIRO &&
       aAllocator->IsSameProcess() &&
-      !(aTextureFlags & TEXTURE_ALLOC_FALLBACK)) {
+      aSizeHint.width <= maxTextureSize &&
+      aSizeHint.height <= maxTextureSize &&
+      !(aTextureFlags & TextureFlags::ALLOC_FALLBACK)) {
     if (!gfxWindowsPlatform::GetPlatform()->GetD3D9Device()) {
       result = new DIBTextureClientD3D9(aFormat, aTextureFlags);
     } else {
@@ -314,16 +307,14 @@ TextureClient::CreateTextureClientForDrawing(ISurfaceAllocator* aAllocator,
   if (parentBackend == LayersBackend::LAYERS_BASIC &&
       aMoz2DBackend == gfx::BackendType::CAIRO &&
       type == gfxSurfaceType::Xlib &&
-      !(aTextureFlags & TEXTURE_ALLOC_FALLBACK))
+      !(aTextureFlags & TextureFlags::ALLOC_FALLBACK))
   {
     result = new TextureClientX11(aFormat, aTextureFlags);
   }
 #ifdef GL_PROVIDER_GLX
-#if 0
-  // Bug 977963: Disabled for black layers
   if (parentBackend == LayersBackend::LAYERS_OPENGL &&
       type == gfxSurfaceType::Xlib &&
-      !(aTextureFlags & TEXTURE_ALLOC_FALLBACK) &&
+      !(aTextureFlags & TextureFlags::ALLOC_FALLBACK) &&
       aFormat != SurfaceFormat::A8 &&
       gl::sGLXLibrary.UseTextureFromPixmap())
   {
@@ -331,13 +322,11 @@ TextureClient::CreateTextureClientForDrawing(ISurfaceAllocator* aAllocator,
   }
 #endif
 #endif
-#endif
 
 #ifdef MOZ_WIDGET_GONK
   if (!DisableGralloc(aFormat, aSizeHint)) {
     // Don't allow Gralloc texture clients to exceed the maximum texture size.
     // BufferTextureClients have code to handle tiling the surface client-side.
-    int32_t maxTextureSize = aAllocator->GetMaxTextureSize();
     if (aSizeHint.width <= maxTextureSize && aSizeHint.height <= maxTextureSize) {
       result = new GrallocTextureClientOGL(aAllocator, aFormat, aMoz2DBackend,
                                            aTextureFlags);
@@ -350,8 +339,7 @@ TextureClient::CreateTextureClientForDrawing(ISurfaceAllocator* aAllocator,
     result = CreateBufferTextureClient(aAllocator, aFormat, aTextureFlags, aMoz2DBackend);
   }
 
-  MOZ_ASSERT(!result || result->AsTextureClientDrawTarget(),
-             "Not a TextureClientDrawTarget?");
+  MOZ_ASSERT(!result || result->CanExposeDrawTarget(), "texture cannot expose a DrawTarget?");
   return result;
 }
 
@@ -463,12 +451,11 @@ TextureClient::~TextureClient()
 void TextureClient::ForceRemove()
 {
   if (mValid && mActor) {
-    if (GetFlags() & TEXTURE_DEALLOCATE_CLIENT) {
-      mActor->SetTextureData(DropTextureData());
+    if (GetFlags() & TextureFlags::DEALLOCATE_CLIENT) {
       if (mActor->IPCOpen()) {
-        mActor->SendRemoveTextureSync();
+        mActor->SendClearTextureHostSync();
+        mActor->SendRemoveTexture();
       }
-      mActor->DeleteTextureData();
     } else {
       if (mActor->IPCOpen()) {
         mActor->SendRemoveTexture();
@@ -485,12 +472,12 @@ bool TextureClient::CopyToTextureClient(TextureClient* aTarget,
   MOZ_ASSERT(IsLocked());
   MOZ_ASSERT(aTarget->IsLocked());
 
-  if (!aTarget->AsTextureClientDrawTarget() || !AsTextureClientDrawTarget()) {
+  if (!aTarget->CanExposeDrawTarget() || !CanExposeDrawTarget()) {
     return false;
   }
 
-  RefPtr<DrawTarget> destinationTarget = aTarget->AsTextureClientDrawTarget()->GetAsDrawTarget();
-  RefPtr<DrawTarget> sourceTarget = AsTextureClientDrawTarget()->GetAsDrawTarget();
+  RefPtr<DrawTarget> destinationTarget = aTarget->GetAsDrawTarget();
+  RefPtr<DrawTarget> sourceTarget = GetAsDrawTarget();
   RefPtr<gfx::SourceSurface> source = sourceTarget->Snapshot();
   destinationTarget->CopySurface(source,
                                  aRect ? *aRect : gfx::IntRect(gfx::IntPoint(0, 0), GetSize()),
@@ -511,12 +498,14 @@ TextureClient::Finalize()
   RefPtr<TextureChild> actor = mActor;
 
   if (actor) {
+    // The actor has a raw pointer to us, actor->mTextureClient. 
+    // Null it before RemoveTexture calls to avoid invalid actor->mTextureClient
+    // when calling TextureChild::ActorDestroy()
+    actor->mTextureClient = nullptr;
     // this will call ForceRemove in the right thread, using a sync proxy if needed
     if (actor->GetForwarder()) {
       actor->GetForwarder()->RemoveTexture(this);
     }
-    // The actor has a raw pointer to us, actor->mTextureClient. Null it before we die.
-    actor->mTextureClient = nullptr;
   }
 }
 
@@ -649,8 +638,7 @@ BufferTextureClient::BufferTextureClient(ISurfaceAllocator* aAllocator,
   , mAllocator(aAllocator)
   , mFormat(aFormat)
   , mBackend(aMoz2DBackend)
-  , mOpenMode(0)
-  , mUsingFallbackDrawTarget(false)
+  , mOpenMode(OpenMode::OPEN_NONE)
   , mLocked(false)
 {}
 
@@ -661,51 +649,6 @@ ISurfaceAllocator*
 BufferTextureClient::GetAllocator() const
 {
   return mAllocator;
-}
-
-bool
-BufferTextureClient::UpdateSurface(gfxASurface* aSurface)
-{
-  MOZ_ASSERT(mLocked);
-  MOZ_ASSERT(aSurface);
-  MOZ_ASSERT(!IsImmutable());
-  MOZ_ASSERT(IsValid());
-
-  ImageDataSerializer serializer(GetBuffer(), GetBufferSize());
-  if (!serializer.IsValid()) {
-    return false;
-  }
-
-  RefPtr<DrawTarget> dt = GetAsDrawTarget();
-  RefPtr<SourceSurface> source = gfxPlatform::GetPlatform()->GetSourceSurfaceForSurface(dt, aSurface);
-
-  dt->CopySurface(source, IntRect(IntPoint(), serializer.GetSize()), IntPoint());
-  // XXX - if the Moz2D backend is D2D, we would be much better off memcpying
-  // the content of the surface directly because with D2D, GetAsDrawTarget is
-  // very expensive.
-
-  if (TextureRequiresLocking(mFlags) && !ImplementsLocking()) {
-    // We don't have support for proper locking yet, so we'll
-    // have to be immutable instead.
-    MarkImmutable();
-  }
-  return true;
-}
-
-already_AddRefed<gfxASurface>
-BufferTextureClient::GetAsSurface()
-{
-  MOZ_ASSERT(mLocked);
-  MOZ_ASSERT(IsValid());
-
-  ImageDataSerializer serializer(GetBuffer(), GetBufferSize());
-  if (!serializer.IsValid()) {
-    return nullptr;
-  }
-
-  RefPtr<gfxImageSurface> surf = serializer.GetAsThebesSurface();
-  nsRefPtr<gfxASurface> result = surf.get();
-  return result.forget();
 }
 
 bool
@@ -746,26 +689,13 @@ BufferTextureClient::GetAsDrawTarget()
     return nullptr;
   }
 
-  MOZ_ASSERT(mUsingFallbackDrawTarget == false);
   mDrawTarget = serializer.GetAsDrawTarget(mBackend);
   if (mDrawTarget) {
     return mDrawTarget;
   }
 
-  // fallback path, probably because the Moz2D backend can't create a
-  // DrawTarget around raw memory. This is going to be slow :(
-  mDrawTarget = gfx::Factory::CreateDrawTarget(mBackend, serializer.GetSize(),
-                                               serializer.GetFormat());
-  if (!mDrawTarget) {
-    return nullptr;
-  }
+  mDrawTarget = serializer.GetAsDrawTarget(BackendType::CAIRO);
 
-  mUsingFallbackDrawTarget = true;
-  if (mOpenMode & OPEN_READ) {
-    RefPtr<DataSourceSurface> surface = serializer.GetAsSurface();
-    IntRect rect(0, 0, surface->GetSize().width, surface->GetSize().height);
-    mDrawTarget->CopySurface(surface, rect, IntPoint(0,0));
-  }
   return mDrawTarget;
 }
 
@@ -784,42 +714,17 @@ BufferTextureClient::Unlock()
   MOZ_ASSERT(mLocked, "The TextureClient is already Unlocked!");
   mLocked = false;
   if (!mDrawTarget) {
-    mUsingFallbackDrawTarget = false;
     return;
   }
 
-  // see the comment on TextureClientDrawTarget::GetAsDrawTarget.
+  // see the comment on TextureClient::GetAsDrawTarget.
   // This DrawTarget is internal to the TextureClient and is only exposed to the
   // outside world between Lock() and Unlock(). This assertion checks that no outside
   // reference remains by the time Unlock() is called.
   MOZ_ASSERT(mDrawTarget->refCount() == 1);
 
   mDrawTarget->Flush();
-  if (mUsingFallbackDrawTarget && (mOpenMode & OPEN_WRITE)) {
-    // When we are using a fallback DrawTarget, it means we could not create
-    // a DrawTarget wrapping the TextureClient's shared memory. In this scenario
-    // we need to put the content of the fallback draw target back into our shared
-    // memory.
-    RefPtr<SourceSurface> snapshot = mDrawTarget->Snapshot();
-    RefPtr<DataSourceSurface> surface = snapshot->GetDataSurface();
-    ImageDataSerializer serializer(GetBuffer(), GetBufferSize());
-    if (!serializer.IsValid() || serializer.GetSize() != surface->GetSize()) {
-      NS_WARNING("Could not write the data back into the texture.");
-      mDrawTarget = nullptr;
-      mUsingFallbackDrawTarget = false;
-      return;
-    }
-    MOZ_ASSERT(surface->GetSize() == serializer.GetSize());
-    MOZ_ASSERT(surface->GetFormat() == serializer.GetFormat());
-    int bpp = BytesPerPixel(surface->GetFormat());
-    for (int i = 0; i < surface->GetSize().height; ++i) {
-      memcpy(serializer.GetData() + i*serializer.GetStride(),
-             surface->GetData() + i*surface->Stride(),
-             surface->GetSize().width * bpp);
-    }
-  }
   mDrawTarget = nullptr;
-  mUsingFallbackDrawTarget = false;
 }
 
 bool

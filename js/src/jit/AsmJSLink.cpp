@@ -6,6 +6,9 @@
 
 #include "jit/AsmJSLink.h"
 
+#include "mozilla/BinarySearch.h"
+#include "mozilla/PodOperations.h"
+
 #ifdef MOZ_VTUNE
 # include "vtune/VTuneWrapper.h"
 #endif
@@ -29,7 +32,102 @@
 using namespace js;
 using namespace js::jit;
 
+using mozilla::BinarySearch;
 using mozilla::IsNaN;
+using mozilla::PodZero;
+
+AsmJSFrameIterator::AsmJSFrameIterator(const AsmJSActivation *activation)
+{
+    if (!activation || activation->isInterruptedSP()) {
+        PodZero(this);
+        JS_ASSERT(done());
+        return;
+    }
+
+    module_ = &activation->module();
+    sp_ = activation->exitSP();
+
+#if defined(JS_CODEGEN_X86) || defined(JS_CODEGEN_X64)
+    // For calls to Ion/C++ on x86/x64, the exitSP is the SP right before the call
+    // to C++. Since the call instruction pushes the return address, we know
+    // that the return address is 1 word below exitSP.
+    returnAddress_ = *(uint8_t**)(sp_ - sizeof(void*));
+#else
+    // For calls to Ion/C++ on ARM, the *caller* pushes the return address on
+    // the stack. For Ion, this is just part of the ABI. For C++, the return
+    // address is explicitly pushed before the call since we cannot expect the
+    // callee to immediately push lr. This means that exitSP points to the
+    // return address.
+    returnAddress_ = *(uint8_t**)sp_;
+#endif
+
+    settle();
+}
+
+struct GetCallSite
+{
+    const AsmJSModule &module;
+    GetCallSite(const AsmJSModule &module) : module(module) {}
+    uint32_t operator[](size_t index) const {
+        return module.callSite(index).returnAddressOffset();
+    }
+};
+
+void
+AsmJSFrameIterator::popFrame()
+{
+    // After adding stackDepth, sp points to the word before the return address,
+    // on both ARM and x86/x64.
+    sp_ += callsite_->stackDepth();
+    returnAddress_ = *(uint8_t**)(sp_ - sizeof(void*));
+}
+
+void
+AsmJSFrameIterator::settle()
+{
+    while (true) {
+        uint32_t target = returnAddress_ - module_->codeBase();
+        size_t lowerBound = 0;
+        size_t upperBound = module_->numCallSites();
+
+        size_t match;
+        if (!BinarySearch(GetCallSite(*module_), lowerBound, upperBound, target, &match)) {
+            callsite_ = nullptr;
+            return;
+        }
+
+        callsite_ = &module_->callSite(match);
+
+        if (callsite_->isExit()) {
+            popFrame();
+            continue;
+        }
+
+        if (callsite_->isEntry()) {
+            callsite_ = nullptr;
+            return;
+        }
+
+        JS_ASSERT(callsite_->isNormal());
+        return;
+    }
+}
+
+JSAtom *
+AsmJSFrameIterator::functionDisplayAtom() const
+{
+    JS_ASSERT(!done());
+    return module_->functionName(callsite_->functionNameIndex());
+}
+
+unsigned
+AsmJSFrameIterator::computeLine(uint32_t *column) const
+{
+    JS_ASSERT(!done());
+    if (column)
+        *column = callsite_->column();
+    return callsite_->line();
+}
 
 static bool
 CloneModule(JSContext *cx, MutableHandle<AsmJSModuleObject*> moduleObj)
@@ -65,7 +163,7 @@ GetDataProperty(JSContext *cx, HandleValue objVal, HandlePropertyName field, Mut
     Rooted<JSPropertyDescriptor> desc(cx);
     RootedObject obj(cx, &objVal.toObject());
     RootedId id(cx, NameToId(field));
-    if (!JS_GetPropertyDescriptorById(cx, obj, id, 0, &desc))
+    if (!JS_GetPropertyDescriptorById(cx, obj, id, &desc))
         return false;
 
     if (!desc.object())
@@ -141,7 +239,7 @@ ValidateFFI(JSContext *cx, AsmJSModule::Global &global, HandleValue importVal,
     if (!v.isObject() || !v.toObject().is<JSFunction>())
         return LinkFail(cx, "FFI imports must be functions");
 
-    (*ffis)[global.ffiIndex()] = &v.toObject().as<JSFunction>();
+    (*ffis)[global.ffiIndex()].set(&v.toObject().as<JSFunction>());
     return true;
 }
 
@@ -408,14 +506,23 @@ CallAsmJS(JSContext *cx, unsigned argc, Value *vp)
         // that the optimized asm.js-to-Ion FFI call path (which we want to be
         // very fast) can avoid doing so. The JitActivation is marked as
         // inactive so stack iteration will skip over it.
-        unsigned exportIndex = FunctionToExportedFunctionIndex(callee);
-        AsmJSActivation activation(cx, module, exportIndex);
+        AsmJSActivation activation(cx, module);
         JitActivation jitActivation(cx, /* firstFrameIsConstructing = */ false, /* active */ false);
 
         // Call the per-exported-function trampoline created by GenerateEntry.
         AsmJSModule::CodePtr enter = module.entryTrampoline(func);
         if (!CALL_GENERATED_ASMJS(enter, coercedArgs.begin(), module.globalData()))
             return false;
+    }
+
+    if (callArgs.isConstructing()) {
+        // By spec, when a function is called as a constructor and this function
+        // returns a primary type, which is the case for all asm.js exported
+        // functions, the returned value is discarded and an empty object is
+        // returned instead.
+        JSObject *obj = NewBuiltinClassInstance(cx, &JSObject::class_);
+        callArgs.rval().set(ObjectValue(*obj));
+        return true;
     }
 
     switch (func.returnType()) {
@@ -439,7 +546,7 @@ NewExportedFunction(JSContext *cx, const AsmJSModule::ExportedFunction &func,
 {
     RootedPropertyName name(cx, func.name());
     JSFunction *fun = NewFunction(cx, NullPtr(), CallAsmJS, func.numArgs(),
-                                  JSFunction::NATIVE_FUN, cx->global(), name,
+                                  JSFunction::ASMJS_CTOR, cx->global(), name,
                                   JSFunction::ExtendedFinalizeKind);
     if (!fun)
         return nullptr;
@@ -481,12 +588,13 @@ HandleDynamicLinkFailure(JSContext *cx, CallArgs args, AsmJSModule &module, Hand
            .setCompileAndGo(false)
            .setNoScriptRval(false);
 
-    if (!frontend::CompileFunctionBody(cx, &fun, options, formals, src->chars(), end - begin))
+    SourceBufferHolder srcBuf(src->chars(), end - begin, SourceBufferHolder::NoOwnership);
+    if (!frontend::CompileFunctionBody(cx, &fun, options, formals, srcBuf))
         return false;
 
     // Call the function we just recompiled.
     args.setCallee(ObjectValue(*fun));
-    return Invoke(cx, args);
+    return Invoke(cx, args, args.isConstructing() ? CONSTRUCT : NO_CONSTRUCT);
 }
 
 #ifdef MOZ_VTUNE
@@ -634,7 +742,7 @@ CreateExportObject(JSContext *cx, Handle<AsmJSModuleObject*> moduleObj)
         JS_ASSERT(func.maybeFieldName() != nullptr);
         RootedId id(cx, NameToId(func.maybeFieldName()));
         RootedValue val(cx, ObjectValue(*fun));
-        if (!DefineNativeProperty(cx, obj, id, val, nullptr, nullptr, JSPROP_ENUMERATE, 0))
+        if (!DefineNativeProperty(cx, obj, id, val, nullptr, nullptr, JSPROP_ENUMERATE))
             return nullptr;
     }
 
@@ -700,8 +808,8 @@ js::NewAsmJSModuleFunction(ExclusiveContext *cx, JSFunction *origFun, HandleObje
 {
     RootedPropertyName name(cx, origFun->name());
 
-    JSFunction::Flags flags = origFun->isLambda() ? JSFunction::NATIVE_LAMBDA_FUN
-                                                  : JSFunction::NATIVE_FUN;
+    JSFunction::Flags flags = origFun->isLambda() ? JSFunction::ASMJS_LAMBDA_CTOR
+                                                  : JSFunction::ASMJS_CTOR;
     JSFunction *moduleFun = NewFunction(cx, NullPtr(), LinkAsmJS, origFun->nargs(),
                                         flags, NullPtr(), name,
                                         JSFunction::ExtendedFinalizeKind, TenuredObject);
@@ -800,8 +908,31 @@ js::AsmJSModuleToString(JSContext *cx, HandleFunction fun, bool addParenToLambda
     if (!src)
         return nullptr;
 
-    if (!out.append(src->chars(), src->length()))
-        return nullptr;
+    if (module.strict()) {
+        // We need to add "use strict" in the body right after the opening
+        // brace.
+        size_t bodyStart = 0, bodyEnd;
+
+        // No need to test for functions created with the Function ctor as
+        // these doesn't implicitly inherit the "use strict" context. Strict mode is
+        // enabled for functions created with the Function ctor only if they begin with
+        // the "use strict" directive, but these functions won't validate as asm.js
+        // modules.
+
+        ConstTwoByteChars chars(src->chars(), src->length());
+        if (!FindBody(cx, fun, chars, src->length(), &bodyStart, &bodyEnd))
+            return nullptr;
+
+        if (!out.append(chars, bodyStart) ||
+            !out.append("\n\"use strict\";\n") ||
+            !out.append(chars + bodyStart, src->length() - bodyStart))
+        {
+            return nullptr;
+        }
+    } else {
+        if (!out.append(src->chars(), src->length()))
+            return nullptr;
+    }
 
     if (funCtor && !out.append("\n}"))
         return nullptr;

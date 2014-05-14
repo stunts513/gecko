@@ -47,7 +47,7 @@ public:
 
   MediaSource* GetParentObject() const;
 
-  JSObject* WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   // Append a SourceBuffer and fire "addsourcebuffer" at the list.
   void Append(SourceBuffer* aSourceBuffer);
@@ -76,6 +76,9 @@ public:
 
   // Evicts data for the given time range from each SourceBuffer in the list.
   void Evict(double aStart, double aEnd);
+
+  // Returns true if all SourceBuffers in the list contain data for the given time.
+  bool AllContainsTime(double aTime);
 
 private:
   friend class AsyncEventRunner<SourceBufferList>;

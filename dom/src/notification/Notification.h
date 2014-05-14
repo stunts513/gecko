@@ -90,8 +90,7 @@ public:
     return GetOwner();
   }
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 protected:
   Notification(const nsAString& aID, const nsAString& aTitle, const nsAString& aBody,
                NotificationDirection aDir, const nsAString& aLang,
@@ -134,7 +133,10 @@ protected:
 
   static nsresult GetOrigin(nsPIDOMWindow* aWindow, nsString& aOrigin);
 
-  nsresult GetAlertName(nsString& aAlertName);
+  void GetAlertName(nsAString& aRetval)
+  {
+    aRetval = mAlertName;
+  }
 
   nsString mID;
   nsString mTitle;
@@ -143,6 +145,8 @@ protected:
   nsString mLang;
   nsString mTag;
   nsString mIconUrl;
+
+  nsString mAlertName;
 
   bool mIsClosed;
 

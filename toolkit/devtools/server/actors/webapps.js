@@ -9,17 +9,11 @@ let Cc = Components.classes;
 let Ci = Components.interfaces;
 let CC = Components.Constructor;
 
-Cu.import("resource://gre/modules/osfile.jsm");
+Cu.import("resource://gre/modules/NetUtil.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+Cu.import("resource://gre/modules/osfile.jsm");
 
-let {devtools} = Cu.import("resource://gre/modules/devtools/Loader.jsm", {});
-
-XPCOMUtils.defineLazyGetter(this, "NetworkMonitorManager", () => {
-  return devtools.require("devtools/toolkit/webconsole/network-monitor")
-         .NetworkMonitorManager;
-});
-
-let promise;
+let {Promise: promise} = Cu.import("resource://gre/modules/Promise.jsm", {});
 
 function debug(aMsg) {
   /*
@@ -828,21 +822,15 @@ WebappsActor.prototype = {
                        .frameLoader
                        .messageManager;
       let actor = map.get(mm);
-      let netMonitor = null;
       if (!actor) {
         let onConnect = actor => {
           map.set(mm, actor);
-          netMonitor = new NetworkMonitorManager(appFrame);
           return { actor: actor };
         };
         let onDisconnect = mm => {
           map.delete(mm);
-          if (netMonitor) {
-            netMonitor.destroy();
-            netMonitor = null;
-          }
         };
-        return DebuggerServer.connectToChild(this.conn, mm, onDisconnect)
+        return DebuggerServer.connectToChild(this.conn, appFrame, onDisconnect)
                              .then(onConnect);
       }
 

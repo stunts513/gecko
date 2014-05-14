@@ -84,7 +84,7 @@ class GlobalWorkerThreadState
   public:
     GlobalWorkerThreadState();
 
-    bool ensureInitialized();
+    void ensureInitialized();
     void finish();
 
     void lock();
@@ -260,7 +260,7 @@ struct WorkerThread
 /* Methods for interacting with worker threads. */
 
 // Initialize worker threads unless already initialized.
-bool
+void
 EnsureWorkerThreadsInitialized(ExclusiveContext *cx);
 
 // This allows the JS shell to override GetCPUCount() when passed the
@@ -300,7 +300,7 @@ CancelOffThreadParses(JSRuntime *runtime);
  */
 bool
 StartOffThreadParseScript(JSContext *cx, const ReadOnlyCompileOptions &options,
-                          const jschar *chars, size_t length, HandleObject scopeChain,
+                          const jschar *chars, size_t length,
                           JS::OffThreadCompileCallback callback, void *callbackData);
 
 /*
@@ -391,11 +391,6 @@ struct ParseTask
     size_t length;
     LifoAlloc alloc;
 
-    // Rooted pointer to the scope in the target compartment which the
-    // resulting script will be merged into. This is not safe to use off the
-    // main thread.
-    PersistentRootedObject scopeChain;
-
     // Rooted pointer to the global object used by 'cx'.
     PersistentRootedObject exclusiveContextGlobal;
 
@@ -421,8 +416,8 @@ struct ParseTask
     Vector<frontend::CompileError *> errors;
     bool overRecursed;
 
-    ParseTask(ExclusiveContext *cx, JSObject *exclusiveContextGlobal, JSContext *initCx,
-              const jschar *chars, size_t length, JSObject *scopeChain,
+    ParseTask(ExclusiveContext *cx, JSObject *exclusiveContextGlobal,
+              JSContext *initCx, const jschar *chars, size_t length,
               JS::OffThreadCompileCallback callback, void *callbackData);
     bool init(JSContext *cx, const ReadOnlyCompileOptions &options);
 
@@ -449,6 +444,7 @@ OffThreadParsingMustWaitForGC(JSRuntime *rt);
 struct SourceCompressionTask
 {
     friend class ScriptSource;
+    friend class WorkerThread;
 
 #ifdef JS_THREADSAFE
     // Thread performing the compression.
@@ -460,16 +456,24 @@ struct SourceCompressionTask
     ExclusiveContext *cx;
 
     ScriptSource *ss;
-    const jschar *chars;
-    bool oom;
 
     // Atomic flag to indicate to a worker thread that it should abort
     // compression on the source.
     mozilla::Atomic<bool, mozilla::Relaxed> abort_;
 
+    // Stores the result of the compression.
+    enum ResultType {
+        OOM,
+        Aborted,
+        Success
+    } result;
+    void *compressed;
+    size_t compressedBytes;
+
   public:
     explicit SourceCompressionTask(ExclusiveContext *cx)
-      : cx(cx), ss(nullptr), chars(nullptr), oom(false), abort_(false)
+      : cx(cx), ss(nullptr), abort_(false),
+        result(OOM), compressed(nullptr), compressedBytes(0)
     {
 #ifdef JS_THREADSAFE
         workerThread = nullptr;
@@ -481,13 +485,11 @@ struct SourceCompressionTask
         complete();
     }
 
-    bool work();
+    ResultType work();
     bool complete();
     void abort() { abort_ = true; }
     bool active() const { return !!ss; }
     ScriptSource *source() { return ss; }
-    const jschar *uncompressedChars() { return chars; }
-    void setOOM() { oom = true; }
 };
 
 } /* namespace js */

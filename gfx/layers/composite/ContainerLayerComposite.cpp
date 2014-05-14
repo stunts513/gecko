@@ -9,7 +9,6 @@
 #include "Units.h"                      // for LayerRect, LayerPixel, etc
 #include "gfx2DGlue.h"                  // for ToMatrix4x4
 #include "gfx3DMatrix.h"                // for gfx3DMatrix
-#include "gfxImageSurface.h"            // for gfxImageSurface
 #include "gfxPrefs.h"                   // for gfxPrefs
 #include "gfxUtils.h"                   // for gfxUtils, etc
 #include "mozilla/Assertions.h"         // for MOZ_ASSERT, etc
@@ -19,7 +18,7 @@
 #include "mozilla/gfx/Point.h"          // for Point, IntPoint
 #include "mozilla/gfx/Rect.h"           // for IntRect, Rect
 #include "mozilla/layers/Compositor.h"  // for Compositor, etc
-#include "mozilla/layers/CompositorTypes.h"  // for DIAGNOSTIC_CONTAINER
+#include "mozilla/layers/CompositorTypes.h"  // for DiagnosticFlags::CONTAINER
 #include "mozilla/layers/Effects.h"     // for Effect, EffectChain, etc
 #include "mozilla/layers/TextureHost.h"  // for CompositingRenderTarget
 #include "mozilla/mozalloc.h"           // for operator delete, etc
@@ -36,17 +35,6 @@
 
 namespace mozilla {
 namespace layers {
-
-// HasOpaqueAncestorLayer and ContainerRender are shared between RefLayer and ContainerLayer
-static bool
-HasOpaqueAncestorLayer(Layer* aLayer)
-{
-  for (Layer* l = aLayer->GetParent(); l; l = l->GetParent()) {
-    if (l->GetContentFlags() & Layer::CONTENT_OPAQUE)
-      return true;
-  }
-  return false;
-}
 
 /**
  * Returns a rectangle of content painted opaquely by aLayer. Very consertative;
@@ -247,6 +235,7 @@ static void DrawVelGraph(const nsIntRect& aClipRect,
                         opacity, transform);
 }
 
+// ContainerRender is shared between RefLayer and ContainerLayer
 template<class ContainerT> void
 ContainerRender(ContainerT* aContainer,
                 LayerManagerComposite* aManager,
@@ -263,17 +252,15 @@ ContainerRender(ContainerT* aContainer,
 
   nsIntRect visibleRect = aContainer->GetEffectiveVisibleRegion().GetBounds();
 
-  aContainer->mSupportsComponentAlphaChildren = false;
-
   float opacity = aContainer->GetEffectiveOpacity();
 
   bool needsSurface = aContainer->UseIntermediateSurface();
+  bool surfaceCopyNeeded;
+  aContainer->DefaultComputeSupportsComponentAlphaChildren(&surfaceCopyNeeded);
   if (needsSurface) {
     SurfaceInitMode mode = INIT_MODE_CLEAR;
-    bool surfaceCopyNeeded = false;
     gfx::IntRect surfaceRect = gfx::IntRect(visibleRect.x, visibleRect.y,
                                             visibleRect.width, visibleRect.height);
-    gfx::IntPoint sourcePoint = gfx::IntPoint(visibleRect.x, visibleRect.y);
     // we're about to create a framebuffer backed by textures to use as an intermediate
     // surface. What to do if its size (as given by framebufferRect) would exceed the
     // maximum texture size supported by the GL? The present code chooses the compromise
@@ -286,28 +273,19 @@ ContainerRender(ContainerT* aContainer,
     if (aContainer->GetEffectiveVisibleRegion().GetNumRects() == 1 &&
         (aContainer->GetContentFlags() & Layer::CONTENT_OPAQUE))
     {
-      // don't need a background, we're going to paint all opaque stuff
-      aContainer->mSupportsComponentAlphaChildren = true;
       mode = INIT_MODE_NONE;
-    } else {
-      const gfx::Matrix4x4& transform3D = aContainer->GetEffectiveTransform();
-      gfx::Matrix transform;
-      // If we have an opaque ancestor layer, then we can be sure that
-      // all the pixels we draw into are either opaque already or will be
-      // covered by something opaque. Otherwise copying up the background is
-      // not safe.
-      if (HasOpaqueAncestorLayer(aContainer) &&
-          transform3D.Is2D(&transform) && !ThebesMatrix(transform).HasNonIntegerTranslation()) {
-        surfaceCopyNeeded = gfxPrefs::ComponentAlphaEnabled();
-        sourcePoint.x += transform._31;
-        sourcePoint.y += transform._32;
-        aContainer->mSupportsComponentAlphaChildren
-          = gfxPrefs::ComponentAlphaEnabled();
-      }
     }
 
-    sourcePoint -= compositor->GetCurrentRenderTarget()->GetOrigin();
     if (surfaceCopyNeeded) {
+      gfx::IntPoint sourcePoint = gfx::IntPoint(visibleRect.x, visibleRect.y);
+
+      gfx::Matrix4x4 transform = aContainer->GetEffectiveTransform();
+      DebugOnly<gfx::Matrix> transform2d;
+      MOZ_ASSERT(transform.Is2D(&transform2d) && !gfx::ThebesMatrix(transform2d).HasNonIntegerTranslation());
+      sourcePoint += gfx::IntPoint(transform._41, transform._42);
+
+      sourcePoint -= compositor->GetCurrentRenderTarget()->GetOrigin();
+
       surface = compositor->CreateRenderTargetFromSource(surfaceRect, previousTarget, sourcePoint);
     } else {
       surface = compositor->CreateRenderTarget(surfaceRect, mode);
@@ -320,8 +298,6 @@ ContainerRender(ContainerT* aContainer,
     compositor->SetRenderTarget(surface);
   } else {
     surface = previousTarget;
-    aContainer->mSupportsComponentAlphaChildren = (aContainer->GetContentFlags() & Layer::CONTENT_OPAQUE) ||
-      (aContainer->GetParent() && aContainer->GetParent()->SupportsComponentAlphaChildren());
   }
 
   nsAutoTArray<Layer*, 12> children;
@@ -411,6 +387,7 @@ ContainerRender(ContainerT* aContainer,
                                                             effectChain,
                                                             !aContainer->GetTransform().CanDraw2D());
 
+    aContainer->AddBlendModeEffect(effectChain);
     effectChain.mPrimaryEffect = new EffectRenderTarget(surface);
 
     gfx::Rect rect(visibleRect.x, visibleRect.y, visibleRect.width, visibleRect.height);
@@ -424,7 +401,7 @@ ContainerRender(ContainerT* aContainer,
     LayerRect layerBounds = ParentLayerRect(frame.mCompositionBounds) * ParentLayerToLayerScale(1.0);
     gfx::Rect rect(layerBounds.x, layerBounds.y, layerBounds.width, layerBounds.height);
     gfx::Rect clipRect(aClipRect.x, aClipRect.y, aClipRect.width, aClipRect.height);
-    aManager->GetCompositor()->DrawDiagnostics(DIAGNOSTIC_CONTAINER,
+    aManager->GetCompositor()->DrawDiagnostics(DiagnosticFlags::CONTAINER,
                                                rect, clipRect,
                                                aContainer->GetEffectiveTransform());
   }

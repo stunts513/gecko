@@ -13,7 +13,7 @@
 namespace mozilla {
 namespace dom {
 
-NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_1(SpeechRecognitionAlternative, mParent)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(SpeechRecognitionAlternative, mParent)
 NS_IMPL_CYCLE_COLLECTING_ADDREF(SpeechRecognitionAlternative)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(SpeechRecognitionAlternative)
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(SpeechRecognitionAlternative)
@@ -34,10 +34,9 @@ SpeechRecognitionAlternative::~SpeechRecognitionAlternative()
 }
 
 JSObject*
-SpeechRecognitionAlternative::WrapObject(JSContext* aCx,
-                                         JS::Handle<JSObject*> aScope)
+SpeechRecognitionAlternative::WrapObject(JSContext* aCx)
 {
-  return SpeechRecognitionAlternativeBinding::Wrap(aCx, aScope, this);
+  return SpeechRecognitionAlternativeBinding::Wrap(aCx, this);
 }
 
 nsISupports*

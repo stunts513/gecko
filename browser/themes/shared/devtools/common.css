@@ -201,6 +201,10 @@
   margin: -4px; /* Compensate for the .panel-arrowcontent padding. */
 }
 
+.devtools-tooltip-variables-view-box .variable-or-property > .title {
+  -moz-padding-end: 6px;
+}
+
 /* Tooltip: Tiles */
 
 .devtools-tooltip-tiles {
@@ -214,4 +218,15 @@
 .devtools-tooltip-iframe {
   border: none;
   background: transparent;
+}
+
+/* Eyedropper Widget */
+
+.devtools-eyedropper-panel {
+  pointer-events: none;
+  -moz-appearance: none;
+  width: 156px;
+  height: 120px;
+  background-color: transparent;
+  border: none;
 }

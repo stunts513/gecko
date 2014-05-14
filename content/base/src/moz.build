@@ -16,6 +16,7 @@ EXPORTS += [
     'nsContentSink.h',
     'nsCrossSiteListenerProxy.h',
     'nsDOMAttributeMap.h',
+    'nsElementFrameLoaderOwner.h',
     'nsFrameMessageManager.h',
     'nsGenericDOMDataNode.h',
     'nsGkAtomList.h',
@@ -72,6 +73,7 @@ EXPORTS.mozilla.dom += [
     'Link.h',
     'NodeIterator.h',
     'ShadowRoot.h',
+    'StyleSheetList.h',
     'Text.h',
     'TreeWalker.h',
 ]
@@ -120,6 +122,7 @@ UNIFIED_SOURCES += [
     'nsDOMSerializer.cpp',
     'nsDOMSettableTokenList.cpp',
     'nsDOMTokenList.cpp',
+    'nsElementFrameLoaderOwner.cpp',
     'nsFormData.cpp',
     'nsFrameLoader.cpp',
     'nsFrameMessageManager.cpp',
@@ -129,7 +132,6 @@ UNIFIED_SOURCES += [
     'nsHostObjectProtocolHandler.cpp',
     'nsHostObjectURI.cpp',
     'nsHTMLContentSerializer.cpp',
-    'nsImageLoadingContent.cpp',
     'nsINode.cpp',
     'nsInProcessTabChildGlobal.cpp',
     'nsLineBreaker.cpp',
@@ -161,10 +163,15 @@ UNIFIED_SOURCES += [
     'nsXMLHttpRequest.cpp',
     'nsXMLNameSpaceMap.cpp',
     'ShadowRoot.cpp',
+    'StyleSheetList.cpp',
     'Text.cpp',
     'ThirdPartyUtil.cpp',
     'TreeWalker.cpp',
     'WebSocket.cpp',
+]
+
+SOURCES += [
+    'nsImageLoadingContent.cpp',
 ]
 
 # These files cannot be built in unified mode because they use FORCE_PR_LOG
@@ -227,6 +234,7 @@ LOCAL_INCLUDES += [
     '/layout/svg',
     '/layout/xul',
     '/netwerk/base/src',
+    '/xpcom/ds',
 ]
 
 if CONFIG['GNU_CC'] and CONFIG['MOZ_WIDGET_TOOLKIT'] == 'android':

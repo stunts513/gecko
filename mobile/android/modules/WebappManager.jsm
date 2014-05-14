@@ -20,25 +20,17 @@ Cu.import("resource://gre/modules/Webapps.jsm");
 Cu.import("resource://gre/modules/osfile.jsm");
 Cu.import("resource://gre/modules/Promise.jsm");
 Cu.import("resource://gre/modules/Task.jsm");
-Cu.import("resource://gre/modules/PluralForm.jsm");
 
 XPCOMUtils.defineLazyModuleGetter(this, "Notifications", "resource://gre/modules/Notifications.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "sendMessageToJava", "resource://gre/modules/Messaging.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "PluralForm", "resource://gre/modules/PluralForm.jsm");
 
 XPCOMUtils.defineLazyGetter(this, "Strings", function() {
   return Services.strings.createBundle("chrome://browser/locale/webapp.properties");
 });
 
-function debug(aMessage) {
-  // We use *dump* instead of Services.console.logStringMessage so the messages
-  // have the INFO level of severity instead of the ERROR level.  And we don't
-  // append a newline character to the end of the message because *dump* spills
-  // into the Android native logging system, which strips newlines from messages
-  // and breaks messages into lines automatically at display time (i.e. logcat).
-#ifdef DEBUG
-  dump(aMessage);
-#endif
-}
+let Log = Cu.import("resource://gre/modules/AndroidLog.jsm", {}).AndroidLog;
+let debug = Log.d.bind(null, "WebappManager");
 
 this.WebappManager = {
   __proto__: DOMRequestIpcHelper.prototype,

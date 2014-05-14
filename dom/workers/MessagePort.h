@@ -6,7 +6,7 @@
 #ifndef mozilla_dom_workers_messageport_h_
 #define mozilla_dom_workers_messageport_h_
 
-#include "Workers.h"
+#include "mozilla/dom/workers/Workers.h"
 
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/dom/BindingDeclarations.h"
@@ -80,7 +80,7 @@ public:
   }
 
   virtual JSObject*
-  WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   virtual nsresult
   PreHandleEvent(EventChainPreVisitor& aVisitor) MOZ_OVERRIDE;

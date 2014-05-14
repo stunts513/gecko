@@ -80,17 +80,17 @@ NS_IMPL_ADDREF_INHERITED(HTMLObjectElement, Element)
 NS_IMPL_RELEASE_INHERITED(HTMLObjectElement, Element)
 
 NS_INTERFACE_TABLE_HEAD_CYCLE_COLLECTION_INHERITED(HTMLObjectElement)
-  NS_INTERFACE_TABLE_INHERITED10(HTMLObjectElement,
-                                 nsIDOMHTMLObjectElement,
-                                 imgINotificationObserver,
-                                 nsIRequestObserver,
-                                 nsIStreamListener,
-                                 nsIFrameLoaderOwner,
-                                 nsIObjectLoadingContent,
-                                 nsIImageLoadingContent,
-                                 imgIOnloadBlocker,
-                                 nsIChannelEventSink,
-                                 nsIConstraintValidation)
+  NS_INTERFACE_TABLE_INHERITED(HTMLObjectElement,
+                               nsIDOMHTMLObjectElement,
+                               imgINotificationObserver,
+                               nsIRequestObserver,
+                               nsIStreamListener,
+                               nsIFrameLoaderOwner,
+                               nsIObjectLoadingContent,
+                               nsIImageLoadingContent,
+                               imgIOnloadBlocker,
+                               nsIChannelEventSink,
+                               nsIConstraintValidation)
 NS_INTERFACE_TABLE_TAIL_INHERITING(nsGenericHTMLFormElement)
 
 NS_IMPL_ELEMENT_CLONE(HTMLObjectElement)
@@ -442,10 +442,10 @@ HTMLObjectElement::CopyInnerTo(Element* aDest)
 }
 
 JSObject*
-HTMLObjectElement::WrapNode(JSContext* aCx, JS::Handle<JSObject*> aScope)
+HTMLObjectElement::WrapNode(JSContext* aCx)
 {
   JS::Rooted<JSObject*> obj(aCx,
-    HTMLObjectElementBinding::Wrap(aCx, aScope, this));
+    HTMLObjectElementBinding::Wrap(aCx, this));
   if (!obj) {
     return nullptr;
   }

@@ -694,7 +694,6 @@ protected:
   bool ParseGrid();
   bool ParseGridShorthandAutoProps();
   bool ParseGridLine(nsCSSValue& aValue);
-  bool ParseGridAutoPosition();
   bool ParseGridColumnRowStartEnd(nsCSSProperty aPropID);
   bool ParseGridColumnRow(nsCSSProperty aStartPropID,
                           nsCSSProperty aEndPropID);
@@ -738,7 +737,7 @@ protected:
   bool ParseTextAlignLast(nsCSSValue& aValue);
   bool ParseTextDecoration();
   bool ParseTextDecorationLine(nsCSSValue& aValue);
-  bool ParseTextCombineHorizontal(nsCSSValue& aValue);
+  bool ParseTextCombineUpright(nsCSSValue& aValue);
   bool ParseTextOverflow(nsCSSValue& aValue);
   bool ParseTouchAction(nsCSSValue& aValue);
 
@@ -6952,7 +6951,8 @@ CSSParserImpl::ParseGridAutoFlow()
   }
 
   static const int32_t mask[] = {
-    NS_STYLE_GRID_AUTO_FLOW_COLUMN | NS_STYLE_GRID_AUTO_FLOW_ROW,
+    NS_STYLE_GRID_AUTO_FLOW_ROW | NS_STYLE_GRID_AUTO_FLOW_COLUMN,
+    NS_STYLE_GRID_AUTO_FLOW_DENSE | NS_STYLE_GRID_AUTO_FLOW_STACK,
     MASK_END_VALUE
   };
   if (!ParseBitmaskValues(value, nsCSSProps::kGridAutoFlowKTable, mask)) {
@@ -6961,16 +6961,16 @@ CSSParserImpl::ParseGridAutoFlow()
   int32_t bitField = value.GetIntValue();
 
   // Requires one of these
-  if (!(bitField & NS_STYLE_GRID_AUTO_FLOW_NONE ||
+  if (!(bitField & NS_STYLE_GRID_AUTO_FLOW_ROW ||
         bitField & NS_STYLE_GRID_AUTO_FLOW_COLUMN ||
-        bitField & NS_STYLE_GRID_AUTO_FLOW_ROW)) {
+        bitField & NS_STYLE_GRID_AUTO_FLOW_STACK)) {
     return false;
   }
 
-  // 'none' is only valid if it occurs alone:
-  if (bitField & NS_STYLE_GRID_AUTO_FLOW_NONE &&
-      bitField != NS_STYLE_GRID_AUTO_FLOW_NONE) {
-    return false;
+  // 'stack' without 'row' or 'column' defaults to 'stack row'
+  if (bitField == NS_STYLE_GRID_AUTO_FLOW_STACK) {
+    value.SetIntValue(bitField | NS_STYLE_GRID_AUTO_FLOW_ROW,
+                      eCSSUnit_Enumerated);
   }
 
   AppendValue(eCSSProperty_grid_auto_flow, value);
@@ -7487,8 +7487,11 @@ CSSParserImpl::ParseGridTemplateAreasLine(const nsAutoString& aInput,
   nsCSSGridTemplateAreaToken token;
   css::GridNamedArea* currentArea = nullptr;
   uint32_t row = aAreas->NRows();
-  uint32_t column;
-  for (column = 1; scanner.Next(token); column++) {
+  // Column numbers starts at 1, but we might not have any, eg
+  // grid-template-areas:""; which will result in mNColumns == 0.
+  uint32_t column = 0;
+  while (scanner.Next(token)) {
+    ++column;
     if (token.isTrash) {
       return false;
     }
@@ -7540,7 +7543,7 @@ CSSParserImpl::ParseGridTemplateAreasLine(const nsAutoString& aInput,
       }
     }
   }
-  if (currentArea && currentArea->mColumnEnd != column) {
+  if (currentArea && currentArea->mColumnEnd != column + 1) {
     NS_ASSERTION(currentArea->mRowStart != row,
                  "Inconsistent column end for the first row of a named area.");
     // Not a rectangle
@@ -7822,37 +7825,17 @@ CSSParserImpl::ParseGrid()
     return true;
   }
 
-  // 'none' at the beginning could be a <'grid-auto-flow'>
-  // (which also covers 'none' by itself)
-  // or a <'grid-template-columns'> (as part of <'grid-template'>)
-  if (ParseVariant(value, VARIANT_NONE, nullptr)) {
-    if (ExpectSymbol('/', true)) {
-      AppendValue(eCSSProperty_grid_template_columns, value);
-
-      // Set grid-auto-* subproperties to their initial values.
-      value.SetIntValue(NS_STYLE_GRID_AUTO_FLOW_NONE, eCSSUnit_Enumerated);
-      AppendValue(eCSSProperty_grid_auto_flow, value);
-      value.SetAutoValue();
-      AppendValue(eCSSProperty_grid_auto_columns, value);
-      AppendValue(eCSSProperty_grid_auto_rows, value);
-
-      return ParseGridTemplateAfterSlash(/* aColumnsIsTrackList = */ false);
-    }
-    value.SetIntValue(NS_STYLE_GRID_AUTO_FLOW_NONE, eCSSUnit_Enumerated);
-    AppendValue(eCSSProperty_grid_auto_flow, value);
-    return ParseGridShorthandAutoProps();
-  }
-
   // An empty value is always invalid.
   if (!GetToken(true)) {
     return false;
   }
 
-  // If the value starts with a 'dense', 'column' or 'row' keyword,
-  // it can only start with a <'grid-auto-flow'>
+  // The values starts with a <'grid-auto-flow'> if and only if
+  // it starts with a 'stack', 'dense', 'column' or 'row' keyword.
   if (mToken.mType == eCSSToken_Ident) {
     nsCSSKeyword keyword = nsCSSKeywords::LookupKeyword(mToken.mIdent);
-    if (keyword == eCSSKeyword_dense ||
+    if (keyword == eCSSKeyword_stack ||
+        keyword == eCSSKeyword_dense ||
         keyword == eCSSKeyword_column ||
         keyword == eCSSKeyword_row) {
       UngetToken();
@@ -7863,7 +7846,7 @@ CSSParserImpl::ParseGrid()
 
   // Set other subproperties to their initial values
   // and parse <'grid-template'>.
-  value.SetIntValue(NS_STYLE_GRID_AUTO_FLOW_NONE, eCSSUnit_Enumerated);
+  value.SetIntValue(NS_STYLE_GRID_AUTO_FLOW_ROW, eCSSUnit_Enumerated);
   AppendValue(eCSSProperty_grid_auto_flow, value);
   value.SetAutoValue();
   AppendValue(eCSSProperty_grid_auto_columns, value);
@@ -8005,26 +7988,6 @@ CSSParserImpl::ParseGridLine(nsCSSValue& aValue)
     item->mValue = ident;
   }
   return true;
-}
-
-bool
-CSSParserImpl::ParseGridAutoPosition()
-{
-  nsCSSValue value;
-  if (ParseVariant(value, VARIANT_INHERIT, nullptr)) {
-    AppendValue(eCSSProperty_grid_auto_position, value);
-    return true;
-  }
-  nsCSSValue columnStartValue;
-  nsCSSValue rowStartValue;
-  if (ParseGridLine(columnStartValue) &&
-      ExpectSymbol('/', true) &&
-      ParseGridLine(rowStartValue)) {
-    value.SetPairValue(columnStartValue, rowStartValue);
-    AppendValue(eCSSProperty_grid_auto_position, value);
-    return true;
-  }
-  return false;
 }
 
 bool
@@ -9176,8 +9139,6 @@ CSSParserImpl::ParsePropertyByFunction(nsCSSProperty aPropID)
     return ParseGridTemplate();
   case eCSSProperty_grid:
     return ParseGrid();
-  case eCSSProperty_grid_auto_position:
-    return ParseGridAutoPosition();
   case eCSSProperty_grid_column_start:
   case eCSSProperty_grid_column_end:
   case eCSSProperty_grid_row_start:
@@ -9322,8 +9283,8 @@ CSSParserImpl::ParseSingleValueProperty(nsCSSValue& aValue,
         return ParseTextAlignLast(aValue);
       case eCSSProperty_text_decoration_line:
         return ParseTextDecorationLine(aValue);
-      case eCSSProperty_text_combine_horizontal:
-        return ParseTextCombineHorizontal(aValue);
+      case eCSSProperty_text_combine_upright:
+        return ParseTextCombineUpright(aValue);
       case eCSSProperty_text_overflow:
         return ParseTextOverflow(aValue);
       case eCSSProperty_touch_action:
@@ -12405,8 +12366,10 @@ CSSParserImpl::ParseTextOverflow(nsCSSValue& aValue)
 bool
 CSSParserImpl::ParseTouchAction(nsCSSValue& aValue)
 {
-  if (!ParseVariant(aValue, VARIANT_HK | VARIANT_NONE | VARIANT_AUTO,
-                    nsCSSProps::kTouchActionKTable)) {
+  // Avaliable values of property touch-action:
+  // auto | none | [pan-x || pan-y] | manipulation
+
+  if (!ParseVariant(aValue, VARIANT_HK, nsCSSProps::kTouchActionKTable)) {
     return false;
   }
 
@@ -12426,6 +12389,13 @@ CSSParserImpl::ParseTouchAction(nsCSSValue& aValue)
       return false;
     }
 
+    // Auto and None and Manipulation is not allowed in conjunction with others.
+    if ((intValue | nextIntValue) & (NS_STYLE_TOUCH_ACTION_NONE |
+                                     NS_STYLE_TOUCH_ACTION_AUTO |
+                                     NS_STYLE_TOUCH_ACTION_MANIPULATION)) {
+      return false;
+    }
+
     aValue.SetIntValue(nextIntValue | intValue, eCSSUnit_Enumerated);
   }
 
@@ -12433,16 +12403,16 @@ CSSParserImpl::ParseTouchAction(nsCSSValue& aValue)
 }
 
 bool
-CSSParserImpl::ParseTextCombineHorizontal(nsCSSValue& aValue)
+CSSParserImpl::ParseTextCombineUpright(nsCSSValue& aValue)
 {
   if (!ParseVariant(aValue, VARIANT_HK,
-                    nsCSSProps::kTextCombineHorizontalKTable)) {
+                    nsCSSProps::kTextCombineUprightKTable)) {
     return false;
   }
 
   // if 'digits', need to check for an explicit number [2, 3, 4]
   if (eCSSUnit_Enumerated == aValue.GetUnit() &&
-      aValue.GetIntValue() == NS_STYLE_TEXT_COMBINE_HORIZ_DIGITS_2) {
+      aValue.GetIntValue() == NS_STYLE_TEXT_COMBINE_UPRIGHT_DIGITS_2) {
     if (!GetToken(true)) {
       return true;
     }
@@ -12451,11 +12421,11 @@ CSSParserImpl::ParseTextCombineHorizontal(nsCSSValue& aValue)
         case 2:  // already set, nothing to do
           break;
         case 3:
-          aValue.SetIntValue(NS_STYLE_TEXT_COMBINE_HORIZ_DIGITS_3,
+          aValue.SetIntValue(NS_STYLE_TEXT_COMBINE_UPRIGHT_DIGITS_3,
                              eCSSUnit_Enumerated);
           break;
         case 4:
-          aValue.SetIntValue(NS_STYLE_TEXT_COMBINE_HORIZ_DIGITS_4,
+          aValue.SetIntValue(NS_STYLE_TEXT_COMBINE_UPRIGHT_DIGITS_4,
                              eCSSUnit_Enumerated);
           break;
         default:
@@ -12554,8 +12524,13 @@ CSSParserImpl::ParseFunction(nsCSSKeyword aFunction,
 
   /* Read in a list of values as an array, failing if we can't or if
    * it's out of bounds.
+   *
+   * We reserve 16 entries in the foundValues array in order to avoid
+   * having to resize the array dynamically when parsing some well-formed
+   * functions.  The number 16 is coming from the number of arguments that
+   * matrix3d() accepts.
    */
-  InfallibleTArray<nsCSSValue> foundValues;
+  AutoInfallibleTArray<nsCSSValue, 16> foundValues;
   if (!ParseFunctionInternals(aAllowedTypes, aAllowedTypesAll, aMinElems,
                               aMaxElems, foundValues)) {
     return false;

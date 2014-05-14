@@ -114,7 +114,6 @@
 #include "nsIRequest.h"
 #include "nsHostObjectProtocolHandler.h"
 
-#include "nsCharsetAlias.h"
 #include "nsCharsetSource.h"
 #include "nsIParser.h"
 #include "nsIContentSink.h"
@@ -192,6 +191,7 @@
 #include "nsWrapperCacheInlines.h"
 #include "nsSandboxFlags.h"
 #include "nsIAppsService.h"
+#include "mozilla/dom/AnimationTimeline.h"
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/DocumentFragment.h"
 #include "mozilla/dom/Event.h"
@@ -315,6 +315,13 @@ struct FireChangeArgs {
   bool mImageOnly;
   bool mHaveImageOverride;
 };
+
+// XXX Workaround for bug 980560 to maintain the existing broken semantics
+template<>
+struct nsIStyleRule::COMTypeInfo<css::Rule, void> {
+  static const nsIID kIID NS_HIDDEN;
+};
+const nsIID nsIStyleRule::COMTypeInfo<css::Rule, void>::kIID = NS_ISTYLE_RULE_IID;
 
 namespace mozilla {
 namespace dom {
@@ -723,76 +730,48 @@ nsDOMStyleSheetList::~nsDOMStyleSheetList()
   }
 }
 
-DOMCI_DATA(StyleSheetList, nsDOMStyleSheetList)
+NS_IMPL_ISUPPORTS_INHERITED(nsDOMStyleSheetList, StyleSheetList,
+                            nsIDocumentObserver,
+                            nsIMutationObserver)
 
-// XXX couldn't we use the GetIIDs method from CSSStyleSheetList here?
-// QueryInterface implementation for nsDOMStyleSheetList
-NS_INTERFACE_TABLE_HEAD(nsDOMStyleSheetList)
-  NS_INTERFACE_TABLE3(nsDOMStyleSheetList,
-                      nsIDOMStyleSheetList,
-                      nsIDocumentObserver,
-                      nsIMutationObserver)
-  NS_INTERFACE_TABLE_TO_MAP_SEGUE
-  NS_DOM_INTERFACE_MAP_ENTRY_CLASSINFO(StyleSheetList)
-NS_INTERFACE_MAP_END
-
-
-NS_IMPL_ADDREF(nsDOMStyleSheetList)
-NS_IMPL_RELEASE(nsDOMStyleSheetList)
-
-
-NS_IMETHODIMP
-nsDOMStyleSheetList::GetLength(uint32_t* aLength)
+uint32_t
+nsDOMStyleSheetList::Length()
 {
-  if (mDocument) {
-    // XXX Find the number and then cache it. We'll use the
-    // observer notification to figure out if new ones have
-    // been added or removed.
-    if (-1 == mLength) {
-      mLength = mDocument->GetNumberOfStyleSheets();
+  if (!mDocument) {
+    return 0;
+  }
+
+  // XXX Find the number and then cache it. We'll use the
+  // observer notification to figure out if new ones have
+  // been added or removed.
+  if (-1 == mLength) {
+    mLength = mDocument->GetNumberOfStyleSheets();
 
 #ifdef DEBUG
-      int32_t i;
-      for (i = 0; i < mLength; i++) {
-        nsIStyleSheet *sheet = mDocument->GetStyleSheetAt(i);
-        nsCOMPtr<nsIDOMStyleSheet> domss(do_QueryInterface(sheet));
-        NS_ASSERTION(domss, "All \"normal\" sheets implement nsIDOMStyleSheet");
-      }
-#endif
+    int32_t i;
+    for (i = 0; i < mLength; i++) {
+      nsIStyleSheet *sheet = mDocument->GetStyleSheetAt(i);
+      nsCOMPtr<nsIDOMStyleSheet> domss(do_QueryInterface(sheet));
+      NS_ASSERTION(domss, "All \"normal\" sheets implement nsIDOMStyleSheet");
     }
-    *aLength = mLength;
+#endif
   }
-  else {
-    *aLength = 0;
-  }
-
-  return NS_OK;
+  return mLength;
 }
 
-nsIStyleSheet*
-nsDOMStyleSheetList::GetItemAt(uint32_t aIndex)
+nsCSSStyleSheet*
+nsDOMStyleSheetList::IndexedGetter(uint32_t aIndex, bool& aFound)
 {
   if (!mDocument || aIndex >= (uint32_t)mDocument->GetNumberOfStyleSheets()) {
+    aFound = false;
     return nullptr;
   }
 
+  aFound = true;
   nsIStyleSheet *sheet = mDocument->GetStyleSheetAt(aIndex);
   NS_ASSERTION(sheet, "Must have a sheet");
 
-  return sheet;
-}
-
-NS_IMETHODIMP
-nsDOMStyleSheetList::Item(uint32_t aIndex, nsIDOMStyleSheet** aReturn)
-{
-  nsIStyleSheet *sheet = GetItemAt(aIndex);
-  if (!sheet) {
-      *aReturn = nullptr;
-
-      return NS_OK;
-  }
-
-  return CallQueryInterface(sheet, aReturn);
+  return static_cast<nsCSSStyleSheet*>(sheet);
 }
 
 void
@@ -828,7 +807,7 @@ nsDOMStyleSheetList::StyleSheetRemoved(nsIDocument *aDocument,
 }
 
 // nsOnloadBlocker implementation
-NS_IMPL_ISUPPORTS1(nsOnloadBlocker, nsIRequest)
+NS_IMPL_ISUPPORTS(nsOnloadBlocker, nsIRequest)
 
 NS_IMETHODIMP
 nsOnloadBlocker::GetName(nsACString &aResult)
@@ -1148,9 +1127,9 @@ nsExternalResourceMap::AddExternalResource(nsIURI* aURI,
   return rv;
 }
 
-NS_IMPL_ISUPPORTS2(nsExternalResourceMap::PendingLoad,
-                   nsIStreamListener,
-                   nsIRequestObserver)
+NS_IMPL_ISUPPORTS(nsExternalResourceMap::PendingLoad,
+                  nsIStreamListener,
+                  nsIRequestObserver)
 
 NS_IMETHODIMP
 nsExternalResourceMap::PendingLoad::OnStartRequest(nsIRequest *aRequest,
@@ -1345,11 +1324,11 @@ nsExternalResourceMap::PendingLoad::StartLoad(nsIURI* aURI,
   return channel->AsyncOpen(this, nullptr);
 }
 
-NS_IMPL_ISUPPORTS1(nsExternalResourceMap::LoadgroupCallbacks,
-                   nsIInterfaceRequestor)
+NS_IMPL_ISUPPORTS(nsExternalResourceMap::LoadgroupCallbacks,
+                  nsIInterfaceRequestor)
 
 #define IMPL_SHIM(_i) \
-  NS_IMPL_ISUPPORTS1(nsExternalResourceMap::LoadgroupCallbacks::_i##Shim, _i)
+  NS_IMPL_ISUPPORTS(nsExternalResourceMap::LoadgroupCallbacks::_i##Shim, _i)
 
 IMPL_SHIM(nsILoadContext)
 IMPL_SHIM(nsIProgressEventSink)
@@ -1555,7 +1534,8 @@ nsIDocument::nsIDocument()
     mAllowDNSPrefetch(true),
     mIsBeingUsedAsImage(false),
     mHasLinksToUpdate(false),
-    mPartID(0)
+    mPartID(0),
+    mDidFireDOMContentLoaded(true)
 {
   SetInDocument();
 }
@@ -1982,6 +1962,7 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INTERNAL(nsDocument)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mCachedEncoder)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mStateObjectCached)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mUndoManager)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mAnimationTimeline)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mTemplateContentsOwner)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mChildrenCollection)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mRegistry)
@@ -2051,6 +2032,7 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(nsDocument)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mOriginalDocument)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mCachedEncoder)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mUndoManager)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mAnimationTimeline)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mTemplateContentsOwner)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mChildrenCollection)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mRegistry)
@@ -2240,6 +2222,7 @@ nsDocument::Reset(nsIChannel* aChannel, nsILoadGroup* aLoadGroup)
                                 NS_GET_IID(nsIURI), getter_AddRefs(baseURI));
     if (baseURI) {
       mDocumentBaseURI = baseURI;
+      mChromeXHRDocBaseURI = baseURI;
     }
   }
 
@@ -2321,9 +2304,11 @@ nsDocument::ResetToURI(nsIURI *aURI, nsILoadGroup *aLoadGroup,
   mOriginalURI = nullptr;
 
   SetDocumentURI(aURI);
+  mChromeXHRDocURI = aURI;
   // If mDocumentBaseURI is null, nsIDocument::GetBaseURI() returns
   // mDocumentURI.
   mDocumentBaseURI = nullptr;
+  mChromeXHRDocBaseURI = nullptr;
 
   if (aLoadGroup) {
     mDocumentLoadGroup = do_GetWeakReference(aLoadGroup);
@@ -2946,6 +2931,18 @@ nsDocument::SetDocumentURI(nsIURI* aURI)
   }
 }
 
+void
+nsDocument::SetChromeXHRDocURI(nsIURI* aURI)
+{
+  mChromeXHRDocURI = aURI;
+}
+
+void
+nsDocument::SetChromeXHRDocBaseURI(nsIURI* aURI)
+{
+  mChromeXHRDocBaseURI = aURI;
+}
+
 NS_IMETHODIMP
 nsDocument::GetLastModified(nsAString& aLastModified)
 {
@@ -3135,6 +3132,16 @@ nsDocument::GetUndoManager()
 
   nsRefPtr<UndoManager> undoManager = mUndoManager;
   return undoManager.forget();
+}
+
+AnimationTimeline*
+nsDocument::Timeline()
+{
+  if (!mAnimationTimeline) {
+    mAnimationTimeline = new AnimationTimeline(this);
+  }
+
+  return mAnimationTimeline;
 }
 
 /* Return true if the document is in the focused top-level window, and is an
@@ -3421,9 +3428,15 @@ nsIDocument::ReleaseCapture() const
 }
 
 already_AddRefed<nsIURI>
-nsIDocument::GetBaseURI() const
+nsIDocument::GetBaseURI(bool aTryUseXHRDocBaseURI) const
 {
-  nsCOMPtr<nsIURI> uri = GetDocBaseURI();
+  nsCOMPtr<nsIURI> uri;
+  if (aTryUseXHRDocBaseURI && mChromeXHRDocBaseURI) {
+    uri = mChromeXHRDocBaseURI;
+  } else {
+    uri = GetDocBaseURI();
+  }
+
   return uri.forget();
 }
 
@@ -4686,6 +4699,8 @@ nsDocument::BeginLoad()
   // Block onload here to prevent having to deal with blocking and
   // unblocking it while we know the document is loading.
   BlockOnload();
+  mDidFireDOMContentLoaded = false;
+  BlockDOMContentLoaded();
 
   if (mScriptLoader) {
     mScriptLoader->BeginDeferringScripts();
@@ -4927,6 +4942,19 @@ nsDocument::EndLoad()
 
   NS_DOCUMENT_NOTIFY_OBSERVERS(EndLoad, (this));
 
+  UnblockDOMContentLoaded();
+}
+
+void
+nsDocument::UnblockDOMContentLoaded()
+{
+  MOZ_ASSERT(mBlockDOMContentLoaded);
+  if (--mBlockDOMContentLoaded != 0 || mDidFireDOMContentLoaded) {
+    return;
+  }
+  mDidFireDOMContentLoaded = true;
+
+  MOZ_ASSERT(mReadyState == READYSTATE_INTERACTIVE);
   if (!mSynchronousDOMContentLoaded) {
     nsRefPtr<nsIRunnable> ev =
       NS_NewRunnableMethod(this, &nsDocument::DispatchContentLoadedEvents);
@@ -5488,8 +5516,7 @@ nsDocument::CustomElementConstructor(JSContext* aCx, unsigned aArgc, JS::Value* 
     return true;
   }
 
-  rv = nsContentUtils::WrapNative(aCx, global, newElement, newElement,
-                                  args.rval());
+  rv = nsContentUtils::WrapNative(aCx, newElement, newElement, args.rval());
   NS_ENSURE_SUCCESS(rv, true);
 
   return true;
@@ -5557,7 +5584,7 @@ class ProcessStackRunner MOZ_FINAL : public nsIRunnable
   bool mIsBaseQueue;
 };
 
-NS_IMPL_ISUPPORTS1(ProcessStackRunner, nsIRunnable);
+NS_IMPL_ISUPPORTS(ProcessStackRunner, nsIRunnable);
 
 } // anonymous namespace
 
@@ -5842,7 +5869,7 @@ nsDocument::RegisterElement(JSContext* aCx, const nsAString& aType,
 
     JS::Rooted<JSPropertyDescriptor> descRoot(aCx);
     JS::MutableHandle<JSPropertyDescriptor> desc(&descRoot);
-    if(!JS_GetPropertyDescriptor(aCx, protoObject, "constructor", 0, desc)) {
+    if (!JS_GetPropertyDescriptor(aCx, protoObject, "constructor", desc)) {
       rv.Throw(NS_ERROR_UNEXPECTED);
       return nullptr;
     }
@@ -6072,7 +6099,7 @@ nsDocument::GetStyleSheets(nsIDOMStyleSheetList** aStyleSheets)
   return NS_OK;
 }
 
-nsIDOMStyleSheetList*
+StyleSheetList*
 nsDocument::StyleSheets()
 {
   if (!mDOMStyleSheets) {
@@ -6327,23 +6354,13 @@ nsIDocument::LoadBindingDocument(const nsAString& aURI, ErrorResult& rv)
     return;
   }
 
-  // Figure out the right principal to use
-  nsCOMPtr<nsIPrincipal> subject;
-  nsIScriptSecurityManager* secMan = nsContentUtils::GetSecurityManager();
-  if (secMan) {
-    rv = secMan->GetSubjectPrincipal(getter_AddRefs(subject));
-    if (rv.Failed()) {
-      return;
-    }
-  }
-
-  if (!subject) {
-    // Fall back to our principal.  Or should we fall back to the null
-    // principal?  The latter would just mean no binding loads....
-    subject = NodePrincipal();
-  }
-
-  BindingManager()->LoadBindingDocument(this, uri, subject);
+  // Note - This computation of subjectPrincipal isn't necessarily sensical.
+  // It's just designed to preserve the old semantics during a mass-conversion
+  // patch.
+  nsCOMPtr<nsIPrincipal> subjectPrincipal =
+    nsContentUtils::GetCurrentJSContext() ? nsContentUtils::GetSubjectPrincipal()
+                                          : NodePrincipal();
+  BindingManager()->LoadBindingDocument(this, uri, subjectPrincipal);
 }
 
 NS_IMETHODIMP
@@ -7155,6 +7172,29 @@ nsIDocument::GetURL(nsString& aURL) const
   return GetDocumentURI(aURL);
 }
 
+void
+nsIDocument::GetDocumentURIFromJS(nsString& aDocumentURI) const
+{
+  if (!mChromeXHRDocURI || !nsContentUtils::IsCallerChrome()) {
+    return GetDocumentURI(aDocumentURI);
+  }
+
+  nsAutoCString uri;
+  mChromeXHRDocURI->GetSpec(uri);
+  CopyUTF8toUTF16(uri, aDocumentURI);
+}
+
+nsIURI*
+nsIDocument::GetDocumentURIObject() const
+{
+  if (!mChromeXHRDocURI) {
+    return GetDocumentURI();
+  }
+
+  return mChromeXHRDocURI;
+}
+
+
 // readonly attribute DOMString compatMode;
 // Returns "BackCompat" if we are in quirks mode, "CSS1Compat" if we are
 // in almost standards or full standards mode. See bug 105640.  This was
@@ -7384,14 +7424,13 @@ nsIDocument::AdoptNode(nsINode& aAdoptedNode, ErrorResult& rv)
   if (!sameDocument) {
     newScope = GetWrapper();
     if (!newScope && GetScopeObject() && GetScopeObject()->GetGlobalJSObject()) {
-      // We need to pass some sort of scope object to WrapNative. It's kind of
-      // irrelevant, given that we're passing aAllowWrapping = false, and
-      // documents should always insist on being wrapped in an canonical
-      // scope. But we try to pass something sane anyway.
-      JS::Rooted<JSObject*> global(cx, GetScopeObject()->GetGlobalJSObject());
-
+      // Make sure cx is in a semi-sane compartment before we call WrapNative.
+      // It's kind of irrelevant, given that we're passing aAllowWrapping =
+      // false, and documents should always insist on being wrapped in an
+      // canonical scope. But we try to pass something sane anyway.
+      JSAutoCompartment ac(cx, GetScopeObject()->GetGlobalJSObject());
       JS::Rooted<JS::Value> v(cx);
-      rv = nsContentUtils::WrapNative(cx, global, this, this, &v,
+      rv = nsContentUtils::WrapNative(cx, this, this, &v,
                                       /* aAllowWrapping = */ false);
       if (rv.Failed())
         return nullptr;
@@ -7720,7 +7759,13 @@ nsIDocument::CreateEvent(const nsAString& aEventType, ErrorResult& rv) const
   rv = EventDispatcher::CreateEvent(const_cast<nsIDocument*>(this),
                                     presContext, nullptr, aEventType,
                                     getter_AddRefs(ev));
-  return ev ? dont_AddRef(ev.forget().take()->InternalDOMEvent()) : nullptr;
+  if (!ev) {
+    return nullptr;
+  }
+  WidgetEvent* e = ev->GetInternalNSEvent();
+  e->mFlags.mBubbles = false;
+  e->mFlags.mCancelable = false;
+  return dont_AddRef(ev.forget().take()->InternalDOMEvent());
 }
 
 void
@@ -8841,12 +8886,14 @@ nsDocument::OnPageHide(bool aPersisted,
 
   // Dispatch observer notification to notify observers page is hidden.
   nsCOMPtr<nsIObserverService> os = mozilla::services::GetObserverService();
-  nsIPrincipal *principal = GetPrincipal();
-  os->NotifyObservers(static_cast<nsIDocument*>(this),
-                      nsContentUtils::IsSystemPrincipal(principal) ?
-                        "chrome-page-hidden" :
-                        "content-page-hidden",
-                      nullptr);
+  if (os) {
+    nsIPrincipal* principal = GetPrincipal();
+    os->NotifyObservers(static_cast<nsIDocument*>(this),
+                        nsContentUtils::IsSystemPrincipal(principal) ?
+                          "chrome-page-hidden" :
+                          "content-page-hidden",
+                        nullptr);
+  }
 
   DispatchPageTransition(target, NS_LITERAL_STRING("pagehide"), aPersisted);
 
@@ -9025,9 +9072,11 @@ nsDocument::CloneDocHelper(nsDocument* clone) const
 
   // Set URI/principal
   clone->nsDocument::SetDocumentURI(nsIDocument::GetDocumentURI());
+  clone->SetChromeXHRDocURI(mChromeXHRDocURI);
   // Must set the principal first, since SetBaseURI checks it.
   clone->SetPrincipal(NodePrincipal());
   clone->mDocumentBaseURI = mDocumentBaseURI;
+  clone->SetChromeXHRDocBaseURI(mChromeXHRDocBaseURI);
 
   if (mCreatingStaticClone) {
     nsCOMPtr<nsILoadGroup> loadGroup;
@@ -9242,6 +9291,7 @@ nsDocument::MaybePreLoadImage(nsIURI* uri, const nsAString &aCrossOriginAttr)
                               mDocumentURI, // uri of document used as referrer
                               nullptr,       // no observer
                               loadFlags,
+                              NS_LITERAL_STRING("img"),
                               getter_AddRefs(request));
 
   // Pin image-reference to avoid evicting it from the img-cache before
@@ -9287,7 +9337,7 @@ public:
   }
   NS_DECL_ISUPPORTS
 };
-NS_IMPL_ISUPPORTS1(StubCSSLoaderObserver, nsICSSLoaderObserver)
+NS_IMPL_ISUPPORTS(StubCSSLoaderObserver, nsICSSLoaderObserver)
 
 }
 
@@ -11398,9 +11448,9 @@ public:
   bool mUserInputOrChromeCaller;
 };
 
-NS_IMPL_ISUPPORTS_INHERITED1(nsPointerLockPermissionRequest,
-                             nsRunnable,
-                             nsIContentPermissionRequest)
+NS_IMPL_ISUPPORTS_INHERITED(nsPointerLockPermissionRequest,
+                            nsRunnable,
+                            nsIContentPermissionRequest)
 
 NS_IMETHODIMP
 nsPointerLockPermissionRequest::GetTypes(nsIArray** aTypes)
@@ -11859,7 +11909,7 @@ nsIDocument::DocAddSizeOfExcludingThis(nsWindowSizes* aWindowSizes) const
   for (uint32_t i = 0, count = mExtraPropertyTables.Length();
        i < count; ++i) {
     aWindowSizes->mPropertyTablesSize +=
-      mExtraPropertyTables[i]->SizeOfExcludingThis(aWindowSizes->mMallocSizeOf);
+      mExtraPropertyTables[i]->SizeOfIncludingThis(aWindowSizes->mMallocSizeOf);
   }
 
   if (EventListenerManager* elm = GetExistingListenerManager()) {
@@ -12083,18 +12133,19 @@ nsDocument::Evaluate(const nsAString& aExpression, nsIDOMNode* aContextNode,
 // This is just a hack around the fact that window.document is not
 // [Unforgeable] yet.
 JSObject*
-nsIDocument::WrapObject(JSContext *aCx, JS::Handle<JSObject*> aScope)
+nsIDocument::WrapObject(JSContext *aCx)
 {
   MOZ_ASSERT(IsDOMBinding());
 
-  JS::Rooted<JSObject*> obj(aCx, nsINode::WrapObject(aCx, aScope));
+  JS::Rooted<JSObject*> obj(aCx, nsINode::WrapObject(aCx));
   if (!obj) {
     return nullptr;
   }
 
   nsCOMPtr<nsPIDOMWindow> win = do_QueryInterface(GetInnerWindow());
-  if (!win) {
-    // No window, nothing else to do here
+  if (!win ||
+      static_cast<nsGlobalWindow*>(win.get())->IsDOMBinding()) {
+    // No window or window on new DOM binding, nothing else to do here.
     return obj;
   }
 
@@ -12106,23 +12157,21 @@ nsIDocument::WrapObject(JSContext *aCx, JS::Handle<JSObject*> aScope)
   JSAutoCompartment ac(aCx, obj);
 
   JS::Rooted<JS::Value> winVal(aCx);
-  nsresult rv = nsContentUtils::WrapNative(aCx, obj, win,
-                                           &NS_GET_IID(nsIDOMWindow),
-                                           &winVal);
+  nsresult rv = nsContentUtils::WrapNative(aCx, win, &NS_GET_IID(nsIDOMWindow),
+                                           &winVal,
+                                           false);
   if (NS_FAILED(rv)) {
     Throw(aCx, rv);
     return nullptr;
   }
 
-  MOZ_ASSERT(&winVal.toObject() == js::UncheckedUnwrap(&winVal.toObject()),
-             "WrapNative shouldn't create a cross-compartment wrapper");
-
   NS_NAMED_LITERAL_STRING(doc_str, "document");
 
-  if (!JS_DefineUCProperty(aCx, JSVAL_TO_OBJECT(winVal), doc_str.get(),
-                           doc_str.Length(), JS::ObjectValue(*obj),
-                           JS_PropertyStub, JS_StrictPropertyStub,
-                           JSPROP_READONLY | JSPROP_ENUMERATE)) {
+  JS::Rooted<JSObject*> winObj(aCx, &winVal.toObject());
+  if (!JS_DefineUCProperty(aCx, winObj, doc_str.get(),
+                           doc_str.Length(), obj,
+                           JSPROP_READONLY | JSPROP_ENUMERATE,
+                           JS_PropertyStub, JS_StrictPropertyStub)) {
     return nullptr;
   }
 
