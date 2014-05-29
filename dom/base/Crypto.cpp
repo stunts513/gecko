@@ -29,7 +29,7 @@ NS_INTERFACE_MAP_END
 NS_IMPL_CYCLE_COLLECTING_ADDREF(Crypto)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(Crypto)
 
-NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(Crypto, mWindow)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(Crypto, mWindow, mSubtle)
 
 Crypto::Crypto()
 {
@@ -79,6 +79,7 @@ Crypto::GetRandomValues(JSContext* aCx, const ArrayBufferView& aArray,
       return nullptr;
   }
 
+  aArray.ComputeLengthAndData();
   uint32_t dataLen = aArray.Length();
   if (dataLen == 0) {
     NS_WARNING("ArrayBufferView length is 0, cannot continue");
@@ -115,6 +116,15 @@ Crypto::GetRandomValues(JSContext* aCx, const ArrayBufferView& aArray,
   }
 
   return view;
+}
+
+SubtleCrypto*
+Crypto::Subtle()
+{
+  if(!mSubtle) {
+    mSubtle = new SubtleCrypto(GetParentObject());
+  }
+  return mSubtle;
 }
 
 #ifndef MOZ_DISABLE_CRYPTOLEGACY

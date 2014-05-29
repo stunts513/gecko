@@ -158,7 +158,9 @@ const nsIID nsISupportsWeakReference::COMTypeInfo<nsSupportsWeakReference, void>
 namespace sipcc {
 
 #ifdef MOZILLA_INTERNAL_API
-RTCStatsQuery::RTCStatsQuery(bool internal) : internalStats(internal) {
+RTCStatsQuery::RTCStatsQuery(bool internal) :
+  failed(false),
+  internalStats(internal) {
 }
 
 RTCStatsQuery::~RTCStatsQuery() {
@@ -2149,15 +2151,18 @@ PeerConnectionImpl::BuildStatsQuery_m(
   }
 
   // We do not use the pcHandle here, since that's risky to expose to content.
-  query->report = RTCStatsReportInternalConstruct(
+  query->report = new RTCStatsReportInternalConstruct(
       NS_ConvertASCIItoUTF16(mName.c_str()),
       query->now);
 
+  query->iceStartTime = mIceStartTime;
+  query->failed = isFailed(mIceConnectionState);
+
   // Populate SDP on main
   if (query->internalStats) {
-    query->report.mLocalSdp.Construct(
+    query->report->mLocalSdp.Construct(
         NS_ConvertASCIItoUTF16(mLocalSDP.c_str()));
-    query->report.mRemoteSdp.Construct(
+    query->report->mRemoteSdp.Construct(
         NS_ConvertASCIItoUTF16(mRemoteSDP.c_str()));
   }
 
@@ -2348,7 +2353,7 @@ PeerConnectionImpl::ExecuteStatsQuery_s(RTCStatsQuery *query) {
             s.mBytesReceived.Construct(bytesReceived);
             s.mPacketsLost.Construct(packetsLost);
             s.mMozRtt.Construct(rtt);
-            query->report.mInboundRTPStreamStats.Value().AppendElement(s);
+            query->report->mInboundRTPStreamStats.Value().AppendElement(s);
           }
         }
         // Then, fill in local side (with cross-link to remote only if present)
@@ -2364,7 +2369,7 @@ PeerConnectionImpl::ExecuteStatsQuery_s(RTCStatsQuery *query) {
           s.mIsRemote = false;
           s.mPacketsSent.Construct(mp.rtp_packets_sent());
           s.mBytesSent.Construct(mp.rtp_bytes_sent());
-          query->report.mOutboundRTPStreamStats.Value().AppendElement(s);
+          query->report->mOutboundRTPStreamStats.Value().AppendElement(s);
         }
         break;
       }
@@ -2395,7 +2400,7 @@ PeerConnectionImpl::ExecuteStatsQuery_s(RTCStatsQuery *query) {
             s.mIsRemote = true;
             s.mPacketsSent.Construct(packetsSent);
             s.mBytesSent.Construct(bytesSent);
-            query->report.mOutboundRTPStreamStats.Value().AppendElement(s);
+            query->report->mOutboundRTPStreamStats.Value().AppendElement(s);
           }
         }
         // Then, fill in local side (with cross-link to remote only if present)
@@ -2429,7 +2434,7 @@ PeerConnectionImpl::ExecuteStatsQuery_s(RTCStatsQuery *query) {
             s.mMozAvSyncDelay.Construct(avSyncDelta);
           }
         }
-        query->report.mInboundRTPStreamStats.Value().AppendElement(s);
+        query->report->mInboundRTPStreamStats.Value().AppendElement(s);
         break;
       }
     }
@@ -2440,7 +2445,7 @@ PeerConnectionImpl::ExecuteStatsQuery_s(RTCStatsQuery *query) {
     RecordIceStats_s(*query->streams[s],
                      query->internalStats,
                      query->now,
-                     &(query->report));
+                     query->report);
   }
 
   // NrIceCtx and NrIceMediaStream must be destroyed on STS, so it is not safe
@@ -2483,7 +2488,7 @@ void PeerConnectionImpl::DeliverStatsReportToPCObserver_m(
     if (pco) {
       JSErrorResult rv;
       if (NS_SUCCEEDED(result)) {
-        pco->OnGetStatsSuccess(query->report, rv);
+        pco->OnGetStatsSuccess(*query->report, rv);
       } else {
         pco->OnGetStatsError(kInternalError,
             ObString("Failed to fetch statistics"),

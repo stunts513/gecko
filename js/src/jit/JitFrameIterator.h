@@ -367,8 +367,8 @@ class SnapshotIterator
 
     SnapshotIterator(IonScript *ionScript, SnapshotOffset snapshotOffset,
                      IonJSFrameLayout *fp, const MachineState &machine);
-    SnapshotIterator(const JitFrameIterator &iter);
-    SnapshotIterator(const IonBailoutIterator &iter);
+    explicit SnapshotIterator(const JitFrameIterator &iter);
+    explicit SnapshotIterator(const IonBailoutIterator &iter);
     SnapshotIterator();
 
     Value read() {
@@ -443,6 +443,12 @@ class SnapshotIterator
 
         return s;
     }
+
+#ifdef TRACK_SNAPSHOTS
+    void spewBailingFrom() const {
+        snapshot_.spewBailingFrom();
+    }
+#endif
 };
 
 // Reads frame information in callstack order (that is, innermost frame to

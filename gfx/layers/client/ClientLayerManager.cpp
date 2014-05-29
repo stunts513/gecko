@@ -32,11 +32,10 @@
 #include "AndroidBridge.h"
 #endif
 
-using namespace mozilla::dom;
-using namespace mozilla::gfx;
-
 namespace mozilla {
 namespace layers {
+
+using namespace mozilla::gfx;
 
 ClientLayerManager::ClientLayerManager(nsIWidget* aWidget)
   : mPhase(PHASE_NONE)
@@ -131,8 +130,8 @@ ClientLayerManager::BeginTransactionWithTarget(gfxContext* aTarget)
   // If the last transaction was incomplete (a failed DoEmptyTransaction),
   // don't signal a new transaction to ShadowLayerForwarder. Carry on adding
   // to the previous transaction.
-  ScreenOrientation orientation;
-  if (TabChild* window = mWidget->GetOwningTabChild()) {
+  dom::ScreenOrientation orientation;
+  if (dom::TabChild* window = mWidget->GetOwningTabChild()) {
     orientation = window->GetOrientation();
   } else {
     hal::ScreenConfiguration currentConfig;
@@ -150,7 +149,7 @@ ClientLayerManager::BeginTransactionWithTarget(gfxContext* aTarget)
   // a chance to repaint, so we have to ensure that it's all valid
   // and not rotated.
   if (mWidget) {
-    if (TabChild* window = mWidget->GetOwningTabChild()) {
+    if (dom::TabChild* window = mWidget->GetOwningTabChild()) {
       mCompositorMightResample = window->IsAsyncPanZoomEnabled();
     }
   }
@@ -338,6 +337,14 @@ ClientLayerManager::RunOverfillCallback(const uint32_t aOverfill)
   mOverfillCallbacks.Clear();
 }
 
+static nsIntRect
+ToOutsideIntRect(const gfxRect &aRect)
+{
+  gfxRect r = aRect;
+  r.RoundOut();
+  return nsIntRect(r.X(), r.Y(), r.Width(), r.Height());
+}
+
 void
 ClientLayerManager::MakeSnapshotIfRequired()
 {
@@ -346,27 +353,22 @@ ClientLayerManager::MakeSnapshotIfRequired()
   }
   if (mWidget) {
     if (CompositorChild* remoteRenderer = GetRemoteRenderer()) {
-      nsIntRect bounds;
-      mWidget->GetBounds(bounds);
-      IntSize widgetSize = bounds.Size().ToIntSize();
-      SurfaceDescriptor inSnapshot, snapshot;
-      if (mForwarder->AllocSurfaceDescriptor(widgetSize,
+      nsIntRect bounds = ToOutsideIntRect(mShadowTarget->GetClipExtents());
+      SurfaceDescriptor inSnapshot;
+      if (!bounds.IsEmpty() &&
+          mForwarder->AllocSurfaceDescriptor(bounds.Size().ToIntSize(),
                                              gfxContentType::COLOR_ALPHA,
                                              &inSnapshot) &&
-          // The compositor will usually reuse |snapshot| and return
-          // it through |outSnapshot|, but if it doesn't, it's
-          // responsible for freeing |snapshot|.
-          remoteRenderer->SendMakeSnapshot(inSnapshot, &snapshot)) {
-        RefPtr<DataSourceSurface> surf = GetSurfaceForDescriptor(snapshot);
+          remoteRenderer->SendMakeSnapshot(inSnapshot, bounds)) {
+        RefPtr<DataSourceSurface> surf = GetSurfaceForDescriptor(inSnapshot);
         DrawTarget* dt = mShadowTarget->GetDrawTarget();
-        Rect widgetRect(Point(0, 0), Size(widgetSize.width, widgetSize.height));
-        dt->DrawSurface(surf, widgetRect, widgetRect,
+        Rect dstRect(bounds.x, bounds.y, bounds.width, bounds.height);
+        Rect srcRect(0, 0, bounds.width, bounds.height);
+        dt->DrawSurface(surf, dstRect, srcRect,
                         DrawSurfaceOptions(),
                         DrawOptions(1.0f, CompositionOp::OP_OVER));
       }
-      if (IsSurfaceDescriptorValid(snapshot)) {
-        mForwarder->DestroySharedSurface(&snapshot);
-      }
+      mForwarder->DestroySharedSurface(&inSnapshot);
     }
   }
   mShadowTarget = nullptr;

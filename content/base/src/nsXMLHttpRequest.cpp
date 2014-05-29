@@ -1379,7 +1379,7 @@ nsXMLHttpRequest::GetResponseHeader(const nsACString& header,
       nsCString value;
       if (NS_SUCCEEDED(mChannel->GetContentCharset(value)) &&
           !value.IsEmpty()) {
-        _retval.Append(";charset=");
+        _retval.AppendLiteral(";charset=");
         _retval.Append(value);
       }
     }
@@ -1602,17 +1602,17 @@ nsXMLHttpRequest::Open(const nsACString& inMethod, const nsACString& url,
   nsAutoCString method;
   // GET, POST, DELETE, HEAD, OPTIONS, PUT methods normalized to upper case
   if (inMethod.LowerCaseEqualsLiteral("get")) {
-    method.Assign(NS_LITERAL_CSTRING("GET"));
+    method.AssignLiteral("GET");
   } else if (inMethod.LowerCaseEqualsLiteral("post")) {
-    method.Assign(NS_LITERAL_CSTRING("POST"));
+    method.AssignLiteral("POST");
   } else if (inMethod.LowerCaseEqualsLiteral("delete")) {
-    method.Assign(NS_LITERAL_CSTRING("DELETE"));
+    method.AssignLiteral("DELETE");
   } else if (inMethod.LowerCaseEqualsLiteral("head")) {
-    method.Assign(NS_LITERAL_CSTRING("HEAD"));
+    method.AssignLiteral("HEAD");
   } else if (inMethod.LowerCaseEqualsLiteral("options")) {
-    method.Assign(NS_LITERAL_CSTRING("OPTIONS"));
+    method.AssignLiteral("OPTIONS");
   } else if (inMethod.LowerCaseEqualsLiteral("put")) {
-    method.Assign(NS_LITERAL_CSTRING("PUT"));
+    method.AssignLiteral("PUT");
   } else {
     method = inMethod; // other methods are not normalized
   }
@@ -1973,6 +1973,7 @@ nsXMLHttpRequest::OnStartRequest(nsIRequest *request, nsISupports *ctxt)
     if (mUploadTransferred < mUploadTotal) {
       mUploadTransferred = mUploadTotal;
       mProgressSinceLastProgressEvent = true;
+      mUploadLengthComputable = true;
       MaybeDispatchProgressEvents(true);
     }
     mUploadComplete = true;
@@ -2528,6 +2529,7 @@ GetRequestBody(nsIVariant* aBody, nsIInputStream** aResult, uint64_t* aContentLe
       JS::Rooted<JSObject*> obj(cx, realVal.toObjectOrNull());
       if (JS_IsArrayBufferObject(obj)) {
           ArrayBuffer buf(obj);
+          buf.ComputeLengthAndData();
           return GetRequestBody(buf.Data(), buf.Length(), aResult,
                                 aContentLength, aContentType, aCharset);
       }
@@ -2571,14 +2573,16 @@ nsXMLHttpRequest::GetRequestBody(nsIVariant* aVariant,
   switch (body.GetType()) {
     case nsXMLHttpRequest::RequestBody::ArrayBuffer:
     {
-      return ::GetRequestBody(value.mArrayBuffer->Data(),
-                              value.mArrayBuffer->Length(), aResult,
+      const ArrayBuffer* buffer = value.mArrayBuffer;
+      buffer->ComputeLengthAndData();
+      return ::GetRequestBody(buffer->Data(), buffer->Length(), aResult,
                               aContentLength, aContentType, aCharset);
     }
     case nsXMLHttpRequest::RequestBody::ArrayBufferView:
     {
-      return ::GetRequestBody(value.mArrayBufferView->Data(),
-                              value.mArrayBufferView->Length(), aResult,
+      const ArrayBufferView* view = value.mArrayBufferView;
+      view->ComputeLengthAndData();
+      return ::GetRequestBody(view->Data(), view->Length(), aResult,
                               aContentLength, aContentType, aCharset);
     }
     case nsXMLHttpRequest::RequestBody::Blob:
@@ -3582,15 +3586,11 @@ nsXMLHttpRequest::OnProgress(nsIRequest *aRequest, nsISupports *aContext, uint64
   // So, try to remove the headers, if possible.
   bool lengthComputable = (aProgressMax != UINT64_MAX);
   if (upload) {
-    uint64_t loaded = aProgress;
-    uint64_t total = aProgressMax;
+    mUploadTransferred = aProgress;
     if (lengthComputable) {
-      uint64_t headerSize = aProgressMax - mUploadTotal;
-      loaded -= headerSize;
-      total -= headerSize;
+      mUploadTransferred = aProgressMax - mUploadTotal;
     }
     mUploadLengthComputable = lengthComputable;
-    mUploadTransferred = loaded;
     mProgressSinceLastProgressEvent = true;
 
     MaybeDispatchProgressEvents(false);
@@ -3877,9 +3877,9 @@ nsHeaderVisitor::VisitHeader(const nsACString &header, const nsACString &value)
 {
   if (mXHR->IsSafeHeader(header, mHttpChannel)) {
     mHeaders.Append(header);
-    mHeaders.Append(": ");
+    mHeaders.AppendLiteral(": ");
     mHeaders.Append(value);
-    mHeaders.Append("\r\n");
+    mHeaders.AppendLiteral("\r\n");
   }
   return NS_OK;
 }

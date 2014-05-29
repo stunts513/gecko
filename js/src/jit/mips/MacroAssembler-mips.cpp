@@ -2630,12 +2630,8 @@ void
 MacroAssemblerMIPSCompat::branchTestStringTruthy(bool b, const ValueOperand &value, Label *label)
 {
     Register string = value.payloadReg();
-    size_t mask = (0xFFFFFFFF << JSString::LENGTH_SHIFT);
-    ma_lw(SecondScratchReg, Address(string, JSString::offsetOfLengthAndFlags()));
-
-    // Use SecondScratchReg because ma_and will clobber ScratchRegister
-    ma_and(ScratchRegister, SecondScratchReg, Imm32(mask));
-    ma_b(ScratchRegister, ScratchRegister, label, b ? NonZero : Zero);
+    ma_lw(SecondScratchReg, Address(string, JSString::offsetOfLength()));
+    ma_b(SecondScratchReg, Imm32(0), label, b ? NotEqual : Equal);
 }
 
 void
@@ -2903,20 +2899,6 @@ MacroAssemblerMIPSCompat::storeTypeTag(ImmTag tag, Register base, Register index
     computeScaledAddress(BaseIndex(base, index, ShiftToScale(shift)), SecondScratchReg);
     ma_li(ScratchRegister, tag);
     as_sw(ScratchRegister, SecondScratchReg, TAG_OFFSET);
-}
-
-void
-MacroAssemblerMIPSCompat::linkExitFrame()
-{
-    uint8_t *dest = (uint8_t*)GetIonContext()->runtime->addressOfJitTop();
-    movePtr(ImmPtr(dest), ScratchRegister);
-    ma_sw(StackPointer, Address(ScratchRegister, 0));
-}
-
-void
-MacroAssemblerMIPSCompat::linkParallelExitFrame(Register pt)
-{
-    ma_sw(StackPointer, Address(pt, offsetof(PerThreadData, jitTop)));
 }
 
 // This macrosintruction calls the ion code and pushes the return address to

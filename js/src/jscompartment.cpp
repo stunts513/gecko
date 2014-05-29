@@ -225,12 +225,11 @@ JSCompartment::checkWrapperMapAfterMovingGC()
      * wrapperMap that points into the nursery, and that the hash table entries
      * are discoverable.
      */
-    JS::shadow::Runtime *rt = JS::shadow::Runtime::asShadowRuntime(runtimeFromMainThread());
     for (WrapperMap::Enum e(crossCompartmentWrappers); !e.empty(); e.popFront()) {
         CrossCompartmentKey key = e.front().key();
-        JS_ASSERT(!IsInsideNursery(rt, key.debugger));
-        JS_ASSERT(!IsInsideNursery(rt, key.wrapped));
-        JS_ASSERT(!IsInsideNursery(rt, e.front().value().get().toGCThing()));
+        JS_ASSERT(!IsInsideNursery(key.debugger));
+        JS_ASSERT(!IsInsideNursery(key.wrapped));
+        JS_ASSERT(!IsInsideNursery(static_cast<Cell *>(e.front().value().get().toGCThing())));
 
         WrapperMap::Ptr ptr = crossCompartmentWrappers.lookup(key);
         JS_ASSERT(ptr.found() && &*ptr == &e.front());
@@ -249,14 +248,13 @@ JSCompartment::putWrapper(JSContext *cx, const CrossCompartmentKey &wrapped, con
     JS_ASSERT(!IsPoisonedPtr(wrapper.toGCThing()));
     JS_ASSERT_IF(wrapped.kind == CrossCompartmentKey::StringWrapper, wrapper.isString());
     JS_ASSERT_IF(wrapped.kind != CrossCompartmentKey::StringWrapper, wrapper.isObject());
-    bool success = crossCompartmentWrappers.put(wrapped, wrapper);
+    bool success = crossCompartmentWrappers.put(wrapped, ReadBarriered<Value>(wrapper));
 
 #ifdef JSGC_GENERATIONAL
     /* There's no point allocating wrappers in the nursery since we will tenure them anyway. */
-    Nursery &nursery = cx->nursery();
-    JS_ASSERT(!nursery.isInside(wrapper.toGCThing()));
+    JS_ASSERT(!IsInsideNursery(static_cast<gc::Cell *>(wrapper.toGCThing())));
 
-    if (success && (nursery.isInside(wrapped.wrapped) || nursery.isInside(wrapped.debugger))) {
+    if (success && (IsInsideNursery(wrapped.wrapped) || IsInsideNursery(wrapped.debugger))) {
         WrapperMapRef ref(&crossCompartmentWrappers, wrapped);
         cx->runtime()->gc.storeBuffer.putGeneric(ref);
     }
@@ -284,7 +282,7 @@ JSCompartment::wrap(JSContext *cx, JSString **strp)
 
     /* Check the cache. */
     RootedValue key(cx, StringValue(str));
-    if (WrapperMap::Ptr p = crossCompartmentWrappers.lookup(key)) {
+    if (WrapperMap::Ptr p = crossCompartmentWrappers.lookup(CrossCompartmentKey(key))) {
         *strp = p->value().get().toString();
         return true;
     }
@@ -307,7 +305,7 @@ JSCompartment::wrap(JSContext *cx, JSString **strp)
 
     if (!copy)
         return false;
-    if (!putWrapper(cx, key, StringValue(copy)))
+    if (!putWrapper(cx, CrossCompartmentKey(key), StringValue(copy)))
         return false;
 
     *strp = copy;
@@ -396,7 +394,7 @@ JSCompartment::wrap(JSContext *cx, MutableHandleObject obj, HandleObject existin
 
     // If we already have a wrapper for this value, use it.
     RootedValue key(cx, ObjectValue(*obj));
-    if (WrapperMap::Ptr p = crossCompartmentWrappers.lookup(key)) {
+    if (WrapperMap::Ptr p = crossCompartmentWrappers.lookup(CrossCompartmentKey(key))) {
         obj.set(&p->value().get().toObject());
         JS_ASSERT(obj->is<CrossCompartmentWrapperObject>());
         JS_ASSERT(obj->getParent() == global);
@@ -425,7 +423,7 @@ JSCompartment::wrap(JSContext *cx, MutableHandleObject obj, HandleObject existin
     // map is always directly wrapped by the value.
     JS_ASSERT(Wrapper::wrappedObject(obj) == &key.get().toObject());
 
-    return putWrapper(cx, key, ObjectValue(*obj));
+    return putWrapper(cx, CrossCompartmentKey(key), ObjectValue(*obj));
 }
 
 bool
@@ -569,12 +567,12 @@ JSCompartment::sweep(FreeOp *fop, bool releaseTypes)
         savedStacks_.sweep(rt);
 
         if (global_ && IsObjectAboutToBeFinalized(global_.unsafeGet()))
-            global_ = nullptr;
+            global_.set(nullptr);
 
         if (selfHostingScriptSource &&
             IsObjectAboutToBeFinalized((JSObject **) selfHostingScriptSource.unsafeGet()))
         {
-            selfHostingScriptSource = nullptr;
+            selfHostingScriptSource.set(nullptr);
         }
 
 #ifdef JS_ION
@@ -645,9 +643,7 @@ JSCompartment::purge()
 void
 JSCompartment::clearTables()
 {
-    global_ = nullptr;
-
-    regExps.clearTables();
+    global_.set(nullptr);
 
     // No scripts should have run in this compartment. This is used when
     // merging a compartment that has been used off thread into another
@@ -660,6 +656,7 @@ JSCompartment::clearTables()
     JS_ASSERT(!debugScopes);
     JS_ASSERT(!gcWeakMapList);
     JS_ASSERT(enumerators->next() == enumerators);
+    JS_ASSERT(regExps.empty());
 
     types.clearTables();
     if (baseShapes.initialized())

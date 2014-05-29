@@ -537,13 +537,21 @@ public:
 
   virtual void GetImageBuffer(uint8_t** aImageBuffer, int32_t* aFormat);
 
+
+  // Given a point, return hit region ID if it exists
+  nsString GetHitRegion(const mozilla::gfx::Point& aPoint);
+
+
+  // return true and fills in the bound rect if element has a hit region.
+  bool GetHitRegionRect(Element* aElement, nsRect& aRect);
+
 protected:
   nsresult GetImageDataArray(JSContext* aCx, int32_t aX, int32_t aY,
                              uint32_t aWidth, uint32_t aHeight,
                              JSObject** aRetval);
 
   nsresult PutImageData_explicit(int32_t x, int32_t y, uint32_t w, uint32_t h,
-                                 unsigned char *aData, uint32_t aDataLen,
+                                 dom::Uint8ClampedArray* aArray,
                                  bool hasDirtyRect, int32_t dirtyX, int32_t dirtyY,
                                  int32_t dirtyWidth, int32_t dirtyHeight);
 
@@ -753,25 +761,16 @@ protected:
   /**
     * State information for hit regions
     */
-
-  struct RegionInfo : public nsStringHashKey
+  struct RegionInfo
   {
-    RegionInfo(const nsAString& aKey) :
-      nsStringHashKey(&aKey)
-    {
-    }
-    RegionInfo(const nsAString *aKey) :
-      nsStringHashKey(aKey)
-    {
-    }
-
+    nsString          mId;
+    // fallback element for a11y
     nsRefPtr<Element> mElement;
+    // Path of the hit region in the 2d context coordinate space (not user space)
+    RefPtr<gfx::Path> mPath;
   };
 
-#ifdef ACCESSIBILITY
-  static PLDHashOperator RemoveHitRegionProperty(RegionInfo* aEntry, void* aData);
-#endif
-  nsTHashtable<RegionInfo> mHitRegionsOptions;
+  nsTArray<RegionInfo> mHitRegionsOptions;
 
   /**
     * Returns true if a shadow should be drawn along with a

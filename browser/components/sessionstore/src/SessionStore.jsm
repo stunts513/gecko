@@ -764,7 +764,7 @@ let SessionStoreInternal = {
     // internal data about the window.
     aWindow.__SSi = this._generateWindowID();
 
-    let mm = aWindow.messageManager;
+    let mm = aWindow.getGroupMessageManager("browsers");
     MESSAGES.forEach(msg => mm.addMessageListener(msg, this));
 
     // Load the frame script after registering listeners.
@@ -1093,7 +1093,7 @@ let SessionStoreInternal = {
     // Cache the window state until it is completely gone.
     DyingWindowCache.set(aWindow, winData);
 
-    let mm = aWindow.messageManager;
+    let mm = aWindow.getGroupMessageManager("browsers");
     MESSAGES.forEach(msg => mm.removeMessageListener(msg, this));
 
     delete aWindow.__SSi;
@@ -2134,17 +2134,21 @@ let SessionStoreInternal = {
       recentCrashes: this._recentCrashes
     };
 
-    // get open Scratchpad window states too
-    let scratchpads = ScratchpadManager.getSessionState();
-
     let state = {
       windows: total,
       selectedWindow: ix + 1,
       _closedWindows: lastClosedWindowsCopy,
       session: session,
-      scratchpads: scratchpads,
       global: this._globalState.getState()
     };
+
+    if (Cu.isModuleLoaded("resource:///modules/devtools/scratchpad-manager.jsm")) {
+      // get open Scratchpad window states too
+      let scratchpads = ScratchpadManager.getSessionState();
+      if (scratchpads && scratchpads.length) {
+        state.scratchpads = scratchpads;
+      }
+    }
 
     // Persist the last session if we deferred restoring it
     if (LastSession.canRestore) {

@@ -74,9 +74,9 @@ nsSliderFrame::~nsSliderFrame()
 }
 
 void
-nsSliderFrame::Init(nsIContent*      aContent,
-                    nsIFrame*        aParent,
-                    nsIFrame*        aPrevInFlow)
+nsSliderFrame::Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         aPrevInFlow)
 {
   nsBoxFrame::Init(aContent, aParent, aPrevInFlow);
 
@@ -303,7 +303,7 @@ nsSliderFrame::BuildDisplayListForChildren(nsDisplayListBuilder*   aBuilder,
                                            const nsDisplayListSet& aLists)
 {
   // if we are too small to have a thumb don't paint it.
-  nsIFrame* thumb = GetChildBox();
+  nsIFrame* thumb = nsBox::GetChildBox(this);
 
   if (thumb) {
     nsRect thumbRect(thumb->GetRect());
@@ -325,7 +325,7 @@ NS_IMETHODIMP
 nsSliderFrame::DoLayout(nsBoxLayoutState& aState)
 {
   // get the thumb should be our only child
-  nsIFrame* thumbBox = GetChildBox();
+  nsIFrame* thumbBox = nsBox::GetChildBox(this);
 
   if (!thumbBox) {
     SyncLayout(aState);
@@ -664,11 +664,10 @@ nsSliderFrame::CurrentPositionChanged()
   else
      newThumbRect.y = clientRect.y + NSToCoordRound(pos * mRatio);
 
-#ifdef MOZ_WIDGET_GONK
   // avoid putting the scroll thumb at subpixel positions which cause needless invalidations
   nscoord appUnitsPerPixel = PresContext()->AppUnitsPerDevPixel();
   newThumbRect = newThumbRect.ToNearestPixels(appUnitsPerPixel).ToAppUnits(appUnitsPerPixel);
-#endif
+
   // set the rect
   thumbFrame->SetRect(newThumbRect);
 

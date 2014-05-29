@@ -175,24 +175,18 @@ struct Runtime
     bool needsBarrier_;
 
 #ifdef JSGC_GENERATIONAL
-    /* Allow inlining of Nursery::isInside. */
-    uintptr_t gcNurseryStart_;
-    uintptr_t gcNurseryEnd_;
-
   private:
     js::gc::StoreBuffer *gcStoreBufferPtr_;
 #endif
 
   public:
-    Runtime(
+    explicit Runtime(
 #ifdef JSGC_GENERATIONAL
         js::gc::StoreBuffer *storeBuffer
 #endif
     )
       : needsBarrier_(false)
 #ifdef JSGC_GENERATIONAL
-      , gcNurseryStart_(0)
-      , gcNurseryEnd_(0)
       , gcStoreBufferPtr_(storeBuffer)
 #endif
     {}

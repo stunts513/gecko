@@ -63,6 +63,8 @@ const {Class} = require("sdk/core/heritage");
 const {PageStyleActor} = require("devtools/server/actors/styles");
 const {HighlighterActor} = require("devtools/server/actors/highlighter");
 
+const FONT_FAMILY_PREVIEW_TEXT = "The quick brown fox jumps over the lazy dog";
+const FONT_FAMILY_PREVIEW_TEXT_SIZE = 20;
 const PSEUDO_CLASSES = [":hover", ":active", ":focus"];
 const HIDDEN_CLASS = "__fx-devtools-hide-shortcut__";
 const XHTML_NS = "http://www.w3.org/1999/xhtml";
@@ -351,6 +353,42 @@ var NodeActor = exports.NodeActor = protocol.ActorClass({
       modifications: Arg(0, "array:json")
     },
     response: {}
+  }),
+
+  /**
+   * Given the font and fill style, get the image data of a canvas with the
+   * preview text and font.
+   * Returns an imageData object with the actual data being a LongStringActor
+   * and the width of the text as a string.
+   * The image data is transmitted as a base64 encoded png data-uri.
+   */
+  getFontFamilyDataURL: method(function(font, fillStyle="black") {
+    let doc = this.rawNode.ownerDocument;
+    let canvas = doc.createElementNS(XHTML_NS, "canvas");
+    let ctx = canvas.getContext("2d");
+    let fontValue = FONT_FAMILY_PREVIEW_TEXT_SIZE + "px " + font + ", serif";
+
+    // Get the correct preview text measurements and set the canvas dimensions
+    ctx.font = fontValue;
+    let textWidth = ctx.measureText(FONT_FAMILY_PREVIEW_TEXT).width;
+    canvas.width = textWidth * 2;
+    canvas.height = FONT_FAMILY_PREVIEW_TEXT_SIZE * 3;
+
+    ctx.font = fontValue;
+    ctx.fillStyle = fillStyle;
+
+    // Align the text to be vertically center in the tooltip and
+    // oversample the canvas for better text quality
+    ctx.textBaseline = "top";
+    ctx.scale(2, 2);
+    ctx.fillText(FONT_FAMILY_PREVIEW_TEXT, 0, Math.round(FONT_FAMILY_PREVIEW_TEXT_SIZE / 3));
+
+    let dataURL = canvas.toDataURL("image/png");
+
+    return { data: LongStringActor(this.conn, dataURL), size: textWidth };
+  }, {
+    request: {font: Arg(0, "string"), fillStyle: Arg(1, "nullable:string")},
+    response: RetVal("imageData")
   })
 });
 
@@ -674,7 +712,7 @@ var NodeListActor = exports.NodeListActor = protocol.ActorClass({
   form: function() {
     return {
       actor: this.actorID,
-      length: this.nodeList ? this.nodeList.length : 0
+      length: this.nodeList.length
     }
   },
 
@@ -1395,7 +1433,7 @@ var WalkerActor = protocol.ActorClass({
         sugs.classes.delete(HIDDEN_CLASS);
         for (let [className, count] of sugs.classes) {
           if (className.startsWith(completing)) {
-            result.push(["." + className, count, selectorState]);
+            result.push(["." + className, count]);
           }
         }
         break;
@@ -1409,7 +1447,7 @@ var WalkerActor = protocol.ActorClass({
         }
         for (let node of nodes) {
           if (node.id.startsWith(completing)) {
-            result.push(["#" + node.id, 1, selectorState]);
+            result.push(["#" + node.id, 1]);
           }
         }
         break;
@@ -1427,20 +1465,9 @@ var WalkerActor = protocol.ActorClass({
         }
         for (let [tag, count] of sugs.tags) {
           if ((new RegExp("^" + completing + ".*", "i")).test(tag)) {
-            result.push([tag, count, selectorState]);
+            result.push([tag, count]);
           }
         }
-
-        // For state 'tag' (no preceding # or .) and when there's no query (i.e.
-        // only one word) then search for the matching classes and ids
-        if (!query) {
-          result = [
-            ...result,
-            ...this.getSuggestionsForQuery(null, completing, "class").suggestions,
-            ...this.getSuggestionsForQuery(null, completing, "id").suggestions
-          ];
-        }
-
         break;
 
       case "null":
@@ -1467,38 +1494,11 @@ var WalkerActor = protocol.ActorClass({
         }
     }
 
-    // Sort by count (desc) and name (asc)
-    result = result.sort((a, b) => {
-      // Computed a sortable string with first the inverted count, then the name
-      let sortA = (10000-a[1]) + a[0];
-      let sortB = (10000-b[1]) + b[0];
-
-      // Prefixing ids, classes and tags, to group results
-      let firstA = a[0].substring(0, 1);
-      let firstB = b[0].substring(0, 1);
-
-      if (firstA === "#") {
-        sortA = "2" + sortA;
-      }
-      else if (firstA === ".") {
-        sortA = "1" + sortA;
-      }
-      else {
-        sortA = "0" + sortA;
-      }
-
-      if (firstB === "#") {
-        sortB = "2" + sortB;
-      }
-      else if (firstB === ".") {
-        sortB = "1" + sortB;
-      }
-      else {
-        sortB = "0" + sortB;
-      }
-
-      // String compare
-      return sortA.localeCompare(sortB);
+    // Sort alphabetically in increaseing order.
+    result = result.sort();
+    // Sort based on count in decreasing order.
+    result = result.sort(function(a, b) {
+      return b[1] - a[1];
     });
 
     result.slice(0, 25);

@@ -102,7 +102,7 @@ class nsIntRegion;
 struct nsTArrayFallibleResult
 {
   // Note: allows implicit conversions from and to bool
-  nsTArrayFallibleResult(bool result)
+  MOZ_IMPLICIT nsTArrayFallibleResult(bool result)
     : mResult(result)
   {}
 
@@ -250,7 +250,7 @@ struct nsTArrayInfallibleAllocator : nsTArrayInfallibleAllocatorBase
 
   static void* Realloc(void* ptr, size_t size) {
     void* newptr = realloc(ptr, size);
-    if (MOZ_UNLIKELY(!ptr && size)) {
+    if (MOZ_UNLIKELY(!newptr && size)) {
       NS_ABORT_OOM(size);
     }
     return newptr;

@@ -143,9 +143,12 @@ public:
 
 class TestAPZCTreeManager : public APZCTreeManager {
 public:
-  // Expose this so test code can call it directly.
+  // Expose these so test code can call it directly.
   void BuildOverscrollHandoffChain(AsyncPanZoomController* aApzc) {
     APZCTreeManager::BuildOverscrollHandoffChain(aApzc);
+  }
+  void ClearOverscrollHandoffChain() {
+    APZCTreeManager::ClearOverscrollHandoffChain();
   }
 };
 
@@ -235,6 +238,10 @@ void ApzcPan(AsyncPanZoomController* apzc,
   aTime += TIME_BETWEEN_TOUCH_EVENT;
   mti.mTouches.AppendElement(SingleTouchData(0, ScreenIntPoint(10, aTouchEndY), ScreenSize(0, 0), 0, 0));
   status = apzc->ReceiveInputEvent(mti);
+
+  // Since we've explicitly built the overscroll handoff chain before
+  // touch-start, we need to explicitly clear it after touch-end.
+  aTreeManager->ClearOverscrollHandoffChain();
 }
 
 static
@@ -319,7 +326,7 @@ static void ApzcPinchWithPinchInput(AsyncPanZoomController* aApzc,
                                             10.0,
                                             0));
   EXPECT_EQ(actualStatus, expectedStatus);
-  actualStatus = aApzc->HandleGestureEvent(PinchGestureInput(PinchGestureInput::PINCHGESTURE_END,
+  aApzc->HandleGestureEvent(PinchGestureInput(PinchGestureInput::PINCHGESTURE_END,
                                             0,
                                             ScreenPoint(aFocusX, aFocusY),
                                             // note: negative values here tell APZC
@@ -327,7 +334,6 @@ static void ApzcPinchWithPinchInput(AsyncPanZoomController* aApzc,
                                             -1.0,
                                             -1.0,
                                             0));
-  EXPECT_EQ(actualStatus, expectedStatus);
 }
 
 static void ApzcPinchWithTouchMoveInput(AsyncPanZoomController* aApzc,
@@ -371,8 +377,7 @@ static void ApzcPinchWithTouchMoveInput(AsyncPanZoomController* aApzc,
   MultiTouchInput mtiEnd = MultiTouchInput(MultiTouchInput::MULTITOUCH_END, 0, 0);
   mtiEnd.mTouches.AppendElement(SingleTouchData(inputId, ScreenIntPoint(aFocusX - pinchLengthScaled, aFocusY), ScreenSize(0, 0), 0, 0));
   mtiEnd.mTouches.AppendElement(SingleTouchData(inputId + 1, ScreenIntPoint(aFocusX + pinchLengthScaled, aFocusY), ScreenSize(0, 0), 0, 0));
-  actualStatus = aApzc->ReceiveInputEvent(mtiEnd);
-  EXPECT_EQ(actualStatus, expectedStatus);
+  aApzc->ReceiveInputEvent(mtiEnd);
   inputId += 2;
 }
 
@@ -827,7 +832,7 @@ TEST_F(AsyncPanZoomControllerTester, ShortPress) {
 
   int time = 0;
   nsEventStatus status = ApzcTap(apzc, 10, 10, time, 100, mcc.get());
-  EXPECT_EQ(nsEventStatus_eConsumeNoDefault, status);
+  EXPECT_EQ(nsEventStatus_eIgnore, status);
 
   // This verifies that the single tap notification is sent after the
   // touchdown is fully processed. The ordering here is important.
@@ -851,7 +856,7 @@ TEST_F(AsyncPanZoomControllerTester, MediumPress) {
 
   int time = 0;
   nsEventStatus status = ApzcTap(apzc, 10, 10, time, 400, mcc.get());
-  EXPECT_EQ(nsEventStatus_eConsumeNoDefault, status);
+  EXPECT_EQ(nsEventStatus_eIgnore, status);
 
   // This verifies that the single tap notification is sent after the
   // touchdown is fully processed. The ordering here is important.
@@ -1101,7 +1106,7 @@ static already_AddRefed<AsyncPanZoomController>
 GetTargetAPZC(APZCTreeManager* manager, const ScreenPoint& aPoint,
               gfx3DMatrix& aTransformToApzcOut, gfx3DMatrix& aTransformToGeckoOut)
 {
-  nsRefPtr<AsyncPanZoomController> hit = manager->GetTargetAPZC(aPoint);
+  nsRefPtr<AsyncPanZoomController> hit = manager->GetTargetAPZC(aPoint, nullptr);
   if (hit) {
     manager->GetInputTransforms(hit.get(), aTransformToApzcOut, aTransformToGeckoOut);
   }

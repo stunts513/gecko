@@ -490,7 +490,7 @@ MacroAssemblerARM::ma_mov(ImmGCPtr ptr, Register dest)
     else
         rs = L_LDR;
 
-    ma_movPatchable(Imm32(ptr.value), dest, Always, rs);
+    ma_movPatchable(Imm32(uintptr_t(ptr.value)), dest, Always, rs);
 }
 
     // Shifts (just a move with a shifting op2)
@@ -1299,10 +1299,10 @@ MacroAssemblerARM::ma_vpush(VFPRegister r)
 }
 
 // Branches when done from within arm-specific code.
-void
+BufferOffset
 MacroAssemblerARM::ma_b(Label *dest, Assembler::Condition c, bool isPatchable)
 {
-    as_b(dest, c, isPatchable);
+    return as_b(dest, c, isPatchable);
 }
 
 void
@@ -2047,7 +2047,7 @@ MacroAssemblerARMCompat::movePtr(AsmJSImmPtr imm, Register dest)
     else
         rs = L_LDR;
 
-    enoughMemory_ &= append(AsmJSAbsoluteLink(nextOffset().getOffset(), imm.kind()));
+    enoughMemory_ &= append(AsmJSAbsoluteLink(CodeOffsetLabel(nextOffset().getOffset()), imm.kind()));
     ma_movPatchable(Imm32(-1), dest, Always, rs);
 }
 void
@@ -3520,20 +3520,6 @@ MacroAssemblerARMCompat::storeTypeTag(ImmTag tag, Register base, Register index,
     ma_sub(base, Imm32(NUNBOX32_TYPE_OFFSET), base);
 }
 
-void
-MacroAssemblerARMCompat::linkExitFrame()
-{
-    uint8_t *dest = (uint8_t*)GetIonContext()->runtime->addressOfJitTop();
-    movePtr(ImmPtr(dest), ScratchRegister);
-    ma_str(StackPointer, Operand(ScratchRegister, 0));
-}
-
-void
-MacroAssemblerARMCompat::linkParallelExitFrame(Register pt)
-{
-    ma_str(StackPointer, Operand(pt, offsetof(PerThreadData, jitTop)));
-}
-
 // ARM says that all reads of pc will return 8 higher than the
 // address of the currently executing instruction.  This means we are
 // correctly storing the address of the instruction after the call
@@ -4199,12 +4185,117 @@ MacroAssemblerARMCompat::floorf(FloatRegister input, Register output, Label *bai
     bind(&fin);
 }
 
+void
+MacroAssemblerARMCompat::ceil(FloatRegister input, Register output, Label *bail)
+{
+    Label handleZero;
+    Label handlePos;
+    Label fin;
+
+    compareDouble(input, InvalidFloatReg);
+    // NaN is always a bail condition, just bail directly.
+    ma_b(bail, Assembler::Overflow);
+    ma_b(&handleZero, Assembler::Equal);
+    ma_b(&handlePos, Assembler::NotSigned);
+
+    // We are in the ]-Inf; 0[ range
+    // If we are in the ]-1; 0[ range => bailout
+    ma_vimm(-1.0, ScratchFloatReg);
+    compareDouble(input, ScratchFloatReg);
+    ma_b(bail, Assembler::GreaterThan);
+
+    // We are in the ]-Inf; -1] range: ceil(x) == -floor(-x) and floor can
+    // be computed with direct truncation here (x > 0).
+    ma_vneg(input, ScratchFloatReg);
+    ma_vcvt_F64_U32(ScratchFloatReg, ScratchFloatReg);
+    ma_vxfer(VFPRegister(ScratchFloatReg).uintOverlay(), output);
+    ma_neg(output, output, SetCond);
+    ma_b(bail, NotSigned);
+    ma_b(&fin);
+
+    // Test for 0.0 / -0.0: if the top word of the input double is not zero,
+    // then it was -0 and we need to bail out.
+    bind(&handleZero);
+    as_vxfer(output, InvalidReg, input, FloatToCore, Always, 1);
+    ma_cmp(output, Imm32(0));
+    ma_b(bail, NonZero);
+    ma_b(&fin);
+
+    // We are in the ]0; +inf] range: truncate integer values, maybe add 1 for
+    // non integer values, maybe bail if overflow.
+    bind(&handlePos);
+    ma_vcvt_F64_U32(input, ScratchFloatReg);
+    ma_vxfer(VFPRegister(ScratchFloatReg).uintOverlay(), output);
+    ma_vcvt_U32_F64(ScratchFloatReg, ScratchFloatReg);
+    compareDouble(ScratchFloatReg, input);
+    ma_add(output, Imm32(1), output, NoSetCond, NotEqual);
+    // Bail out if the add overflowed or the result is non positive
+    ma_mov(output, output, SetCond);
+    ma_b(bail, Signed);
+    ma_b(bail, Zero);
+
+    bind(&fin);
+}
+
+void
+MacroAssemblerARMCompat::ceilf(FloatRegister input, Register output, Label *bail)
+{
+    Label handleZero;
+    Label handlePos;
+    Label fin;
+
+    compareFloat(input, InvalidFloatReg);
+    // NaN is always a bail condition, just bail directly.
+    ma_b(bail, Assembler::Overflow);
+    ma_b(&handleZero, Assembler::Equal);
+    ma_b(&handlePos, Assembler::NotSigned);
+
+    // We are in the ]-Inf; 0[ range
+    // If we are in the ]-1; 0[ range => bailout
+    ma_vimm_f32(-1.f, ScratchFloatReg);
+    compareFloat(input, ScratchFloatReg);
+    ma_b(bail, Assembler::GreaterThan);
+
+    // We are in the ]-Inf; -1] range: ceil(x) == -floor(-x) and floor can
+    // be computed with direct truncation here (x > 0).
+    ma_vneg_f32(input, ScratchFloatReg);
+    ma_vcvt_F32_U32(ScratchFloatReg, ScratchFloatReg);
+    ma_vxfer(VFPRegister(ScratchFloatReg).uintOverlay(), output);
+    ma_neg(output, output, SetCond);
+    ma_b(bail, NotSigned);
+    ma_b(&fin);
+
+    // Test for 0.0 / -0.0: if the top word of the input double is not zero,
+    // then it was -0 and we need to bail out.
+    bind(&handleZero);
+    as_vxfer(output, InvalidReg, VFPRegister(input).singleOverlay(), FloatToCore, Always, 0);
+    ma_cmp(output, Imm32(0));
+    ma_b(bail, NonZero);
+    ma_b(&fin);
+
+    // We are in the ]0; +inf] range: truncate integer values, maybe add 1 for
+    // non integer values, maybe bail if overflow.
+    bind(&handlePos);
+    ma_vcvt_F32_U32(input, ScratchFloatReg);
+    ma_vxfer(VFPRegister(ScratchFloatReg).uintOverlay(), output);
+    ma_vcvt_U32_F32(ScratchFloatReg, ScratchFloatReg);
+    compareFloat(ScratchFloatReg, input);
+    ma_add(output, Imm32(1), output, NoSetCond, NotEqual);
+    // Bail out if the add overflowed or the result is non positive
+    ma_mov(output, output, SetCond);
+    ma_b(bail, Signed);
+    ma_b(bail, Zero);
+
+    bind(&fin);
+}
+
 CodeOffsetLabel
 MacroAssemblerARMCompat::toggledJump(Label *label)
 {
     // Emit a B that can be toggled to a CMP. See ToggleToJmp(), ToggleToCmp().
-    CodeOffsetLabel ret(nextOffset().getOffset());
-    ma_b(label, Always, true);
+    
+    BufferOffset b = ma_b(label, Always, true);
+    CodeOffsetLabel ret(b.getOffset());
     return ret;
 }
 

@@ -186,7 +186,7 @@ class Assembler : public AssemblerX86Shared
     // Actual assembly emitting functions.
 
     void push(ImmGCPtr ptr) {
-        push(Imm32(ptr.value));
+        push(Imm32(uintptr_t(ptr.value)));
         writeDataRelocation(ptr);
     }
     void push(const ImmWord imm) {
@@ -202,7 +202,7 @@ class Assembler : public AssemblerX86Shared
 
     CodeOffsetLabel pushWithPatch(ImmWord word) {
         push(Imm32(word.value));
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
 
     void pop(FloatRegister src) {
@@ -212,28 +212,28 @@ class Assembler : public AssemblerX86Shared
 
     CodeOffsetLabel movWithPatch(ImmWord word, Register dest) {
         movl(Imm32(word.value), dest);
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
     CodeOffsetLabel movWithPatch(ImmPtr imm, Register dest) {
         return movWithPatch(ImmWord(uintptr_t(imm.value)), dest);
     }
 
     void movl(ImmGCPtr ptr, Register dest) {
-        masm.movl_i32r(ptr.value, dest.code());
+        masm.movl_i32r(uintptr_t(ptr.value), dest.code());
         writeDataRelocation(ptr);
     }
     void movl(ImmGCPtr ptr, const Operand &dest) {
         switch (dest.kind()) {
           case Operand::REG:
-            masm.movl_i32r(ptr.value, dest.reg());
+            masm.movl_i32r(uintptr_t(ptr.value), dest.reg());
             writeDataRelocation(ptr);
             break;
           case Operand::MEM_REG_DISP:
-            masm.movl_i32m(ptr.value, dest.disp(), dest.base());
+            masm.movl_i32m(uintptr_t(ptr.value), dest.disp(), dest.base());
             writeDataRelocation(ptr);
             break;
           case Operand::MEM_SCALE:
-            masm.movl_i32m(ptr.value, dest.disp(), dest.base(), dest.index(), dest.scale());
+            masm.movl_i32m(uintptr_t(ptr.value), dest.disp(), dest.base(), dest.index(), dest.scale());
             writeDataRelocation(ptr);
             break;
           default:
@@ -260,7 +260,7 @@ class Assembler : public AssemblerX86Shared
     }
     void mov(AsmJSImmPtr imm, Register dest) {
         masm.movl_i32r(-1, dest.code());
-        enoughMemory_ &= append(AsmJSAbsoluteLink(masm.currentOffset(), imm.kind()));
+        enoughMemory_ &= append(AsmJSAbsoluteLink(CodeOffsetLabel(masm.currentOffset()), imm.kind()));
     }
     void mov(const Operand &src, Register dest) {
         movl(src, dest);
@@ -315,7 +315,7 @@ class Assembler : public AssemblerX86Shared
         cmpl(src, ImmWord(uintptr_t(imm.value)));
     }
     void cmpl(const Register src, ImmGCPtr ptr) {
-        masm.cmpl_ir(ptr.value, src.code());
+        masm.cmpl_ir(uintptr_t(ptr.value), src.code());
         writeDataRelocation(ptr);
     }
     void cmpl(Register lhs, Register rhs) {
@@ -324,15 +324,15 @@ class Assembler : public AssemblerX86Shared
     void cmpl(const Operand &op, ImmGCPtr imm) {
         switch (op.kind()) {
           case Operand::REG:
-            masm.cmpl_ir_force32(imm.value, op.reg());
+            masm.cmpl_ir_force32(uintptr_t(imm.value), op.reg());
             writeDataRelocation(imm);
             break;
           case Operand::MEM_REG_DISP:
-            masm.cmpl_im_force32(imm.value, op.disp(), op.base());
+            masm.cmpl_im_force32(uintptr_t(imm.value), op.disp(), op.base());
             writeDataRelocation(imm);
             break;
           case Operand::MEM_ADDRESS32:
-            masm.cmpl_im(imm.value, op.address());
+            masm.cmpl_im(uintptr_t(imm.value), op.address());
             writeDataRelocation(imm);
             break;
           default:
@@ -341,11 +341,11 @@ class Assembler : public AssemblerX86Shared
     }
     void cmpl(AsmJSAbsoluteAddress lhs, Register rhs) {
         masm.cmpl_rm_force32(rhs.code(), (void*)-1);
-        enoughMemory_ &= append(AsmJSAbsoluteLink(masm.currentOffset(), lhs.kind()));
+        enoughMemory_ &= append(AsmJSAbsoluteLink(CodeOffsetLabel(masm.currentOffset()), lhs.kind()));
     }
     CodeOffsetLabel cmplWithPatch(Register lhs, Imm32 rhs) {
         masm.cmpl_ir_force32(rhs.value, lhs.code());
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
 
     void jmp(ImmPtr target, Relocation::Kind reloc = Relocation::HARDCODED) {
@@ -419,63 +419,63 @@ class Assembler : public AssemblerX86Shared
     // patched.
     CodeOffsetLabel movlWithPatch(Imm32 imm, Register dest) {
         masm.movl_i32r(imm.value, dest.code());
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
 
     // Load from *(base + disp32) where disp32 can be patched.
     CodeOffsetLabel movsblWithPatch(Address src, Register dest) {
         masm.movsbl_mr_disp32(src.offset, src.base.code(), dest.code());
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
     CodeOffsetLabel movzblWithPatch(Address src, Register dest) {
         masm.movzbl_mr_disp32(src.offset, src.base.code(), dest.code());
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
     CodeOffsetLabel movswlWithPatch(Address src, Register dest) {
         masm.movswl_mr_disp32(src.offset, src.base.code(), dest.code());
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
     CodeOffsetLabel movzwlWithPatch(Address src, Register dest) {
         masm.movzwl_mr_disp32(src.offset, src.base.code(), dest.code());
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
     CodeOffsetLabel movlWithPatch(Address src, Register dest) {
         masm.movl_mr_disp32(src.offset, src.base.code(), dest.code());
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
     CodeOffsetLabel movssWithPatch(Address src, FloatRegister dest) {
         JS_ASSERT(HasSSE2());
         masm.movss_mr_disp32(src.offset, src.base.code(), dest.code());
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
     CodeOffsetLabel movsdWithPatch(Address src, FloatRegister dest) {
         JS_ASSERT(HasSSE2());
         masm.movsd_mr_disp32(src.offset, src.base.code(), dest.code());
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
 
     // Store to *(base + disp32) where disp32 can be patched.
     CodeOffsetLabel movbWithPatch(Register src, Address dest) {
         masm.movb_rm_disp32(src.code(), dest.offset, dest.base.code());
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
     CodeOffsetLabel movwWithPatch(Register src, Address dest) {
         masm.movw_rm_disp32(src.code(), dest.offset, dest.base.code());
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
     CodeOffsetLabel movlWithPatch(Register src, Address dest) {
         masm.movl_rm_disp32(src.code(), dest.offset, dest.base.code());
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
     CodeOffsetLabel movssWithPatch(FloatRegister src, Address dest) {
         JS_ASSERT(HasSSE2());
         masm.movss_rm_disp32(src.code(), dest.offset, dest.base.code());
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
     CodeOffsetLabel movsdWithPatch(FloatRegister src, Address dest) {
         JS_ASSERT(HasSSE2());
         masm.movsd_rm_disp32(src.code(), dest.offset, dest.base.code());
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
 
     // Load from *(addr + index*scale) where addr can be patched.
@@ -483,63 +483,63 @@ class Assembler : public AssemblerX86Shared
                                   Register dest)
     {
         masm.movl_mr(addr.addr, index.code(), scale, dest.code());
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
 
     // Load from *src where src can be patched.
     CodeOffsetLabel movsblWithPatch(PatchedAbsoluteAddress src, Register dest) {
         masm.movsbl_mr(src.addr, dest.code());
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
     CodeOffsetLabel movzblWithPatch(PatchedAbsoluteAddress src, Register dest) {
         masm.movzbl_mr(src.addr, dest.code());
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
     CodeOffsetLabel movswlWithPatch(PatchedAbsoluteAddress src, Register dest) {
         masm.movswl_mr(src.addr, dest.code());
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
     CodeOffsetLabel movzwlWithPatch(PatchedAbsoluteAddress src, Register dest) {
         masm.movzwl_mr(src.addr, dest.code());
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
     CodeOffsetLabel movlWithPatch(PatchedAbsoluteAddress src, Register dest) {
         masm.movl_mr(src.addr, dest.code());
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
     CodeOffsetLabel movssWithPatch(PatchedAbsoluteAddress src, FloatRegister dest) {
         JS_ASSERT(HasSSE2());
         masm.movss_mr(src.addr, dest.code());
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
     CodeOffsetLabel movsdWithPatch(PatchedAbsoluteAddress src, FloatRegister dest) {
         JS_ASSERT(HasSSE2());
         masm.movsd_mr(src.addr, dest.code());
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
 
     // Store to *dest where dest can be patched.
     CodeOffsetLabel movbWithPatch(Register src, PatchedAbsoluteAddress dest) {
         masm.movb_rm(src.code(), dest.addr);
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
     CodeOffsetLabel movwWithPatch(Register src, PatchedAbsoluteAddress dest) {
         masm.movw_rm(src.code(), dest.addr);
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
     CodeOffsetLabel movlWithPatch(Register src, PatchedAbsoluteAddress dest) {
         masm.movl_rm(src.code(), dest.addr);
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
     CodeOffsetLabel movssWithPatch(FloatRegister src, PatchedAbsoluteAddress dest) {
         JS_ASSERT(HasSSE2());
         masm.movss_rm(src.code(), dest.addr);
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
     CodeOffsetLabel movsdWithPatch(FloatRegister src, PatchedAbsoluteAddress dest) {
         JS_ASSERT(HasSSE2());
         masm.movsd_rm(src.code(), dest.addr);
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
 
 };

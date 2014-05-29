@@ -11,7 +11,9 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.json.JSONException;
 import org.json.JSONObject;
+
 import org.mozilla.gecko.db.BrowserDB;
 import org.mozilla.gecko.favicons.Favicons;
 import org.mozilla.gecko.fxa.FirefoxAccounts;
@@ -302,8 +304,16 @@ public class Tabs implements GeckoEventListener {
         closeTab(tab, getNextTab(tab));
     }
 
+    public synchronized void closeTab(Tab tab, Tab nextTab) {
+        closeTab(tab, nextTab, false);
+    }
+
+    public synchronized void closeTab(Tab tab, boolean showUndoToast) {
+        closeTab(tab, getNextTab(tab), showUndoToast);
+    }
+
     /** Close tab and then select nextTab */
-    public synchronized void closeTab(final Tab tab, Tab nextTab) {
+    public synchronized void closeTab(final Tab tab, Tab nextTab, boolean showUndoToast) {
         if (tab == null)
             return;
 
@@ -318,8 +328,16 @@ public class Tabs implements GeckoEventListener {
 
         tab.onDestroy();
 
+        final JSONObject args = new JSONObject();
+        try {
+            args.put("tabId", String.valueOf(tabId));
+            args.put("showUndoToast", showUndoToast);
+        } catch (JSONException e) {
+            Log.e(LOGTAG, "Error building Tab:Closed arguments: " + e);
+        }
+
         // Pass a message to Gecko to update tab state in BrowserApp
-        GeckoAppShell.sendEventToGecko(GeckoEvent.createBroadcastEvent("Tab:Closed", String.valueOf(tabId)));
+        GeckoAppShell.sendEventToGecko(GeckoEvent.createBroadcastEvent("Tab:Closed", args.toString()));
     }
 
     /** Return the tab that will be selected by default after this one is closed */
@@ -668,12 +686,46 @@ public class Tabs implements GeckoEventListener {
             if (isPrivate != null && isPrivate != tab.isPrivate()) {
                 continue;
             }
+            if (url.equals(tab.getURL())) {
+                return tab;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Looks for a reader mode enabled open tab with the given URL and private
+     * state.
+     *
+     * @param url
+     *            The URL of the tab we're looking for. The url parameter can be
+     *            the actual article URL or the reader mode article URL.
+     * @param isPrivate
+     *            If true, only look for tabs that are private. If false, only
+     *            look for tabs that are not private.
+     *
+     * @return The first Tab with the given URL, or null if there is no such
+     *         tab.
+     */
+    public Tab getFirstReaderTabForUrl(String url, boolean isPrivate) {
+        if (url == null) {
+            return null;
+        }
+
+        if (AboutPages.isAboutReader(url)) {
+            url = ReaderModeUtils.getUrlFromAboutReader(url);
+        }
+        for (Tab tab : mOrder) {
+            if (isPrivate != tab.isPrivate()) {
+                continue;
+            }
             String tabUrl = tab.getURL();
             if (AboutPages.isAboutReader(tabUrl)) {
                 tabUrl = ReaderModeUtils.getUrlFromAboutReader(tabUrl);
-            }
-            if (url.equals(tabUrl)) {
-                return tab;
+                if (url.equals(tabUrl)) {
+                    return tab;
+                }
             }
         }
 

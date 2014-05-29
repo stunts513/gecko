@@ -60,6 +60,10 @@
 
   <string name="url_bar_default_text">&url_bar_default_text;</string>
 
+  <!-- https://support.mozilla.org/1/mobile/%VERSION%/%OS%/%LOCALE%/ -->
+  <string name="help_link">https://support.mozilla.org/1/mobile/&formatS1;/&formatS2;/&formatS3;/</string>
+  <string name="help_menu">&help_menu;</string>
+
   <string name="quit">&quit;</string>
   <string name="bookmark">&bookmark;</string>
   <string name="bookmark_added">&bookmark_added;</string>
@@ -126,6 +130,8 @@
   <string name="pref_home_updates">&pref_home_updates;</string>
   <string name="pref_home_updates_enabled">&pref_home_updates_enabled;</string>
   <string name="pref_home_updates_wifi">&pref_home_updates_wifi;</string>
+  <string name="pref_home_suggested_sites">&pref_home_suggested_sites;</string>
+  <string name="pref_home_suggested_sites_summary">&pref_home_suggested_sites_summary;</string>
 
   <string name="pref_header_customize">&pref_header_customize;</string>
   <string name="pref_header_display">&pref_header_display;</string>
@@ -230,6 +236,8 @@
   <string name="site_security">&site_security;</string>
   <string name="close_tab">&close_tab;</string>
   <string name="new_tab_opened">&new_tab_opened;</string>
+  <string name="new_private_tab_opened">&new_private_tab_opened;</string>
+  <string name="switch_button_message">&switch_button_message;</string>
   <string name="one_tab">&one_tab;</string>
   <string name="num_tabs">&num_tabs2;</string>
   <string name="addons">&addons;</string>
@@ -302,6 +310,8 @@
   <string name="home_top_sites_title">&home_top_sites_title;</string>
   <string name="home_top_sites_add">&home_top_sites_add;</string>
   <string name="home_history_title">&home_history_title;</string>
+  <string name="home_clear_history_button">&home_clear_history_button;</string>
+  <string name="home_clear_history_confirm">&home_clear_history_confirm;</string>
   <string name="home_bookmarks_empty">&home_bookmarks_empty;</string>
   <string name="home_last_tabs_title">&home_last_tabs_title;</string>
   <string name="home_last_tabs_open">&home_last_tabs_open;</string>

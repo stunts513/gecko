@@ -299,7 +299,7 @@ class Assembler : public AssemblerX86Shared
 
     CodeOffsetLabel movWithPatch(ImmWord word, Register dest) {
         masm.movq_i64r(word.value, dest.code());
-        return masm.currentOffset();
+        return CodeOffsetLabel(masm.currentOffset());
     }
     CodeOffsetLabel movWithPatch(ImmPtr imm, Register dest) {
         return movWithPatch(ImmWord(uintptr_t(imm.value)), dest);
@@ -327,7 +327,7 @@ class Assembler : public AssemblerX86Shared
         movq(ImmWord(uintptr_t(imm.value)), dest);
     }
     void movq(ImmGCPtr ptr, Register dest) {
-        masm.movq_i64r(ptr.value, dest.code());
+        masm.movq_i64r(uintptr_t(ptr.value), dest.code());
         writeDataRelocation(ptr);
     }
     void movq(const Operand &src, Register dest) {
@@ -528,7 +528,7 @@ class Assembler : public AssemblerX86Shared
     }
     void mov(AsmJSImmPtr imm, Register dest) {
         masm.movq_i64r(-1, dest.code());
-        enoughMemory_ &= append(AsmJSAbsoluteLink(masm.currentOffset(), imm.kind()));
+        enoughMemory_ &= append(AsmJSAbsoluteLink(CodeOffsetLabel(masm.currentOffset()), imm.kind()));
     }
     void mov(const Operand &src, Register dest) {
         movq(src, dest);

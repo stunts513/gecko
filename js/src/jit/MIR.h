@@ -14,8 +14,6 @@
 
 #include "mozilla/Array.h"
 
-#include "jsinfer.h"
-
 #include "jit/CompilerRoot.h"
 #include "jit/FixedList.h"
 #include "jit/InlineList.h"
@@ -37,7 +35,7 @@ class BaselineInspector;
 class ValueNumberData;
 class Range;
 
-static const inline
+static inline
 MIRType MIRTypeFromValue(const js::Value &vp)
 {
     if (vp.isDouble())
@@ -67,7 +65,6 @@ MIRType MIRTypeFromValue(const js::Value &vp)
     _(Movable)       /* Allow LICM and GVN to move this instruction */          \
     _(Lowered)       /* (Debug only) has a virtual register */                  \
     _(Guard)         /* Not removable if uses == 0 */                           \
-    _(Observed)      /* Cannot be optimized out */                              \
                                                                                 \
     /* Keep the flagged instruction in resume points and do not substitute this
      * instruction by an UndefinedValue. This might be used by call inlining
@@ -115,26 +112,28 @@ class MUse : public TempObject, public InlineListNode<MUse>
 
     MDefinition *producer_; // MDefinition that is being used.
     MNode *consumer_;       // The node that is using this operand.
-    uint32_t index_;        // The index of this operand in its consumer.
 
-    MUse(MDefinition *producer, MNode *consumer, uint32_t index)
+    MUse(MDefinition *producer, MNode *consumer)
       : producer_(producer),
-        consumer_(consumer),
-        index_(index)
+        consumer_(consumer)
     { }
 
   public:
     // Default constructor for use in vectors.
     MUse()
-      : producer_(nullptr), consumer_(nullptr), index_(0)
+      : producer_(nullptr), consumer_(nullptr)
     { }
 
-    // Set data inside the MUse.
-    void set(MDefinition *producer, MNode *consumer, uint32_t index) {
-        producer_ = producer;
-        consumer_ = consumer;
-        index_ = index;
-    }
+    // Set this use, which was previously clear.
+    inline void init(MDefinition *producer, MNode *consumer);
+    // Like init, but works even when the use contains uninitialized data.
+    inline void initUnchecked(MDefinition *producer, MNode *consumer);
+    // Like initUnchecked, but set the producer to nullptr.
+    inline void initUncheckedWithoutProducer(MNode *consumer);
+    // Set this use, which was not previously clear.
+    inline void replaceProducer(MDefinition *producer);
+    // Clear this use.
+    inline void discardProducer();
 
     MDefinition *producer() const {
         JS_ASSERT(producer_ != nullptr);
@@ -147,9 +146,13 @@ class MUse : public TempObject, public InlineListNode<MUse>
         JS_ASSERT(consumer_ != nullptr);
         return consumer_;
     }
-    uint32_t index() const {
-        return index_;
-    }
+
+#ifdef DEBUG
+    // Return the operand index of this MUse in its consumer. This is DEBUG-only
+    // as normal code should instead to call indexOf on the casted consumer
+    // directly, to allow it to be devirtualized and inlined.
+    size_t index() const;
+#endif
 };
 
 typedef InlineList<MUse>::iterator MUseIterator;
@@ -178,7 +181,7 @@ class MNode : public TempObject
       : block_(nullptr)
     { }
 
-    MNode(MBasicBlock *block)
+    explicit MNode(MBasicBlock *block)
       : block_(block)
     { }
 
@@ -187,6 +190,7 @@ class MNode : public TempObject
     // Returns the definition at a given operand.
     virtual MDefinition *getOperand(size_t index) const = 0;
     virtual size_t numOperands() const = 0;
+    virtual size_t indexOf(const MUse *u) const = 0;
 
     bool isDefinition() const {
         return kind() == Definition;
@@ -204,15 +208,15 @@ class MNode : public TempObject
         return nullptr;
     }
 
-    // Replaces an already-set operand during iteration over a use chain.
-    MUseIterator replaceOperand(MUseIterator use, MDefinition *ins);
-
-    // Replaces an already-set operand, updating use information.
-    void replaceOperand(size_t index, MDefinition *ins);
+    // Sets an already set operand, updating use information. If you're looking
+    // for setOperand, this is probably what you want.
+    virtual void replaceOperand(size_t index, MDefinition *operand) = 0;
 
     // Resets the operand to an uninitialized state, breaking the link
     // with the previous operand's producer.
-    void discardOperand(size_t index);
+    void discardOperand(size_t index) {
+        getUseFor(index)->discardProducer();
+    }
 
     inline MDefinition *toDefinition();
     inline MResumePoint *toResumePoint();
@@ -223,11 +227,9 @@ class MNode : public TempObject
     virtual void dump() const = 0;
 
   protected:
-    // Sets an unset operand, updating use information.
-    virtual void setOperand(size_t index, MDefinition *operand) = 0;
-
     // Gets the MUse corresponding to given operand.
     virtual MUse *getUseFor(size_t index) = 0;
+    virtual const MUse *getUseFor(size_t index) const = 0;
 };
 
 class AliasSet {
@@ -246,18 +248,22 @@ class AliasSet {
         FrameArgument     = 1 << 6, // An argument kept on the stack frame
         AsmJSGlobalVar    = 1 << 7, // An asm.js global var
         AsmJSHeap         = 1 << 8, // An asm.js heap load
-        Last              = AsmJSHeap,
+        TypedArrayLength  = 1 << 9,// A typed array's length
+        Last              = TypedArrayLength,
         Any               = Last | (Last - 1),
 
-        NumCategories     = 9,
+        NumCategories     = 10,
 
         // Indicates load or store.
         Store_            = 1 << 31
     };
-    AliasSet(uint32_t flags)
+
+    static_assert((1 << NumCategories) - 1 == Any,
+                  "NumCategories must include all flags present in Any");
+
+    explicit AliasSet(uint32_t flags)
       : flags_(flags)
     {
-        JS_STATIC_ASSERT((1 << NumCategories) - 1 == Any);
     }
 
   public:
@@ -584,7 +590,6 @@ class MDefinition : public MNode
     }
 
     // Removes a use at the given position
-    MUseIterator removeUse(MUseIterator use);
     void removeUse(MUse *use) {
         uses_.remove(use);
     }
@@ -622,6 +627,9 @@ class MDefinition : public MNode
     }
 
     void addUse(MUse *use) {
+        // The use can't be in the list at all, but we only check the first
+        // element for now, as that's where it's most likely to be.
+        MOZ_ASSERT(uses_.empty() || use != *uses_.begin());
         uses_.pushFront(use);
     }
     void replaceAllUsesWith(MDefinition *dom);
@@ -718,7 +726,7 @@ class MUseDefIterator
     }
 
   public:
-    MUseDefIterator(MDefinition *def)
+    explicit MUseDefIterator(MDefinition *def)
       : def_(def),
         current_(search(def->usesBegin()))
     { }
@@ -738,9 +746,6 @@ class MUseDefIterator
     }
     MDefinition *def() const {
         return current_->consumer()->toDefinition();
-    }
-    size_t index() const {
-        return current_->index();
     }
 };
 
@@ -782,16 +787,17 @@ class MInstruction
 template <size_t Arity>
 class MAryInstruction : public MInstruction
 {
-  protected:
     mozilla::Array<MUse, Arity> operands_;
 
-    void setOperand(size_t index, MDefinition *operand) MOZ_FINAL MOZ_OVERRIDE {
-        operands_[index].set(operand, this, index);
-        operand->addUse(&operands_[index]);
-    }
-
+  protected:
     MUse *getUseFor(size_t index) MOZ_FINAL MOZ_OVERRIDE {
         return &operands_[index];
+    }
+    const MUse *getUseFor(size_t index) const MOZ_FINAL MOZ_OVERRIDE {
+        return &operands_[index];
+    }
+    void initOperand(size_t index, MDefinition *operand) {
+        operands_[index].init(operand, this);
     }
 
   public:
@@ -801,6 +807,14 @@ class MAryInstruction : public MInstruction
     size_t numOperands() const MOZ_FINAL MOZ_OVERRIDE {
         return Arity;
     }
+    size_t indexOf(const MUse *u) const MOZ_FINAL MOZ_OVERRIDE {
+        MOZ_ASSERT(u >= &operands_[0]);
+        MOZ_ASSERT(u <= &operands_[numOperands() - 1]);
+        return u - &operands_[0];
+    }
+    void replaceOperand(size_t index, MDefinition *operand) MOZ_FINAL MOZ_OVERRIDE {
+        operands_[index].replaceProducer(operand);
+    }
 };
 
 class MNullaryInstruction : public MAryInstruction<0>
@@ -809,9 +823,9 @@ class MNullaryInstruction : public MAryInstruction<0>
 class MUnaryInstruction : public MAryInstruction<1>
 {
   protected:
-    MUnaryInstruction(MDefinition *ins)
+    explicit MUnaryInstruction(MDefinition *ins)
     {
-        setOperand(0, ins);
+        initOperand(0, ins);
     }
 
   public:
@@ -825,8 +839,8 @@ class MBinaryInstruction : public MAryInstruction<2>
   protected:
     MBinaryInstruction(MDefinition *left, MDefinition *right)
     {
-        setOperand(0, left);
-        setOperand(1, right);
+        initOperand(0, left);
+        initOperand(1, right);
     }
 
   public:
@@ -896,9 +910,9 @@ class MTernaryInstruction : public MAryInstruction<3>
   protected:
     MTernaryInstruction(MDefinition *first, MDefinition *second, MDefinition *third)
     {
-        setOperand(0, first);
-        setOperand(1, second);
-        setOperand(2, third);
+        initOperand(0, first);
+        initOperand(1, second);
+        initOperand(2, third);
     }
 
   protected:
@@ -918,10 +932,10 @@ class MQuaternaryInstruction : public MAryInstruction<4>
     MQuaternaryInstruction(MDefinition *first, MDefinition *second,
                            MDefinition *third, MDefinition *fourth)
     {
-        setOperand(0, first);
-        setOperand(1, second);
-        setOperand(2, third);
-        setOperand(3, fourth);
+        initOperand(0, first);
+        initOperand(1, second);
+        initOperand(2, third);
+        initOperand(3, fourth);
     }
 
   protected:
@@ -950,7 +964,7 @@ class MStart : public MNullaryInstruction
     StartType startType_;
 
   private:
-    MStart(StartType startType)
+    explicit MStart(StartType startType)
       : startType_(startType)
     { }
 
@@ -1001,6 +1015,45 @@ class MNop : public MNullaryInstruction
     }
 };
 
+// No-op instruction. This cannot be moved or eliminated, and is intended for
+// protecting the input against follow-up optimization.
+class MLimitedTruncate : public MUnaryInstruction
+{
+  public:
+    TruncateKind truncate_;
+    TruncateKind truncateLimit_;
+
+  protected:
+    MLimitedTruncate(MDefinition *input, TruncateKind limit)
+      : MUnaryInstruction(input),
+        truncate_(NoTruncate),
+        truncateLimit_(limit)
+    {
+        setResultType(input->type());
+        setResultTypeSet(input->resultTypeSet());
+    }
+
+  public:
+    INSTRUCTION_HEADER(LimitedTruncate)
+    static MLimitedTruncate *New(TempAllocator &alloc, MDefinition *input, TruncateKind kind) {
+        return new(alloc) MLimitedTruncate(input, kind);
+    }
+
+    AliasSet getAliasSet() const {
+        return AliasSet::None();
+    }
+
+    void computeRange(TempAllocator &alloc);
+    bool truncate(TruncateKind kind);
+    TruncateKind operandTruncateKind(size_t index) const;
+    TruncateKind truncateKind() const {
+        return truncate_;
+    }
+    void setTruncateKind(TruncateKind kind) {
+        truncate_ = kind;
+    }
+};
+
 // A constant js::Value.
 class MConstant : public MNullaryInstruction
 {
@@ -1008,7 +1061,7 @@ class MConstant : public MNullaryInstruction
 
   protected:
     MConstant(const Value &v, types::CompilerConstraintList *constraints);
-    MConstant(JSObject *obj);
+    explicit MConstant(JSObject *obj);
 
   public:
     INSTRUCTION_HEADER(Constant)
@@ -1023,7 +1076,7 @@ class MConstant : public MNullaryInstruction
     const js::Value *vp() const {
         return &value_;
     }
-    const bool valueToBoolean() const {
+    bool valueToBoolean() const {
         // A hack to avoid this wordy pattern everywhere in the JIT.
         return ToBoolean(HandleValue::fromMarkedLocation(&value_));
     }
@@ -1060,7 +1113,7 @@ class MCloneLiteral
     public ObjectPolicy<0>
 {
   protected:
-    MCloneLiteral(MDefinition *obj)
+    explicit MCloneLiteral(MDefinition *obj)
       : MUnaryInstruction(obj)
     {
         setResultType(MIRType_Object);
@@ -1160,6 +1213,11 @@ class MTableSwitch MOZ_FINAL
     int32_t low_;
     int32_t high_;
 
+    void initOperand(size_t index, MDefinition *operand) {
+        JS_ASSERT(index == 0);
+        operand_.init(operand, this);
+    }
+
     MTableSwitch(TempAllocator &alloc, MDefinition *ins,
                  int32_t low, int32_t high)
       : successors_(alloc),
@@ -1168,17 +1226,16 @@ class MTableSwitch MOZ_FINAL
         low_(low),
         high_(high)
     {
-        setOperand(0, ins);
+        initOperand(0, ins);
     }
 
   protected:
-    void setOperand(size_t index, MDefinition *operand) {
+    MUse *getUseFor(size_t index) {
         JS_ASSERT(index == 0);
-        operand_.set(operand, this, index);
-        operand->addUse(&operand_);
+        return &operand_;
     }
 
-    MUse *getUseFor(size_t index) {
+    const MUse *getUseFor(size_t index) const {
         JS_ASSERT(index == 0);
         return &operand_;
     }
@@ -1264,6 +1321,16 @@ class MTableSwitch MOZ_FINAL
         return 1;
     }
 
+    size_t indexOf(const MUse *u) const MOZ_FINAL MOZ_OVERRIDE {
+        MOZ_ASSERT(u == getUseFor(0));
+        return 0;
+    }
+
+    void replaceOperand(size_t index, MDefinition *operand) MOZ_FINAL MOZ_OVERRIDE {
+        JS_ASSERT(index == 0);
+        operand_.replaceProducer(operand);
+    }
+
     TypePolicy *typePolicy() {
         return this;
     }
@@ -1276,16 +1343,18 @@ class MAryControlInstruction : public MControlInstruction
     mozilla::Array<MBasicBlock *, Successors> successors_;
 
   protected:
-    void setOperand(size_t index, MDefinition *operand) MOZ_FINAL MOZ_OVERRIDE {
-        operands_[index].set(operand, this, index);
-        operand->addUse(&operands_[index]);
-    }
     void setSuccessor(size_t index, MBasicBlock *successor) {
         successors_[index] = successor;
     }
 
     MUse *getUseFor(size_t index) MOZ_FINAL MOZ_OVERRIDE {
         return &operands_[index];
+    }
+    const MUse *getUseFor(size_t index) const MOZ_FINAL MOZ_OVERRIDE {
+        return &operands_[index];
+    }
+    void initOperand(size_t index, MDefinition *operand) {
+        operands_[index].init(operand, this);
     }
 
   public:
@@ -1294,6 +1363,14 @@ class MAryControlInstruction : public MControlInstruction
     }
     size_t numOperands() const MOZ_FINAL MOZ_OVERRIDE {
         return Arity;
+    }
+    size_t indexOf(const MUse *u) const MOZ_FINAL MOZ_OVERRIDE {
+        MOZ_ASSERT(u >= &operands_[0]);
+        MOZ_ASSERT(u <= &operands_[numOperands() - 1]);
+        return u - &operands_[0];
+    }
+    void replaceOperand(size_t index, MDefinition *operand) MOZ_FINAL MOZ_OVERRIDE {
+        operands_[index].replaceProducer(operand);
     }
     size_t numSuccessors() const MOZ_FINAL MOZ_OVERRIDE {
         return Successors;
@@ -1309,7 +1386,7 @@ class MAryControlInstruction : public MControlInstruction
 // Jump to the start of another basic block.
 class MGoto : public MAryControlInstruction<0, 1>
 {
-    MGoto(MBasicBlock *target) {
+    explicit MGoto(MBasicBlock *target) {
         setSuccessor(0, target);
     }
 
@@ -1347,7 +1424,7 @@ class MTest
     MTest(MDefinition *ins, MBasicBlock *if_true, MBasicBlock *if_false)
       : operandMightEmulateUndefined_(true)
     {
-        setOperand(0, ins);
+        initOperand(0, ins);
         setSuccessor(0, if_true);
         setSuccessor(1, if_false);
     }
@@ -1405,8 +1482,8 @@ class MReturn
   : public MAryControlInstruction<1, 0>,
     public BoxInputsPolicy
 {
-    MReturn(MDefinition *ins) {
-        setOperand(0, ins);
+    explicit MReturn(MDefinition *ins) {
+        initOperand(0, ins);
     }
 
   public:
@@ -1430,8 +1507,8 @@ class MThrow
   : public MAryControlInstruction<1, 0>,
     public BoxInputsPolicy
 {
-    MThrow(MDefinition *ins) {
-        setOperand(0, ins);
+    explicit MThrow(MDefinition *ins) {
+        initOperand(0, ins);
     }
 
   public:
@@ -1714,8 +1791,8 @@ class MMutateProto
   protected:
     MMutateProto(MDefinition *obj, MDefinition *value)
     {
-        setOperand(0, obj);
-        setOperand(1, value);
+        initOperand(0, obj);
+        initOperand(1, value);
         setResultType(MIRType_None);
     }
 
@@ -1754,8 +1831,8 @@ class MInitProp
     MInitProp(MDefinition *obj, PropertyName *name, MDefinition *value)
       : name_(name)
     {
-        setOperand(0, obj);
-        setOperand(1, value);
+        initOperand(0, obj);
+        initOperand(1, value);
         setResultType(MIRType_None);
     }
 
@@ -1826,9 +1903,9 @@ class MInitElem
 {
     MInitElem(MDefinition *obj, MDefinition *id, MDefinition *value)
     {
-        setOperand(0, obj);
-        setOperand(1, id);
-        setOperand(2, value);
+        initOperand(0, obj);
+        initOperand(1, id);
+        initOperand(2, value);
         setResultType(MIRType_None);
     }
 
@@ -1897,6 +1974,16 @@ class MVariadicInstruction : public MInstruction
     bool init(TempAllocator &alloc, size_t length) {
         return operands_.init(alloc, length);
     }
+    void initOperand(size_t index, MDefinition *operand) {
+        // FixedList doesn't initialize its elements, so do an unchecked init.
+        operands_[index].initUnchecked(operand, this);
+    }
+    MUse *getUseFor(size_t index) MOZ_FINAL MOZ_OVERRIDE {
+        return &operands_[index];
+    }
+    const MUse *getUseFor(size_t index) const MOZ_FINAL MOZ_OVERRIDE {
+        return &operands_[index];
+    }
 
   public:
     // Will assert if called before initialization.
@@ -1906,13 +1993,13 @@ class MVariadicInstruction : public MInstruction
     size_t numOperands() const MOZ_FINAL MOZ_OVERRIDE {
         return operands_.length();
     }
-    void setOperand(size_t index, MDefinition *operand) MOZ_FINAL MOZ_OVERRIDE {
-        operands_[index].set(operand, this, index);
-        operand->addUse(&operands_[index]);
+    size_t indexOf(const MUse *u) const MOZ_FINAL MOZ_OVERRIDE {
+        MOZ_ASSERT(u >= &operands_[0]);
+        MOZ_ASSERT(u <= &operands_[numOperands() - 1]);
+        return u - &operands_[0];
     }
-
-    MUse *getUseFor(size_t index) MOZ_FINAL MOZ_OVERRIDE {
-        return &operands_[index];
+    void replaceOperand(size_t index, MDefinition *operand) MOZ_FINAL MOZ_OVERRIDE {
+        operands_[index].replaceProducer(operand);
     }
 };
 
@@ -1951,7 +2038,7 @@ class MCall
                       bool construct, bool isDOMCall);
 
     void initFunction(MDefinition *func) {
-        return setOperand(FunctionOperandIndex, func);
+        initOperand(FunctionOperandIndex, func);
     }
 
     bool needsArgCheck() const {
@@ -2114,9 +2201,9 @@ class MApplyArgs
     MApplyArgs(JSFunction *target, MDefinition *fun, MDefinition *argc, MDefinition *self)
       : target_(target)
     {
-        setOperand(0, fun);
-        setOperand(1, argc);
-        setOperand(2, self);
+        initOperand(0, fun);
+        initOperand(1, argc);
+        initOperand(2, self);
         setResultType(MIRType_Value);
     }
 
@@ -2199,8 +2286,8 @@ class MGetDynamicName
   protected:
     MGetDynamicName(MDefinition *scopeChain, MDefinition *name)
     {
-        setOperand(0, scopeChain);
-        setOperand(1, name);
+        initOperand(0, scopeChain);
+        initOperand(1, name);
         setResultType(MIRType_Value);
     }
 
@@ -2233,9 +2320,9 @@ class MFilterArgumentsOrEval
     public BoxExceptPolicy<0, MIRType_String>
 {
   protected:
-    MFilterArgumentsOrEval(MDefinition *string)
+    explicit MFilterArgumentsOrEval(MDefinition *string)
     {
-        setOperand(0, string);
+        initOperand(0, string);
         setGuard();
         setResultType(MIRType_None);
     }
@@ -2269,9 +2356,9 @@ class MCallDirectEval
                     jsbytecode *pc)
         : pc_(pc)
     {
-        setOperand(0, scopeChain);
-        setOperand(1, string);
-        setOperand(2, thisValue);
+        initOperand(0, scopeChain);
+        initOperand(1, string);
+        initOperand(2, thisValue);
         setResultType(MIRType_Value);
     }
 
@@ -2608,7 +2695,7 @@ class MUnbox : public MUnaryInstruction, public BoxInputsPolicy
 
 class MGuardObject : public MUnaryInstruction, public SingleObjectPolicy
 {
-    MGuardObject(MDefinition *ins)
+    explicit MGuardObject(MDefinition *ins)
       : MUnaryInstruction(ins)
     {
         setGuard();
@@ -2635,7 +2722,7 @@ class MGuardString
   : public MUnaryInstruction,
     public StringPolicy<0>
 {
-    MGuardString(MDefinition *ins)
+    explicit MGuardString(MDefinition *ins)
       : MUnaryInstruction(ins)
     {
         setGuard();
@@ -2777,7 +2864,7 @@ class MCreateThis
   : public MUnaryInstruction,
     public ObjectPolicy<0>
 {
-    MCreateThis(MDefinition *callee)
+    explicit MCreateThis(MDefinition *callee)
       : MUnaryInstruction(callee)
     {
         setResultType(MIRType_Value);
@@ -2811,7 +2898,7 @@ class MCreateArgumentsObject
   : public MUnaryInstruction,
     public ObjectPolicy<0>
 {
-    MCreateArgumentsObject(MDefinition *callObj)
+    explicit MCreateArgumentsObject(MDefinition *callObj)
       : MUnaryInstruction(callObj)
     {
         setResultType(MIRType_Object);
@@ -2947,8 +3034,8 @@ class MReturnFromCtor
     public MixPolicy<BoxPolicy<0>, ObjectPolicy<1> >
 {
     MReturnFromCtor(MDefinition *value, MDefinition *object) {
-        setOperand(0, value);
-        setOperand(1, object);
+        initOperand(0, value);
+        initOperand(1, object);
         setResultType(MIRType_Object);
     }
 
@@ -2993,7 +3080,7 @@ class MToDouble
 
     TruncateKind implicitTruncate_;
 
-    MToDouble(MDefinition *def, ConversionKind conversion = NonStringPrimitives)
+    explicit MToDouble(MDefinition *def, ConversionKind conversion = NonStringPrimitives)
       : MUnaryInstruction(def), conversion_(conversion), implicitTruncate_(NoTruncate)
     {
         setResultType(MIRType_Double);
@@ -3116,7 +3203,7 @@ class MToFloat32
 class MAsmJSUnsignedToDouble
   : public MUnaryInstruction
 {
-    MAsmJSUnsignedToDouble(MDefinition *def)
+    explicit MAsmJSUnsignedToDouble(MDefinition *def)
       : MUnaryInstruction(def)
     {
         setResultType(MIRType_Double);
@@ -3142,7 +3229,7 @@ class MAsmJSUnsignedToDouble
 class MAsmJSUnsignedToFloat32
   : public MUnaryInstruction
 {
-    MAsmJSUnsignedToFloat32(MDefinition *def)
+    explicit MAsmJSUnsignedToFloat32(MDefinition *def)
       : MUnaryInstruction(def)
     {
         setResultType(MIRType_Float32);
@@ -3236,7 +3323,7 @@ class MToInt32
 // operations. This is an infallible ValueToECMAInt32.
 class MTruncateToInt32 : public MUnaryInstruction
 {
-    MTruncateToInt32(MDefinition *def)
+    explicit MTruncateToInt32(MDefinition *def)
       : MUnaryInstruction(def)
     {
         setResultType(MIRType_Int32);
@@ -3277,7 +3364,7 @@ class MTruncateToInt32 : public MUnaryInstruction
 // Converts any type to a string
 class MToString : public MUnaryInstruction
 {
-    MToString(MDefinition *def)
+    explicit MToString(MDefinition *def)
       : MUnaryInstruction(def)
     {
         // Converting an object to a string might be effectful.
@@ -3313,7 +3400,7 @@ class MBitNot
     public BitwisePolicy
 {
   protected:
-    MBitNot(MDefinition *input)
+    explicit MBitNot(MDefinition *input)
       : MUnaryInstruction(input)
     {
         setResultType(MIRType_Int32);
@@ -3579,6 +3666,10 @@ class MLsh : public MShiftInstruction
     }
 
     void computeRange(TempAllocator &alloc);
+    bool writeRecoverData(CompactBufferWriter &writer) const;
+    bool canRecoverOnBailout() const {
+        return specialization_ != MIRType_None;
+    }
 };
 
 class MRsh : public MShiftInstruction
@@ -3598,6 +3689,11 @@ class MRsh : public MShiftInstruction
         return getOperand(0);
     }
     void computeRange(TempAllocator &alloc);
+
+    bool writeRecoverData(CompactBufferWriter &writer) const;
+    bool canRecoverOnBailout() const {
+        return specialization_ < MIRType_Object;
+    }
 };
 
 class MUrsh : public MShiftInstruction
@@ -3975,7 +4071,7 @@ class MPowHalf
     bool operandIsNeverNegativeZero_;
     bool operandIsNeverNaN_;
 
-    MPowHalf(MDefinition *input)
+    explicit MPowHalf(MDefinition *input)
       : MUnaryInstruction(input),
         operandIsNeverNegativeInfinity_(false),
         operandIsNeverNegativeZero_(false),
@@ -4204,6 +4300,11 @@ class MSub : public MBinaryArithInstruction
     void computeRange(TempAllocator &alloc);
     bool truncate(TruncateKind kind);
     TruncateKind operandTruncateKind(size_t index) const;
+
+    bool writeRecoverData(CompactBufferWriter &writer) const;
+    bool canRecoverOnBailout() const {
+        return specialization_ != MIRType_None;
+    }
 };
 
 class MMul : public MBinaryArithInstruction
@@ -4560,7 +4661,7 @@ class MFromCharCode
   : public MUnaryInstruction,
     public IntPolicy<0>
 {
-    MFromCharCode(MDefinition *code)
+    explicit MFromCharCode(MDefinition *code)
       : MUnaryInstruction(code)
     {
         setMovable();
@@ -4570,6 +4671,9 @@ class MFromCharCode
   public:
     INSTRUCTION_HEADER(FromCharCode)
 
+    TypePolicy *typePolicy() {
+        return this;
+    }
     static MFromCharCode *New(TempAllocator &alloc, MDefinition *code) {
         return new(alloc) MFromCharCode(code);
     }
@@ -4634,7 +4738,7 @@ class MComputeThis
   : public MUnaryInstruction,
     public BoxPolicy<0>
 {
-    MComputeThis(MDefinition *def)
+    explicit MComputeThis(MDefinition *def)
       : MUnaryInstruction(def)
     {
         setResultType(MIRType_Object);
@@ -4666,7 +4770,7 @@ class MLoadArrowThis
   : public MUnaryInstruction,
     public SingleObjectPolicy
 {
-    MLoadArrowThis(MDefinition *callee)
+    explicit MLoadArrowThis(MDefinition *callee)
       : MUnaryInstruction(callee)
     {
         setResultType(MIRType_Value);
@@ -4711,6 +4815,14 @@ class MPhi MOZ_FINAL : public MDefinition, public InlineForwardListNode<MPhi>
 
   protected:
     MUse *getUseFor(size_t index) {
+        // Note: after the initial IonBuilder pass, it is OK to change phi
+        // operands such that they do not include the type sets of their
+        // operands. This can arise during e.g. value numbering, where
+        // definitions producing the same value may have different type sets.
+        JS_ASSERT(index < numOperands());
+        return &inputs_[index];
+    }
+    const MUse *getUseFor(size_t index) const {
         return &inputs_[index];
     }
 
@@ -4736,23 +4848,22 @@ class MPhi MOZ_FINAL : public MDefinition, public InlineForwardListNode<MPhi>
         return new(alloc) MPhi(alloc, resultType);
     }
 
-    void setOperand(size_t index, MDefinition *operand) {
-        // Note: after the initial IonBuilder pass, it is OK to change phi
-        // operands such that they do not include the type sets of their
-        // operands. This can arise during e.g. value numbering, where
-        // definitions producing the same value may have different type sets.
-        JS_ASSERT(index < numOperands());
-        inputs_[index].set(operand, this, index);
-        operand->addUse(&inputs_[index]);
-    }
-
     void removeOperand(size_t index);
+    void removeAllOperands();
 
     MDefinition *getOperand(size_t index) const {
         return inputs_[index].producer();
     }
     size_t numOperands() const {
         return inputs_.length();
+    }
+    size_t indexOf(const MUse *u) const MOZ_FINAL MOZ_OVERRIDE {
+        MOZ_ASSERT(u >= &inputs_[0]);
+        MOZ_ASSERT(u <= &inputs_[numOperands() - 1]);
+        return u - &inputs_[0];
+    }
+    void replaceOperand(size_t index, MDefinition *operand) MOZ_FINAL MOZ_OVERRIDE {
+        inputs_[index].replaceProducer(operand);
     }
     bool hasBackedgeType() const {
         return hasBackedgeType_;
@@ -4800,7 +4911,17 @@ class MPhi MOZ_FINAL : public MDefinition, public InlineForwardListNode<MPhi>
     }
     void computeRange(TempAllocator &alloc);
 
-    MDefinition *operandIfRedundant();
+    MDefinition *operandIfRedundant() {
+        // If this phi is redundant (e.g., phi(a,a) or b=phi(a,this)),
+        // returns the operand that it will always be equal to (a, in
+        // those two cases).
+        MDefinition *first = getOperand(0);
+        for (size_t i = 1, e = numOperands(); i < e; i++) {
+            if (getOperand(i) != first && getOperand(i) != this)
+                return nullptr;
+        }
+        return first;
+    }
 
     bool canProduceFloat32() const {
         return canProduceFloat32_;
@@ -4891,7 +5012,7 @@ class MOsrValue : public MUnaryInstruction
 class MOsrScopeChain : public MUnaryInstruction
 {
   private:
-    MOsrScopeChain(MOsrEntry *entry)
+    explicit MOsrScopeChain(MOsrEntry *entry)
       : MUnaryInstruction(entry)
     {
         setResultType(MIRType_Object);
@@ -4913,7 +5034,7 @@ class MOsrScopeChain : public MUnaryInstruction
 class MOsrArgumentsObject : public MUnaryInstruction
 {
   private:
-    MOsrArgumentsObject(MOsrEntry *entry)
+    explicit MOsrArgumentsObject(MOsrEntry *entry)
       : MUnaryInstruction(entry)
     {
         setResultType(MIRType_Object);
@@ -4935,7 +5056,7 @@ class MOsrArgumentsObject : public MUnaryInstruction
 class MOsrReturnValue : public MUnaryInstruction
 {
   private:
-    MOsrReturnValue(MOsrEntry *entry)
+    explicit MOsrReturnValue(MOsrEntry *entry)
       : MUnaryInstruction(entry)
     {
         setResultType(MIRType_Value);
@@ -4967,7 +5088,7 @@ class MCheckOverRecursed : public MNullaryInstruction
 // Uses the per-thread recursion limit.
 class MCheckOverRecursedPar : public MUnaryInstruction
 {
-    MCheckOverRecursedPar(MDefinition *cx)
+    explicit MCheckOverRecursedPar(MDefinition *cx)
       : MUnaryInstruction(cx)
     {
         setResultType(MIRType_None);
@@ -4990,7 +5111,7 @@ class MCheckOverRecursedPar : public MUnaryInstruction
 // Check for an interrupt (or rendezvous) in parallel mode.
 class MInterruptCheckPar : public MUnaryInstruction
 {
-    MInterruptCheckPar(MDefinition *cx)
+    explicit MInterruptCheckPar(MDefinition *cx)
       : MUnaryInstruction(cx)
     {
         setResultType(MIRType_None);
@@ -5290,7 +5411,7 @@ struct LambdaFunctionInfo
     bool singletonType;
     bool useNewTypeForClone;
 
-    LambdaFunctionInfo(JSFunction *fun)
+    explicit LambdaFunctionInfo(JSFunction *fun)
       : fun(fun), flags(fun->flags()),
         scriptOrLazyScript(fun->hasScript()
                            ? (gc::Cell *) fun->nonLazyScript()
@@ -5410,6 +5531,10 @@ class MLambdaPar
         return getOperand(1);
     }
 
+    TypePolicy *typePolicy() {
+        return this;
+    }
+
     const LambdaFunctionInfo &info() const {
         return info_;
     }
@@ -5420,7 +5545,7 @@ class MImplicitThis
   : public MUnaryInstruction,
     public SingleObjectPolicy
 {
-    MImplicitThis(MDefinition *callee)
+    explicit MImplicitThis(MDefinition *callee)
       : MUnaryInstruction(callee)
     {
         setResultType(MIRType_Value);
@@ -5450,7 +5575,7 @@ class MSlots
   : public MUnaryInstruction,
     public SingleObjectPolicy
 {
-    MSlots(MDefinition *object)
+    explicit MSlots(MDefinition *object)
       : MUnaryInstruction(object)
     {
         setResultType(MIRType_Slots);
@@ -5483,7 +5608,7 @@ class MElements
   : public MUnaryInstruction,
     public SingleObjectPolicy
 {
-    MElements(MDefinition *object)
+    explicit MElements(MDefinition *object)
       : MUnaryInstruction(object)
     {
         setResultType(MIRType_Elements);
@@ -5517,7 +5642,7 @@ class MConstantElements : public MNullaryInstruction
     void *value_;
 
   protected:
-    MConstantElements(void *v)
+    explicit MConstantElements(void *v)
       : value_(v)
     {
         setResultType(MIRType_Elements);
@@ -5553,7 +5678,7 @@ class MConstantElements : public MNullaryInstruction
 class MConvertElementsToDoubles
   : public MUnaryInstruction
 {
-    MConvertElementsToDoubles(MDefinition *elements)
+    explicit MConvertElementsToDoubles(MDefinition *elements)
       : MUnaryInstruction(elements)
     {
         setGuard();
@@ -5631,7 +5756,7 @@ class MMaybeToDoubleElement
 class MInitializedLength
   : public MUnaryInstruction
 {
-    MInitializedLength(MDefinition *elements)
+    explicit MInitializedLength(MDefinition *elements)
       : MUnaryInstruction(elements)
     {
         setResultType(MIRType_Int32);
@@ -5664,8 +5789,8 @@ class MSetInitializedLength
   : public MAryInstruction<2>
 {
     MSetInitializedLength(MDefinition *elements, MDefinition *index) {
-        setOperand(0, elements);
-        setOperand(1, index);
+        initOperand(0, elements);
+        initOperand(1, index);
     }
 
   public:
@@ -5690,7 +5815,7 @@ class MSetInitializedLength
 class MArrayLength
   : public MUnaryInstruction
 {
-    MArrayLength(MDefinition *elements)
+    explicit MArrayLength(MDefinition *elements)
       : MUnaryInstruction(elements)
     {
         setResultType(MIRType_Int32);
@@ -5723,8 +5848,8 @@ class MSetArrayLength
   : public MAryInstruction<2>
 {
     MSetArrayLength(MDefinition *elements, MDefinition *index) {
-        setOperand(0, elements);
-        setOperand(1, index);
+        initOperand(0, elements);
+        initOperand(1, index);
     }
 
   public:
@@ -5750,7 +5875,7 @@ class MTypedArrayLength
   : public MUnaryInstruction,
     public SingleObjectPolicy
 {
-    MTypedArrayLength(MDefinition *obj)
+    explicit MTypedArrayLength(MDefinition *obj)
       : MUnaryInstruction(obj)
     {
         setResultType(MIRType_Int32);
@@ -5774,9 +5899,7 @@ class MTypedArrayLength
         return congruentIfOperandsEqual(ins);
     }
     AliasSet getAliasSet() const {
-        // The typed array |length| property is immutable, so there is no
-        // implicit dependency.
-        return AliasSet::None();
+        return AliasSet::Load(AliasSet::TypedArrayLength);
     }
 
     void computeRange(TempAllocator &alloc);
@@ -5787,7 +5910,7 @@ class MTypedArrayElements
   : public MUnaryInstruction,
     public SingleObjectPolicy
 {
-    MTypedArrayElements(MDefinition *object)
+    explicit MTypedArrayElements(MDefinition *object)
       : MUnaryInstruction(object)
     {
         setResultType(MIRType_Elements);
@@ -5820,7 +5943,7 @@ class MNeuterCheck
   : public MUnaryInstruction
 {
   private:
-    MNeuterCheck(MDefinition *object)
+    explicit MNeuterCheck(MDefinition *object)
       : MUnaryInstruction(object)
     {
         JS_ASSERT(object->type() == MIRType_Object);
@@ -5858,7 +5981,7 @@ class MTypedObjectElements
     public SingleObjectPolicy
 {
   private:
-    MTypedObjectElements(MDefinition *object)
+    explicit MTypedObjectElements(MDefinition *object)
       : MUnaryInstruction(object)
     {
         setResultType(MIRType_Elements);
@@ -5933,7 +6056,7 @@ class MNot
     bool operandIsNeverNaN_;
 
   public:
-    MNot(MDefinition *input)
+    explicit MNot(MDefinition *input)
       : MUnaryInstruction(input),
         operandMightEmulateUndefined_(true),
         operandIsNeverNaN_(false)
@@ -6057,7 +6180,7 @@ class MBoundsCheckLower
     int32_t minimum_;
     bool fallible_;
 
-    MBoundsCheckLower(MDefinition *index)
+    explicit MBoundsCheckLower(MDefinition *index)
       : MUnaryInstruction(index), minimum_(0), fallible_(true)
     {
         setGuard();
@@ -6265,9 +6388,9 @@ class MStoreElement
     bool needsHoleCheck_;
 
     MStoreElement(MDefinition *elements, MDefinition *index, MDefinition *value, bool needsHoleCheck) {
-        setOperand(0, elements);
-        setOperand(1, index);
-        setOperand(2, value);
+        initOperand(0, elements);
+        initOperand(1, index);
+        initOperand(2, value);
         needsHoleCheck_ = needsHoleCheck;
         JS_ASSERT(elements->type() == MIRType_Elements);
         JS_ASSERT(index->type() == MIRType_Int32);
@@ -6314,10 +6437,10 @@ class MStoreElementHole
 {
     MStoreElementHole(MDefinition *object, MDefinition *elements,
                       MDefinition *index, MDefinition *value) {
-        setOperand(0, object);
-        setOperand(1, elements);
-        setOperand(2, index);
-        setOperand(3, value);
+        initOperand(0, object);
+        initOperand(1, elements);
+        initOperand(2, index);
+        initOperand(3, value);
         JS_ASSERT(elements->type() == MIRType_Elements);
         JS_ASSERT(index->type() == MIRType_Int32);
     }
@@ -6722,7 +6845,7 @@ class MStoreTypedArrayElement
     TruncateKind operandTruncateKind(size_t index) const;
 
     bool canConsumeFloat32(MUse *use) const {
-        return use->index() == 2 && arrayType_ == ScalarTypeDescr::TYPE_FLOAT32;
+        return use == getUseFor(2) && arrayType_ == ScalarTypeDescr::TYPE_FLOAT32;
     }
 };
 
@@ -6736,10 +6859,10 @@ class MStoreTypedArrayElementHole
                                 MDefinition *value, int arrayType)
       : MAryInstruction<4>(), arrayType_(arrayType)
     {
-        setOperand(0, elements);
-        setOperand(1, length);
-        setOperand(2, index);
-        setOperand(3, value);
+        initOperand(0, elements);
+        initOperand(1, length);
+        initOperand(2, index);
+        initOperand(3, value);
         setMovable();
         JS_ASSERT(elements->type() == MIRType_Elements);
         JS_ASSERT(length->type() == MIRType_Int32);
@@ -6790,7 +6913,7 @@ class MStoreTypedArrayElementHole
     TruncateKind operandTruncateKind(size_t index) const;
 
     bool canConsumeFloat32(MUse *use) const {
-        return use->index() == 3 && arrayType_ == ScalarTypeDescr::TYPE_FLOAT32;
+        return use == getUseFor(3) && arrayType_ == ScalarTypeDescr::TYPE_FLOAT32;
     }
 };
 
@@ -6837,7 +6960,7 @@ class MStoreTypedArrayElementStatic :
     TruncateKind operandTruncateKind(size_t index) const;
 
     bool canConsumeFloat32(MUse *use) const {
-        return use->index() == 1 && typedArray_->type() == ScalarTypeDescr::TYPE_FLOAT32;
+        return use == getUseFor(1) && typedArray_->type() == ScalarTypeDescr::TYPE_FLOAT32;
     }
 };
 
@@ -6884,7 +7007,7 @@ class MClampToUint8
   : public MUnaryInstruction,
     public ClampPolicy
 {
-    MClampToUint8(MDefinition *input)
+    explicit MClampToUint8(MDefinition *input)
       : MUnaryInstruction(input)
     {
         setResultType(MIRType_Int32);
@@ -7338,20 +7461,24 @@ class MDispatchInstruction
     MBasicBlock *fallback_;
     MUse operand_;
 
+    void initOperand(size_t index, MDefinition *operand) {
+        JS_ASSERT(index == 0);
+        operand_.init(operand, this);
+    }
+
   public:
     MDispatchInstruction(TempAllocator &alloc, MDefinition *input)
       : map_(alloc), fallback_(nullptr)
     {
-        setOperand(0, input);
+        initOperand(0, input);
     }
 
   protected:
-    void setOperand(size_t index, MDefinition *operand) MOZ_FINAL MOZ_OVERRIDE {
-        JS_ASSERT(index == 0);
-        operand_.set(operand, this, 0);
-        operand->addUse(&operand_);
-    }
     MUse *getUseFor(size_t index) MOZ_FINAL MOZ_OVERRIDE {
+        JS_ASSERT(index == 0);
+        return &operand_;
+    }
+    const MUse *getUseFor(size_t index) const MOZ_FINAL MOZ_OVERRIDE {
         JS_ASSERT(index == 0);
         return &operand_;
     }
@@ -7361,6 +7488,14 @@ class MDispatchInstruction
     }
     size_t numOperands() const MOZ_FINAL MOZ_OVERRIDE {
         return 1;
+    }
+    size_t indexOf(const MUse *u) const MOZ_FINAL MOZ_OVERRIDE {
+        JS_ASSERT(u == getUseFor(0));
+        return 0;
+    }
+    void replaceOperand(size_t index, MDefinition *operand) MOZ_FINAL MOZ_OVERRIDE {
+        JS_ASSERT(index == 0);
+        operand_.replaceProducer(operand);
     }
 
   public:
@@ -7841,7 +7976,7 @@ class MFunctionEnvironment
     public SingleObjectPolicy
 {
   public:
-    MFunctionEnvironment(MDefinition *function)
+    explicit MFunctionEnvironment(MDefinition *function)
         : MUnaryInstruction(function)
     {
         setResultType(MIRType_Object);
@@ -7902,7 +8037,7 @@ class MForkJoinContext
 class MForkJoinGetSlice
   : public MUnaryInstruction
 {
-    MForkJoinGetSlice(MDefinition *cx)
+    explicit MForkJoinGetSlice(MDefinition *cx)
       : MUnaryInstruction(cx)
     {
         setResultType(MIRType_Int32);
@@ -8034,7 +8169,7 @@ class MCallGetIntrinsicValue : public MNullaryInstruction
 {
     CompilerRootPropertyName name_;
 
-    MCallGetIntrinsicValue(PropertyName *name)
+    explicit MCallGetIntrinsicValue(PropertyName *name)
       : name_(name)
     {
         setResultType(MIRType_Value);
@@ -8299,7 +8434,7 @@ class MSetElementCache
         return this;
     }
 
-    bool canConsumeFloat32(MUse *use) const { return use->index() == 2; }
+    bool canConsumeFloat32(MUse *use) const { return use == getUseFor(2); }
 };
 
 class MCallGetProperty
@@ -8416,8 +8551,8 @@ class MCallInitElementArray
     MCallInitElementArray(MDefinition *obj, uint32_t index, MDefinition *val)
       : index_(index)
     {
-        setOperand(0, obj);
-        setOperand(1, val);
+        initOperand(0, obj);
+        initOperand(1, val);
     }
 
   public:
@@ -8458,20 +8593,20 @@ class MSetDOMProperty
     MSetDOMProperty(const JSJitSetterOp func, MDefinition *obj, MDefinition *val)
       : func_(func)
     {
-        setOperand(0, obj);
-        setOperand(1, val);
+        initOperand(0, obj);
+        initOperand(1, val);
     }
 
   public:
     INSTRUCTION_HEADER(SetDOMProperty)
 
-    static MSetDOMProperty *New(TempAllocator &alloc, const JSJitSetterOp func, MDefinition *obj,
+    static MSetDOMProperty *New(TempAllocator &alloc, JSJitSetterOp func, MDefinition *obj,
                                 MDefinition *val)
     {
         return new(alloc) MSetDOMProperty(func, obj, val);
     }
 
-    const JSJitSetterOp fun() {
+    JSJitSetterOp fun() const {
         return func_;
     }
 
@@ -8506,10 +8641,10 @@ class MGetDOMProperty
         JS_ASSERT(jitinfo);
         JS_ASSERT(jitinfo->type() == JSJitInfo::Getter);
 
-        setOperand(0, obj);
+        initOperand(0, obj);
 
         // Pin the guard as an operand if we want to hoist later
-        setOperand(1, guard);
+        initOperand(1, guard);
 
         // We are movable iff the jitinfo says we can be.
         if (isDomMovable()) {
@@ -8538,7 +8673,7 @@ class MGetDOMProperty
         return new(alloc) MGetDOMProperty(info, obj, guard);
     }
 
-    const JSJitGetterOp fun() {
+    JSJitGetterOp fun() const {
         return info_->getter;
     }
     bool isInfallible() const {
@@ -8617,7 +8752,7 @@ class MStringLength
   : public MUnaryInstruction,
     public StringPolicy<0>
 {
-    MStringLength(MDefinition *string)
+    explicit MStringLength(MDefinition *string)
       : MUnaryInstruction(string)
     {
         setResultType(MIRType_Int32);
@@ -8656,7 +8791,7 @@ class MFloor
   : public MUnaryInstruction,
     public FloatingPointPolicy<0>
 {
-    MFloor(MDefinition *num)
+    explicit MFloor(MDefinition *num)
       : MUnaryInstruction(num)
     {
         setResultType(MIRType_Int32);
@@ -8692,6 +8827,50 @@ class MFloor
     bool congruentTo(const MDefinition *ins) const {
         return congruentIfOperandsEqual(ins);
     }
+    void computeRange(TempAllocator &alloc);
+};
+
+// Inlined version of Math.ceil().
+class MCeil
+  : public MUnaryInstruction,
+    public FloatingPointPolicy<0>
+{
+    MCeil(MDefinition *num)
+      : MUnaryInstruction(num)
+    {
+        setResultType(MIRType_Int32);
+        setPolicyType(MIRType_Double);
+        setMovable();
+    }
+
+  public:
+    INSTRUCTION_HEADER(Ceil)
+
+    static MCeil *New(TempAllocator &alloc, MDefinition *num) {
+        return new(alloc) MCeil(num);
+    }
+
+    MDefinition *num() const {
+        return getOperand(0);
+    }
+    AliasSet getAliasSet() const {
+        return AliasSet::None();
+    }
+    TypePolicy *typePolicy() {
+        return this;
+    }
+    bool isFloat32Commutative() const {
+        return true;
+    }
+    void trySpecializeFloat32(TempAllocator &alloc);
+#ifdef DEBUG
+    bool isConsistentFloat32Use(MUse *use) const {
+        return true;
+    }
+#endif
+    bool congruentTo(const MDefinition *ins) const {
+        return congruentIfOperandsEqual(ins);
+    }
 };
 
 // Inlined version of Math.round().
@@ -8699,7 +8878,7 @@ class MRound
   : public MUnaryInstruction,
     public FloatingPointPolicy<0>
 {
-    MRound(MDefinition *num)
+    explicit MRound(MDefinition *num)
       : MUnaryInstruction(num)
     {
         setResultType(MIRType_Int32);
@@ -8772,7 +8951,7 @@ class MIteratorNext
   : public MUnaryInstruction,
     public SingleObjectPolicy
 {
-    MIteratorNext(MDefinition *iter)
+    explicit MIteratorNext(MDefinition *iter)
       : MUnaryInstruction(iter)
     {
         setResultType(MIRType_Value);
@@ -8797,7 +8976,7 @@ class MIteratorMore
   : public MUnaryInstruction,
     public SingleObjectPolicy
 {
-    MIteratorMore(MDefinition *iter)
+    explicit MIteratorMore(MDefinition *iter)
       : MUnaryInstruction(iter)
     {
         setResultType(MIRType_Boolean);
@@ -8822,7 +9001,7 @@ class MIteratorEnd
   : public MUnaryInstruction,
     public SingleObjectPolicy
 {
-    MIteratorEnd(MDefinition *iter)
+    explicit MIteratorEnd(MDefinition *iter)
       : MUnaryInstruction(iter)
     { }
 
@@ -9231,18 +9410,23 @@ class MGuardThreadExclusive
     AliasSet getAliasSet() const {
         return AliasSet::None();
     }
+    TypePolicy *typePolicy() {
+        return this;
+    }
     bool possiblyCalls() const {
         return true;
     }
 };
 
 class MFilterTypeSet
-  : public MUnaryInstruction
+  : public MUnaryInstruction,
+    public FilterTypeSetPolicy
 {
     MFilterTypeSet(MDefinition *def, types::TemporaryTypeSet *types)
       : MUnaryInstruction(def)
     {
-        JS_ASSERT(!types->unknown());
+        MOZ_ASSERT(!types->unknown());
+        MOZ_ASSERT(def->type() == types->getKnownMIRType());
         setResultType(types->getKnownMIRType());
         setResultTypeSet(types);
     }
@@ -9254,6 +9438,9 @@ class MFilterTypeSet
         return new(alloc) MFilterTypeSet(def, types);
     }
 
+    TypePolicy *typePolicy() {
+        return this;
+    }
     bool congruentTo(const MDefinition *def) const {
         return false;
     }
@@ -9406,7 +9593,7 @@ class MPostWriteBarrier : public MBinaryInstruction, public ObjectPolicy<0>
     bool isConsistentFloat32Use(MUse *use) const {
         // During lowering, values that neither have object nor value MIR type
         // are ignored, thus Float32 can show up at this point without any issue.
-        return use->index() == 1;
+        return use == getUseFor(1);
     }
 #endif
 };
@@ -9415,7 +9602,7 @@ class MNewDeclEnvObject : public MNullaryInstruction
 {
     CompilerRootObject templateObj_;
 
-    MNewDeclEnvObject(JSObject *templateObj)
+    explicit MNewDeclEnvObject(JSObject *templateObj)
       : MNullaryInstruction(),
         templateObj_(templateObj)
     {
@@ -9442,7 +9629,7 @@ class MNewCallObjectBase : public MNullaryInstruction
     CompilerRootObject templateObj_;
 
   protected:
-    MNewCallObjectBase(JSObject *templateObj)
+    explicit MNewCallObjectBase(JSObject *templateObj)
       : MNullaryInstruction(),
         templateObj_(templateObj)
     {
@@ -9463,7 +9650,7 @@ class MNewCallObject : public MNewCallObjectBase
   public:
     INSTRUCTION_HEADER(NewCallObject)
 
-    MNewCallObject(JSObject *templateObj)
+    explicit MNewCallObject(JSObject *templateObj)
       : MNewCallObjectBase(templateObj)
     {}
 
@@ -9479,7 +9666,7 @@ class MNewRunOnceCallObject : public MNewCallObjectBase
   public:
     INSTRUCTION_HEADER(NewRunOnceCallObject)
 
-    MNewRunOnceCallObject(JSObject *templateObj)
+    explicit MNewRunOnceCallObject(JSObject *templateObj)
       : MNewCallObjectBase(templateObj)
     {}
 
@@ -9605,7 +9792,7 @@ class MProfilerStackOp : public MNullaryInstruction
 // This is an alias for MLoadFixedSlot.
 class MEnclosingScope : public MLoadFixedSlot
 {
-    MEnclosingScope(MDefinition *obj)
+    explicit MEnclosingScope(MDefinition *obj)
       : MLoadFixedSlot(obj, ScopeObject::enclosingScopeSlot())
     {
         setResultType(MIRType_Object);
@@ -9679,7 +9866,6 @@ class MResumePoint MOZ_FINAL : public MNode, public InlineForwardListNode<MResum
     friend void AssertBasicGraphCoherency(MIRGraph &graph);
 
     FixedList<MUse> operands_;
-    uint32_t stackDepth_;
     jsbytecode *pc_;
     MResumePoint *caller_;
     MInstruction *instruction_;
@@ -9691,27 +9877,17 @@ class MResumePoint MOZ_FINAL : public MNode, public InlineForwardListNode<MResum
   protected:
     // Initializes operands_ to an empty array of a fixed length.
     // The array may then be filled in by inherit().
-    bool init(TempAllocator &alloc) {
-        return operands_.init(alloc, stackDepth_);
-    }
-
-    // Overwrites an operand without updating its Uses.
-    void setOperand(size_t index, MDefinition *operand) {
-        JS_ASSERT(index < stackDepth_);
-        // Note: We do not remove the isObserved flag, as this would imply that
-        // we check the list of uses of the removed MDefinition.
-        operands_[index].set(operand, this, index);
-        operand->addUse(&operands_[index]);
-        if (!operand->isObserved() && isObservableOperand(index))
-            operand->setObserved();
-    }
+    bool init(TempAllocator &alloc);
 
     void clearOperand(size_t index) {
-        JS_ASSERT(index < stackDepth_);
-        operands_[index].set(nullptr, this, index);
+        // FixedList doesn't initialize its elements, so do an unchecked init.
+        operands_[index].initUncheckedWithoutProducer(this);
     }
 
     MUse *getUseFor(size_t index) {
+        return &operands_[index];
+    }
+    const MUse *getUseFor(size_t index) const {
         return &operands_[index];
     }
 
@@ -9723,21 +9899,32 @@ class MResumePoint MOZ_FINAL : public MNode, public InlineForwardListNode<MResum
         return MNode::ResumePoint;
     }
     size_t numOperands() const {
-        return stackDepth_;
+        return operands_.length();
+    }
+    size_t indexOf(const MUse *u) const MOZ_FINAL MOZ_OVERRIDE {
+        MOZ_ASSERT(u >= &operands_[0]);
+        MOZ_ASSERT(u <= &operands_[numOperands() - 1]);
+        return u - &operands_[0];
+    }
+    void initOperand(size_t index, MDefinition *operand) {
+        // FixedList doesn't initialize its elements, so do an unchecked init.
+        operands_[index].initUnchecked(operand, this);
+    }
+    void replaceOperand(size_t index, MDefinition *operand) MOZ_FINAL MOZ_OVERRIDE {
+        operands_[index].replaceProducer(operand);
     }
 
+    bool isObservableOperand(MUse *u) const;
     bool isObservableOperand(size_t index) const;
 
     MDefinition *getOperand(size_t index) const {
-        JS_ASSERT(index < stackDepth_);
-        MOZ_ASSERT_IF(isObservableOperand(index), operands_[index].producer()->isObserved());
         return operands_[index].producer();
     }
     jsbytecode *pc() const {
         return pc_;
     }
     uint32_t stackDepth() const {
-        return stackDepth_;
+        return operands_.length();
     }
     MResumePoint *caller() const {
         return caller_;
@@ -9762,9 +9949,9 @@ class MResumePoint MOZ_FINAL : public MNode, public InlineForwardListNode<MResum
     }
 
     void discardUses() {
-        for (size_t i = 0; i < stackDepth_; i++) {
+        for (size_t i = 0; i < operands_.length(); i++) {
             if (operands_[i].hasProducer())
-                operands_[i].producer()->removeUse(&operands_[i]);
+                operands_[i].discardProducer();
         }
     }
 
@@ -9778,7 +9965,7 @@ class MIsCallable
   : public MUnaryInstruction,
     public SingleObjectPolicy
 {
-    MIsCallable(MDefinition *object)
+    explicit MIsCallable(MDefinition *object)
       : MUnaryInstruction(object)
     {
         setResultType(MIRType_Boolean);
@@ -9792,6 +9979,9 @@ class MIsCallable
         return new(alloc) MIsCallable(obj);
     }
 
+    TypePolicy *typePolicy() {
+        return this;
+    }
     MDefinition *object() const {
         return getOperand(0);
     }
@@ -9851,6 +10041,9 @@ class MHasClass
         return new(alloc) MHasClass(obj, clasp);
     }
 
+    TypePolicy *typePolicy() {
+        return this;
+    }
     MDefinition *object() const {
         return getOperand(0);
     }
@@ -10069,7 +10262,7 @@ class MAsmJSLoadFuncPtr : public MUnaryInstruction
 
 class MAsmJSLoadFFIFunc : public MNullaryInstruction
 {
-    MAsmJSLoadFFIFunc(unsigned globalDataOffset)
+    explicit MAsmJSLoadFFIFunc(unsigned globalDataOffset)
       : globalDataOffset_(globalDataOffset)
     {
         setResultType(MIRType_Pointer);
@@ -10110,8 +10303,8 @@ class MAsmJSParameter : public MNullaryInstruction
 
 class MAsmJSReturn : public MAryControlInstruction<1, 0>
 {
-    MAsmJSReturn(MDefinition *ins) {
-        setOperand(0, ins);
+    explicit MAsmJSReturn(MDefinition *ins) {
+        initOperand(0, ins);
     }
 
   public:
@@ -10170,9 +10363,9 @@ class MAsmJSCall MOZ_FINAL : public MInstruction
         } u;
       public:
         Callee() {}
-        Callee(Label *callee) : which_(Internal) { u.internal_ = callee; }
-        Callee(MDefinition *callee) : which_(Dynamic) { u.dynamic_ = callee; }
-        Callee(AsmJSImmKind callee) : which_(Builtin) { u.builtin_ = callee; }
+        explicit Callee(Label *callee) : which_(Internal) { u.internal_ = callee; }
+        explicit Callee(MDefinition *callee) : which_(Dynamic) { u.dynamic_ = callee; }
+        explicit Callee(AsmJSImmKind callee) : which_(Builtin) { u.builtin_ = callee; }
         Which which() const { return which_; }
         Label *internal() const { JS_ASSERT(which_ == Internal); return u.internal_; }
         MDefinition *dynamic() const { JS_ASSERT(which_ == Dynamic); return u.dynamic_; }
@@ -10191,16 +10384,20 @@ class MAsmJSCall MOZ_FINAL : public MInstruction
     FixedList<AnyRegister> argRegs_;
     size_t spIncrement_;
 
+    void initOperand(size_t index, MDefinition *operand) {
+        // FixedList doesn't initialize its elements, so do an unchecked init.
+        operands_[index].initUnchecked(operand, this);
+    }
+
     MAsmJSCall(const CallSiteDesc &desc, Callee callee, size_t spIncrement)
      : desc_(desc), callee_(callee), spIncrement_(spIncrement)
     { }
 
   protected:
-    void setOperand(size_t index, MDefinition *operand) {
-        operands_[index].set(operand, this, index);
-        operand->addUse(&operands_[index]);
-    }
     MUse *getUseFor(size_t index) {
+        return &operands_[index];
+    }
+    const MUse *getUseFor(size_t index) const {
         return &operands_[index];
     }
 
@@ -10219,6 +10416,14 @@ class MAsmJSCall MOZ_FINAL : public MInstruction
 
     size_t numOperands() const {
         return operands_.length();
+    }
+    size_t indexOf(const MUse *u) const MOZ_FINAL MOZ_OVERRIDE {
+        MOZ_ASSERT(u >= &operands_[0]);
+        MOZ_ASSERT(u <= &operands_[numOperands() - 1]);
+        return u - &operands_[0];
+    }
+    void replaceOperand(size_t index, MDefinition *operand) MOZ_FINAL MOZ_OVERRIDE {
+        operands_[index].replaceProducer(operand);
     }
     MDefinition *getOperand(size_t index) const {
         JS_ASSERT(index < numOperands());
@@ -10250,6 +10455,43 @@ class MAsmJSCall MOZ_FINAL : public MInstruction
         return true;
     }
 };
+
+void MUse::init(MDefinition *producer, MNode *consumer)
+{
+    MOZ_ASSERT(!consumer_, "Initializing MUse that already has a consumer");
+    MOZ_ASSERT(!producer_, "Initializing MUse that already has a producer");
+    initUnchecked(producer, consumer);
+}
+
+void MUse::initUnchecked(MDefinition *producer, MNode *consumer)
+{
+    MOZ_ASSERT(consumer, "Initializing to null consumer");
+    consumer_ = consumer;
+    producer_ = producer;
+    producer_->addUse(this);
+}
+
+void MUse::initUncheckedWithoutProducer(MNode *consumer)
+{
+    MOZ_ASSERT(consumer, "Initializing to null consumer");
+    consumer_ = consumer;
+    producer_ = nullptr;
+}
+
+void MUse::replaceProducer(MDefinition *producer)
+{
+    MOZ_ASSERT(consumer_, "Resetting MUse without a consumer");
+    producer_->removeUse(this);
+    producer_ = producer;
+    producer_->addUse(this);
+}
+
+void MUse::discardProducer()
+{
+    MOZ_ASSERT(consumer_, "Clearing MUse without a consumer");
+    producer_->removeUse(this);
+    producer_ = nullptr;
+}
 
 #undef INSTRUCTION_HEADER
 

@@ -193,7 +193,7 @@ bool Wrapper::finalizeInBackground(Value priv)
      * If the wrapped object is in the nursery then we know it doesn't have a
      * finalizer, and so background finalization is ok.
      */
-    if (IsInsideNursery(priv.toObject().runtimeFromMainThread(), &priv.toObject()))
+    if (IsInsideNursery(&priv.toObject()))
         return true;
     return IsBackgroundFinalized(priv.toObject().tenuredGetAllocKind());
 }
@@ -999,7 +999,7 @@ js::RemapWrapper(JSContext *cx, JSObject *wobjArg, JSObject *newTargetArg)
     // Update the entry in the compartment's wrapper map to point to the old
     // wrapper, which has now been updated (via reuse or swap).
     JS_ASSERT(wobj->is<WrapperObject>());
-    wcompartment->putWrapper(cx, ObjectValue(*newTarget), ObjectValue(*wobj));
+    wcompartment->putWrapper(cx, CrossCompartmentKey(newTarget), ObjectValue(*wobj));
     return true;
 }
 

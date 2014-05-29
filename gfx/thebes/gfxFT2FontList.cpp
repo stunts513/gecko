@@ -430,7 +430,7 @@ CreateNamedFontEntry(FT_Face aFace, const char* aFilename, uint8_t aIndex)
     nsAutoString fontName;
     AppendUTF8toUTF16(aFace->family_name, fontName);
     if (aFace->style_name && strcmp("Regular", aFace->style_name)) {
-        fontName.AppendLiteral(" ");
+        fontName.Append(' ');
         AppendUTF8toUTF16(aFace->style_name, fontName);
     }
     return FT2FontEntry::CreateFontEntry(aFace, aFilename, aIndex, fontName);
@@ -1195,7 +1195,7 @@ gfxFT2FontList::FindFonts()
             bool moreFiles = handle != INVALID_HANDLE_VALUE;
             while (moreFiles) {
                 nsAutoString filePath(path);
-                filePath.AppendLiteral("\\");
+                filePath.Append('\\');
                 filePath.Append(results.cFileName);
                 AppendFacesFromFontFile(NS_ConvertUTF16toUTF8(filePath));
                 moreFiles = FindNextFile(handle, &results);
@@ -1242,7 +1242,7 @@ gfxFT2FontList::FindFonts()
     } else {
         root = NS_LITERAL_CSTRING("/system");
     }
-    root.Append("/fonts");
+    root.AppendLiteral("/fonts");
 
     FindFontsInDir(root, &fnc);
 

@@ -20,7 +20,9 @@
 #include "jsfriendapi.h"
 #include "js/OldDebugAPI.h"
 #include "nsContentUtils.h"
+#include "nsGlobalWindow.h"
 #include "nsIDOMGlobalPropertyInitializer.h"
+#include "nsIPermissionManager.h"
 #include "nsIPrincipal.h"
 #include "nsIXPConnect.h"
 #include "WrapperFactory.h"
@@ -372,7 +374,7 @@ InterfaceObjectToString(JSContext* cx, unsigned argc, JS::Value *vp)
   str.Append('\n');
   str.AppendLiteral("    [native code]");
   str.Append('\n');
-  str.AppendLiteral("}");
+  str.Append('}');
 
   return xpc::NonVoidStringToJsval(cx, str, args.rval());
 }
@@ -2229,6 +2231,28 @@ EnumerateGlobal(JSContext* aCx, JS::Handle<JSObject*> aObj)
 }
 
 bool
+CheckPermissions(JSContext* aCx, JSObject* aObj, const char* const aPermissions[])
+{
+  JS::Rooted<JSObject*> rootedObj(aCx, aObj);
+  nsPIDOMWindow* window = xpc::WindowGlobalOrNull(rootedObj);
+  if (!window) {
+    return false;
+  }
+
+  nsCOMPtr<nsIPermissionManager> permMgr = services::GetPermissionManager();
+  NS_ENSURE_TRUE(permMgr, false);
+
+  do {
+    uint32_t permission = nsIPermissionManager::DENY_ACTION;
+    permMgr->TestPermissionFromWindow(window, *aPermissions, &permission);
+    if (permission == nsIPermissionManager::ALLOW_ACTION) {
+      return true;
+    }
+  } while (*(++aPermissions));
+  return false;
+}
+
+bool
 GenericBindingGetter(JSContext* cx, unsigned argc, JS::Value* vp)
 {
   JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
@@ -2433,7 +2457,14 @@ void
 CreateGlobalOptions<nsGlobalWindow>::TraceGlobal(JSTracer* aTrc, JSObject* aObj)
 {
   mozilla::dom::TraceProtoAndIfaceCache(aTrc, aObj);
-  xpc::GetCompartmentPrivate(aObj)->scope->TraceSelf(aTrc);
+
+  // We might be called from a GC during the creation of a global, before we've
+  // been able to set up the compartment private or the XPCWrappedNativeScope,
+  // so we need to null-check those.
+  xpc::CompartmentPrivate* compartmentPrivate = xpc::GetCompartmentPrivate(aObj);
+  if (compartmentPrivate && compartmentPrivate->scope) {
+    compartmentPrivate->scope->TraceSelf(aTrc);
+  }
 }
 
 /* static */

@@ -61,14 +61,26 @@ js::intrinsic_ToObject(JSContext *cx, unsigned argc, Value *vp)
     return true;
 }
 
-static bool
-intrinsic_ToInteger(JSContext *cx, unsigned argc, Value *vp)
+bool
+js::intrinsic_ToInteger(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
     double result;
     if (!ToInteger(cx, args[0], &result))
         return false;
-    args.rval().setDouble(result);
+    args.rval().setNumber(result);
+    return true;
+}
+
+bool
+intrinsic_ToString(JSContext *cx, unsigned argc, Value *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    RootedString str(cx);
+    str = ToString<CanGC>(cx, args[0]);
+        if (!str)
+            return false;
+    args.rval().setString(str);
     return true;
 }
 
@@ -742,6 +754,7 @@ intrinsic_RuntimeDefaultLocale(JSContext *cx, unsigned argc, Value *vp)
 static const JSFunctionSpec intrinsic_functions[] = {
     JS_FN("ToObject",                intrinsic_ToObject,                1,0),
     JS_FN("ToInteger",               intrinsic_ToInteger,               1,0),
+    JS_FN("ToString",                intrinsic_ToString,                1,0),
     JS_FN("IsCallable",              intrinsic_IsCallable,              1,0),
     JS_FN("ThrowError",              intrinsic_ThrowError,              4,0),
     JS_FN("AssertionFailed",         intrinsic_AssertionFailed,         1,0),
@@ -1144,7 +1157,7 @@ CloneObject(JSContext *cx, HandleObject selfHostedObject)
         clone = NewDenseEmptyArray(cx, nullptr, TenuredObject);
     } else {
         JS_ASSERT(selfHostedObject->isNative());
-        clone = NewObjectWithGivenProto(cx, selfHostedObject->getClass(), nullptr, cx->global(),
+        clone = NewObjectWithGivenProto(cx, selfHostedObject->getClass(), TaggedProto(nullptr), cx->global(),
                                         selfHostedObject->tenuredGetAllocKind(),
                                         SingletonObject);
     }

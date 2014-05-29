@@ -104,7 +104,7 @@ class CallbackVector : public Vector<Callback<F>, 4, SystemAllocPolicy> {};
 class GCRuntime
 {
   public:
-    GCRuntime(JSRuntime *rt);
+    explicit GCRuntime(JSRuntime *rt);
     bool init(uint32_t maxbytes);
     void finish();
 
@@ -141,7 +141,9 @@ class GCRuntime
   public:
     // Internal public interface
     void recordNativeStackTop();
+#ifdef JS_THREADSAFE
     void notifyRequestEnd() { conservativeGC.updateForRequestEnd(); }
+#endif
     bool isBackgroundSweeping() { return helperThread.sweeping(); }
     void waitBackgroundSweepEnd() { helperThread.waitBackgroundSweepEnd(); }
     void waitBackgroundSweepOrAllocEnd() { helperThread.waitBackgroundSweepOrAllocEnd(); }

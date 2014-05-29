@@ -1335,6 +1335,12 @@ public:
   static nsIPrincipal* GetSystemPrincipal();
 
   /**
+   * Gets the null subject principal singleton. This is only useful for
+   * assertions.
+   */
+  static nsIPrincipal* GetNullSubjectPrincipal() { return sNullSubjectPrincipal; }
+
+  /**
    * *aResourcePrincipal is a principal describing who may access the contents
    * of a resource. The resource can only be consumed by a principal that
    * subsumes *aResourcePrincipal. MAKE SURE THAT NOTHING EVER ACTS WITH THE
@@ -1829,11 +1835,6 @@ public:
    */
   static bool IsFullscreenApiContentOnly();
 
-  /**
-   * Returns true if the idle observers API is enabled.
-   */
-  static bool IsIdleObserverAPIEnabled() { return sIsIdleObserverAPIEnabled; }
-
   /*
    * Returns true if the performance timing APIs are enabled.
    */
@@ -2169,6 +2170,7 @@ private:
 
   static nsIScriptSecurityManager *sSecurityManager;
   static nsIPrincipal *sSystemPrincipal;
+  static nsIPrincipal *sNullSubjectPrincipal;
 
   static nsIParserService *sParserService;
 
@@ -2221,7 +2223,6 @@ private:
   static bool sTrustedFullScreenOnly;
   static bool sFullscreenApiIsContentOnly;
   static uint32_t sHandlingInputTimeout;
-  static bool sIsIdleObserverAPIEnabled;
   static bool sIsPerformanceTimingEnabled;
   static bool sIsResourceTimingEnabled;
 

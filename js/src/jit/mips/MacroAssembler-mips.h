@@ -676,12 +676,7 @@ class MacroAssemblerMIPSCompat : public MacroAssemblerMIPS
     void branchTestMagicValue(Condition cond, const ValueOperand &val, JSWhyMagic why,
                               Label *label) {
         MOZ_ASSERT(cond == Equal || cond == NotEqual);
-        // Test for magic
-        Label notmagic;
-        branchTestMagic(cond, val, &notmagic);
-        // Test magic value
-        branch32(cond, val.payloadReg(), Imm32(static_cast<int32_t>(why)), label);
-        bind(&notmagic);
+        branchTestValue(cond, val, MagicValue(why), label);
     }
 
     void branchTestInt32Truthy(bool b, const ValueOperand &value, Label *label);
@@ -894,8 +889,6 @@ public:
         ma_or(frameSizeReg, frameSizeReg, Imm32(type));
     }
 
-    void linkExitFrame();
-    void linkParallelExitFrame(Register pt);
     void handleFailureWithHandler(void *handler);
     void handleFailureWithHandlerTail();
 

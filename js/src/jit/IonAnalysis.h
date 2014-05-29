@@ -64,9 +64,6 @@ AssertExtendedGraphCoherency(MIRGraph &graph);
 bool
 EliminateRedundantChecks(MIRGraph &graph);
 
-bool
-UnsplitEdges(LIRGraph *lir);
-
 class MDefinition;
 
 // Simple linear sum of the form 'n' or 'x + n'.
@@ -102,7 +99,7 @@ struct LinearTerm
 class LinearSum
 {
   public:
-    LinearSum(TempAllocator &alloc)
+    explicit LinearSum(TempAllocator &alloc)
       : terms_(alloc),
         constant_(0)
     {

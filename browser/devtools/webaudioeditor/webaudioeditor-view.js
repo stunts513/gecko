@@ -25,6 +25,12 @@ const HEIGHT = 400;
 const ARROW_HEIGHT = 5;
 const ARROW_WIDTH = 8;
 
+// Styles for markers as they cannot be done with CSS.
+const MARKER_STYLING = {
+  light: "#AAA",
+  dark: "#CED3D9"
+};
+
 const GRAPH_DEBOUNCE_TIMER = 100;
 
 const GENERIC_VARIABLES_VIEW_SETTINGS = {
@@ -45,8 +51,14 @@ let WebAudioGraphView = {
    */
   initialize: function() {
     this._onGraphNodeClick = this._onGraphNodeClick.bind(this);
+    this._onThemeChange = this._onThemeChange.bind(this);
+    this._onNodeSelect = this._onNodeSelect.bind(this);
+
     this.draw = debounce(this.draw.bind(this), GRAPH_DEBOUNCE_TIMER);
     $('#graph-target').addEventListener('click', this._onGraphNodeClick, false);
+
+    window.on(EVENTS.THEME_CHANGE, this._onThemeChange);
+    window.on(EVENTS.UI_INSPECTOR_NODE_SET, this._onNodeSelect);
   },
 
   /**
@@ -57,6 +69,8 @@ let WebAudioGraphView = {
       this._zoomBinding.on("zoom", null);
     }
     $('#graph-target').removeEventListener('click', this._onGraphNodeClick, false);
+    window.off(EVENTS.THEME_CHANGE, this._onThemeChange);
+    window.off(EVENTS.UI_INSPECTOR_NODE_SET, this._onNodeSelect);
   },
 
   /**
@@ -90,20 +104,18 @@ let WebAudioGraphView = {
   },
 
   /**
-   * Makes the corresponding graph node appear "focused", called from WebAudioParamView
+   * Makes the corresponding graph node appear "focused", removing
+   * focused styles from all other nodes. If no `actorID` specified,
+   * make all nodes appear unselected.
+   * Called from UI_INSPECTOR_NODE_SELECT.
    */
   focusNode: function (actorID) {
     // Remove class "selected" from all nodes
-    Array.prototype.forEach.call($$(".nodes > g"), $node => $node.classList.remove("selected"));
+    Array.forEach($$(".nodes > g"), $node => $node.classList.remove("selected"));
     // Add to "selected"
-    this._getNodeByID(actorID).classList.add("selected");
-  },
-
-  /**
-   * Unfocuses the corresponding graph node, called from WebAudioParamView
-   */
-  blurNode: function (actorID) {
-    this._getNodeByID(actorID).classList.remove("selected");
+    if (actorID) {
+      this._getNodeByID(actorID).classList.add("selected");
+    }
   },
 
   /**
@@ -175,10 +187,14 @@ let WebAudioGraphView = {
     // Override Dagre-d3's post render function by passing in our own.
     // This way we can leave styles out of it.
     renderer.postRender(function (graph, root) {
-      // TODO change arrowhead color depending on theme-dark/theme-light
-      // and possibly refactor rendering this as it's ugly
-      // Bug 994256
-      // let color = window.classList.contains("theme-dark") ? "#f5f7fa" : "#585959";
+      // We have to manually set the marker styling since we cannot
+      // do this currently with CSS, although it is in spec for SVG2
+      // https://svgwg.org/svg2-draft/painting.html#VertexMarkerProperties
+      // For now, manually set it on creation, and the `_onThemeChange`
+      // function will fire when the devtools theme changes to update the
+      // styling manually.
+      let theme = Services.prefs.getCharPref("devtools.theme");
+      let markerColor = MARKER_STYLING[theme];
       if (graph.isDirected() && root.select("#arrowhead").empty()) {
         root
           .append("svg:defs")
@@ -191,7 +207,7 @@ let WebAudioGraphView = {
           .attr("markerWidth", ARROW_WIDTH)
           .attr("markerHeight", ARROW_HEIGHT)
           .attr("orient", "auto")
-          .attr("style", "fill: #f5f7fa")
+          .attr("style", "fill: " + markerColor)
           .append("svg:path")
           .attr("d", "M 0 0 L 10 5 L 0 10 z");
       }
@@ -218,6 +234,21 @@ let WebAudioGraphView = {
   /**
    * Event handlers
    */
+
+  _onNodeSelect: function (eventName, id) {
+    this.focusNode(id);
+  },
+
+  /**
+   * Fired when the devtools theme changes.
+   */
+  _onThemeChange: function (eventName, theme) {
+    let markerColor = MARKER_STYLING[theme];
+    let marker = $("#arrowhead");
+    if (marker) {
+      marker.setAttribute("style", "fill: " + markerColor);
+    }
+  },
 
   /**
    * Fired when a node in the svg graph is clicked. Used to handle triggering the AudioNodePane.

@@ -36,8 +36,8 @@ let emulator = (function() {
   };
 }());
 
-function toggleNFC(enabled, callback) {
-  isnot(callback, null);
+function toggleNFC(enabled) {
+  let deferred = Promise.defer();
 
   let req;
   if (enabled) {
@@ -47,13 +47,28 @@ function toggleNFC(enabled, callback) {
   }
 
   req.onsuccess = function() {
-    callback();
+    deferred.resolve();
   };
 
   req.onerror = function() {
     ok(false, 'operation failed, error ' + req.error.name);
+    deferred.reject();
     finish();
   };
+
+  return deferred.promise;
+}
+
+function enableRE0() {
+  let deferred = Promise.defer();
+  let cmd = 'nfc nci rf_intf_activated_ntf 0';
+
+  emulator.run(cmd, function(result) {
+    is(result.pop(), 'OK', 'check activation of RE0');
+    deferred.resolve();
+  });
+
+  return deferred.promise;
 }
 
 function cleanUp() {
@@ -144,5 +159,15 @@ var NfcUtils = {
       buf[i] = str.charCodeAt(i);
     }
     return buf;
+  },
+  toUTF8: function(array) {
+    if (!array) {
+      return null;
+    }
+    let str = "";
+    for (var i = 0; i < array.length; i++) {
+      str += String.fromCharCode(array[i]);
+    }
+    return str;
   }
 };

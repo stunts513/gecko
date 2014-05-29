@@ -101,6 +101,15 @@
   background-color: #3689b2;
 }
 
+.cm-s-mozilla .cm-unused-line {
+  text-decoration: line-through;
+  -moz-text-decoration-color: #5f88b0;
+}
+
+.cm-s-mozilla .cm-executed-line {
+  background-color: #133c26;
+}
+
 .theme-fg-color3,
 .cm-s-mozilla .cm-builtin,
 .cm-s-mozilla .cm-tag,
@@ -156,7 +165,8 @@
 
 .theme-toolbar,
 .devtools-toolbar,
-.devtools-sidebar-tabs > tabs { /* General toolbar styling */
+.devtools-sidebar-tabs > tabs,
+.CodeMirror-dialog { /* General toolbar styling */
   color: #b6babf;
   background-color: #343c45;
   border-color: hsla(210,8%,5%,.6);
@@ -337,10 +347,6 @@ div.CodeMirror span.eval-text {
 .theme-tooltip-panel .devtools-tooltip-simple-text {
   color: white;
   border-bottom: 1px solid #434850;
-}
-
-.theme-tooltip-panel .devtools-tooltip-font-previewer-text {
-  color: white;
 }
 
 .theme-tooltip-panel .devtools-tooltip-simple-text:last-child {

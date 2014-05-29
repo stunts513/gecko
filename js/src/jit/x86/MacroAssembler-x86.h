@@ -581,6 +581,9 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared
     void subPtr(Register src, const Address &dest) {
         subl(src, Operand(dest));
     }
+    void mulBy3(const Register &src, const Register &dest) {
+        lea(Operand(src, src, TimesTwo), dest);
+    }
 
     void branch32(Condition cond, AbsoluteAddress lhs, Imm32 rhs, Label *label) {
         cmpl(Operand(lhs), rhs);
@@ -777,19 +780,7 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared
                               Label *label)
     {
         JS_ASSERT(cond == Equal || cond == NotEqual);
-        if (cond == Equal) {
-            // Test for magic
-            Label notmagic;
-            Condition testCond = testMagic(Equal, val);
-            j(InvertCondition(testCond), &notmagic);
-            // Test magic value
-            branch32(Equal, val.payloadReg(), Imm32(static_cast<int32_t>(why)), label);
-            bind(&notmagic);
-        } else {
-            Condition testCond = testMagic(NotEqual, val);
-            j(testCond, label);
-            branch32(NotEqual, val.payloadReg(), Imm32(static_cast<int32_t>(why)), label);
-        }
+        branchTestValue(cond, val, MagicValue(why), label);
     }
 
     // Note: this function clobbers the source register.
@@ -1103,12 +1094,6 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared
         orl(Imm32(type), frameSizeReg);
     }
 
-    // Save an exit frame (which must be aligned to the stack pointer) to
-    // PerThreadData::jitTop of the main thread.
-    void linkExitFrame() {
-        movl(StackPointer, Operand(AbsoluteAddress(GetIonContext()->runtime->addressOfJitTop())));
-    }
-
     void callWithExitFrame(JitCode *target, Register dynStack) {
         addPtr(Imm32(framePushed()), dynStack);
         makeFrameDescriptor(dynStack, JitFrame_IonJS);
@@ -1121,12 +1106,6 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared
     }
     void callExit(AsmJSImmPtr target, uint32_t stackArgBytes) {
         call(CallSiteDesc::Exit(), target);
-    }
-
-    // Save an exit frame to the thread data of the current thread, given a
-    // register that holds a PerThreadData *.
-    void linkParallelExitFrame(Register pt) {
-        movl(StackPointer, Operand(pt, offsetof(PerThreadData, jitTop)));
     }
 
 #ifdef JSGC_GENERATIONAL

@@ -249,7 +249,7 @@ enum GCProgress {
 struct JS_FRIEND_API(GCDescription) {
     bool isCompartment_;
 
-    GCDescription(bool isCompartment)
+    explicit GCDescription(bool isCompartment)
       : isCompartment_(isCompartment) {}
 
     jschar *formatMessage(JSRuntime *rt) const;
@@ -341,7 +341,7 @@ class JS_FRIEND_API(AutoDisableGenerationalGC)
 #endif
 
   public:
-    AutoDisableGenerationalGC(JSRuntime *rt);
+    explicit AutoDisableGenerationalGC(JSRuntime *rt);
     ~AutoDisableGenerationalGC();
 };
 
@@ -395,7 +395,7 @@ class JS_PUBLIC_API(AutoAssertNoGC)
   public:
     /* Prevent unreferenced local warnings in opt builds. */
     AutoAssertNoGC() {}
-    AutoAssertNoGC(JSRuntime *) {}
+    explicit AutoAssertNoGC(JSRuntime *) {}
 #endif
 };
 
@@ -406,7 +406,7 @@ class JS_PUBLIC_API(ObjectPtr)
   public:
     ObjectPtr() : value(nullptr) {}
 
-    ObjectPtr(JSObject *obj) : value(obj) {}
+    explicit ObjectPtr(JSObject *obj) : value(obj) {}
 
     /* Always call finalize before the destructor. */
     ~ObjectPtr() { MOZ_ASSERT(!value); }
@@ -465,7 +465,7 @@ ExposeGCThingToActiveJS(void *thing, JSGCTraceKind kind)
      * All live objects in the nursery are moved to tenured at the beginning of
      * each GC slice, so the gray marker never sees nursery things.
      */
-    if (js::gc::IsInsideNursery(rt, thing))
+    if (js::gc::IsInsideNursery((js::gc::Cell *)thing))
         return;
 #endif
     if (IsIncrementalBarrierNeededOnGCThing(rt, thing, kind))
@@ -498,7 +498,7 @@ MarkGCThingAsLive(JSRuntime *rt_, void *thing, JSGCTraceKind kind)
     /*
      * Any object in the nursery will not be freed during any GC running at that time.
      */
-    if (js::gc::IsInsideNursery(rt, thing))
+    if (js::gc::IsInsideNursery((js::gc::Cell *)thing))
         return;
 #endif
     if (IsIncrementalBarrierNeededOnGCThing(rt, thing, kind))
