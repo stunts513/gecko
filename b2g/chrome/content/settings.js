@@ -152,7 +152,7 @@ Components.utils.import('resource://gre/modules/ctypes.jsm');
   let firmware_revision = null;
   let product_model = null;
 #ifdef MOZ_WIDGET_GONK
-    hardware_info = libcutils.property_get('ro.hardware');
+    hardware_info = libcutils.property_get('ro.product.device');
     firmware_revision = libcutils.property_get('ro.firmware_revision');
     product_model = libcutils.property_get('ro.product.model');
 #endif
