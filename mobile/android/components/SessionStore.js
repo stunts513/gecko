@@ -18,6 +18,7 @@ XPCOMUtils.defineLazyServiceGetter(this, "CrashReporter",
 XPCOMUtils.defineLazyModuleGetter(this, "Task", "resource://gre/modules/Task.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "OS", "resource://gre/modules/osfile.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "sendMessageToJava", "resource://gre/modules/Messaging.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "PrivateBrowsingUtils", "resource://gre/modules/PrivateBrowsingUtils.jsm");
 
 function dump(a) {
   Services.console.logStringMessage(a);
@@ -43,8 +44,15 @@ SessionStore.prototype = {
   _windows: {},
   _lastSaveTime: 0,
   _interval: 10000,
-  _maxTabsUndo: 1,
+  _maxTabsUndo: 5,
   _pendingWrite: 0,
+
+  // The index where the most recently closed tab was in the tabs array
+  // when it was closed.
+  _lastClosedTabIndex: -1,
+
+  // Whether or not to send notifications for changes to the closed tabs.
+  _notifyClosedTabs: false,
 
   init: function ss_init() {
     // Get file references
@@ -75,6 +83,9 @@ SessionStore.prototype = {
         observerService.addObserver(this, "browser:purge-session-history", true);
         observerService.addObserver(this, "Session:Restore", true);
         observerService.addObserver(this, "application-background", true);
+        observerService.addObserver(this, "ClosedTabs:StartNotifications", true);
+        observerService.addObserver(this, "ClosedTabs:StopNotifications", true);
+        observerService.addObserver(this, "last-pb-context-exited", true);
         break;
       case "final-ui-startup":
         observerService.removeObserver(this, "final-ui-startup");
@@ -97,6 +108,8 @@ SessionStore.prototype = {
         // Clear all data about closed tabs
         for (let [ssid, win] in Iterator(this._windows))
           win.closedTabs = [];
+
+        this._lastClosedTabIndex = -1;
 
         if (this._loadState == STATE_RUNNING) {
           // Save the purged state immediately
@@ -151,6 +164,20 @@ SessionStore.prototype = {
         // pending save state to ensure that this data does not get lost.
         this.flushPendingState();
         break;
+      case "ClosedTabs:StartNotifications":
+        this._notifyClosedTabs = true;
+        this._sendClosedTabsToJava(Services.wm.getMostRecentWindow("navigator:browser"));
+        break;
+      case "ClosedTabs:StopNotifications":
+        this._notifyClosedTabs = false;
+        break;
+      case "last-pb-context-exited":
+        // Clear private closed tab data when we leave private browsing.
+        for (let [, window] in Iterator(this._windows)) {
+          window.closedTabs = window.closedTabs.filter(tab => !tab.isPrivate);
+        }
+        this._lastClosedTabIndex = -1;
+        break;
     }
   },
 
@@ -164,7 +191,7 @@ SessionStore.prototype = {
       }
       case "TabClose": {
         let browser = aEvent.target;
-        this.onTabClose(window, browser);
+        this.onTabClose(window, browser, aEvent.detail);
         this.onTabRemove(window, browser);
         break;
       }
@@ -269,7 +296,7 @@ SessionStore.prototype = {
       this.saveStateDelayed();
   },
 
-  onTabClose: function ss_onTabClose(aWindow, aBrowser) {
+  onTabClose: function ss_onTabClose(aWindow, aBrowser, aTabIndex) {
     if (this._maxTabsUndo == 0)
       return;
 
@@ -283,6 +310,12 @@ SessionStore.prototype = {
       let length = this._windows[aWindow.__SSID].closedTabs.length;
       if (length > this._maxTabsUndo)
         this._windows[aWindow.__SSID].closedTabs.splice(this._maxTabsUndo, length - this._maxTabsUndo);
+
+      this._lastClosedTabIndex = aTabIndex;
+
+      if (this._notifyClosedTabs) {
+        this._sendClosedTabsToJava(aWindow);
+      }
     }
   },
 
@@ -341,6 +374,13 @@ SessionStore.prototype = {
 
     this.saveStateDelayed();
     this._updateCrashReportURL(aWindow);
+
+    // If the selected tab has changed while listening for closed tab
+    // notifications, we may have switched between different private browsing
+    // modes.
+    if (this._notifyClosedTabs) {
+      this._sendClosedTabsToJava(aWindow);
+    }
   },
 
   saveStateDelayed: function ss_saveStateDelayed() {
@@ -818,14 +858,14 @@ SessionStore.prototype = {
     return this._windows[aWindow.__SSID].closedTabs.length;
   },
 
-  getClosedTabData: function ss_getClosedTabData(aWindow) {
+  getClosedTabs: function ss_getClosedTabs(aWindow) {
     if (!aWindow.__SSID)
       throw (Components.returnCode = Cr.NS_ERROR_INVALID_ARG);
 
-    return JSON.stringify(this._windows[aWindow.__SSID].closedTabs);
+    return this._windows[aWindow.__SSID].closedTabs;
   },
 
-  undoCloseTab: function ss_undoCloseTab(aWindow, aIndex) {
+  undoCloseTab: function ss_undoCloseTab(aWindow, aCloseTabData) {
     if (!aWindow.__SSID)
       throw (Components.returnCode = Cr.NS_ERROR_INVALID_ARG);
 
@@ -833,21 +873,32 @@ SessionStore.prototype = {
     if (!closedTabs)
       return null;
 
-    // default to the most-recently closed tab
-    aIndex = aIndex || 0;
-    if (!(aIndex in closedTabs))
-      throw (Components.returnCode = Cr.NS_ERROR_INVALID_ARG);
-
-    // fetch the data of closed tab, while removing it from the array
-    let closedTab = closedTabs.splice(aIndex, 1).shift();
+    // If the tab data is in the closedTabs array, remove it.
+    closedTabs.find(function (tabData, i) {
+      if (tabData == aCloseTabData) {
+        closedTabs.splice(i, 1);
+        return true;
+      }
+    });
 
     // create a new tab and bring to front
-    let params = { selected: true };
-    let tab = aWindow.BrowserApp.addTab(closedTab.entries[closedTab.index - 1].url, params);
-    this._restoreHistory(closedTab, tab.browser.sessionHistory);
+    let params = {
+      selected: true,
+      isPrivate: aCloseTabData.isPrivate,
+      desktopMode: aCloseTabData.desktopMode,
+      tabIndex: this._lastClosedTabIndex
+    };
+    let tab = aWindow.BrowserApp.addTab(aCloseTabData.entries[aCloseTabData.index - 1].url, params);
+    this._restoreHistory(aCloseTabData, tab.browser.sessionHistory);
+
+    this._lastClosedTabIndex = -1;
 
     // Put back the extra data
-    tab.browser.__SS_extdata = closedTab.extData;
+    tab.browser.__SS_extdata = aCloseTabData.extData;
+
+    if (this._notifyClosedTabs) {
+      this._sendClosedTabsToJava(aWindow);
+    }
 
     return tab.browser;
   },
@@ -865,6 +916,38 @@ SessionStore.prototype = {
 
     // remove closed tab from the array
     closedTabs.splice(aIndex, 1);
+
+    // Forget the last closed tab index if we're forgetting the last closed tab.
+    if (aIndex == 0) {
+      this._lastClosedTabIndex = -1;
+    }
+    if (this._notifyClosedTabs) {
+      this._sendClosedTabsToJava(aWindow);
+    }
+  },
+
+  _sendClosedTabsToJava: function ss_sendClosedTabsToJava(aWindow) {
+    if (!aWindow.__SSID)
+      throw (Components.returnCode = Cr.NS_ERROR_INVALID_ARG);
+
+    let closedTabs = this._windows[aWindow.__SSID].closedTabs;
+    let isPrivate = PrivateBrowsingUtils.isWindowPrivate(aWindow.BrowserApp.selectedBrowser.contentWindow);
+
+    let tabs = closedTabs
+      .filter(tab => tab.isPrivate == isPrivate)
+      .map(function (tab) {
+        // Get the url and title for the last entry in the session history.
+        let lastEntry = tab.entries[tab.entries.length - 1];
+        return {
+          url: lastEntry.url,
+          title: lastEntry.title || ""
+        };
+      });
+
+    sendMessageToJava({
+      type: "ClosedTabs:Data",
+      tabs: tabs
+    });
   },
 
   getTabValue: function ss_getTabValue(aTab, aKey) {

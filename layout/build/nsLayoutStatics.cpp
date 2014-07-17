@@ -30,7 +30,6 @@
 #include "nsGkAtoms.h"
 #include "nsImageFrame.h"
 #include "nsLayoutStylesheetCache.h"
-#include "nsNodeInfo.h"
 #include "nsRange.h"
 #include "nsRegion.h"
 #include "nsRepeatService.h"
@@ -63,8 +62,10 @@
 #include "CacheObserver.h"
 #include "DisplayItemClip.h"
 #include "ActiveLayerTracker.h"
+#include "CounterStyleManager.h"
 
 #include "AudioChannelService.h"
+#include "mozilla/dom/DataStoreService.h"
 
 #ifdef MOZ_XUL
 #include "nsXULPopupManager.h"
@@ -130,6 +131,7 @@ using namespace mozilla::system;
 #include "mozilla/IMEStateManager.h"
 #include "nsDocument.h"
 #include "mozilla/dom/HTMLVideoElement.h"
+#include "CameraPreferences.h"
 
 using namespace mozilla;
 using namespace mozilla::net;
@@ -292,6 +294,12 @@ nsLayoutStatics::Initialize()
 
   CacheObserver::Init();
 
+  CounterStyleManager::InitializeBuiltinCounterStyles();
+
+  CameraPreferences::Initialize();
+
+  IMEStateManager::Init();
+
   return NS_OK;
 }
 
@@ -311,7 +319,6 @@ nsLayoutStatics::Shutdown()
   Attr::Shutdown();
   EventListenerManager::Shutdown();
   IMEStateManager::Shutdown();
-  nsComputedDOMStyle::Shutdown();
   nsCSSParser::Shutdown();
   nsCSSRuleProcessor::Shutdown();
   nsTextFrameTextRunCache::Shutdown();
@@ -411,6 +418,8 @@ nsLayoutStatics::Shutdown()
 
   AudioChannelService::Shutdown();
 
+  DataStoreService::Shutdown();
+
   ContentParent::ShutDown();
 
   nsRefreshDriver::Shutdown();
@@ -420,4 +429,6 @@ nsLayoutStatics::Shutdown()
   nsDocument::XPCOMShutdown();
 
   CacheObserver::Shutdown();
+
+  CameraPreferences::Shutdown();
 }

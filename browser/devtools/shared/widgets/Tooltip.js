@@ -12,7 +12,6 @@ const {Spectrum} = require("devtools/shared/widgets/Spectrum");
 const EventEmitter = require("devtools/toolkit/event-emitter");
 const {colorUtils} = require("devtools/css-color");
 const Heritage = require("sdk/core/heritage");
-const {CSSTransformPreviewer} = require("devtools/shared/widgets/CSSTransformPreviewer");
 const {Eyedropper} = require("devtools/eyedropper/eyedropper");
 
 Cu.import("resource://gre/modules/Services.jsm");
@@ -196,11 +195,13 @@ function Tooltip(doc, options) {
   // Listen to keypress events to close the tooltip if configured to do so
   let win = this.doc.querySelector("window");
   this._onKeyPress = event => {
+    if (this.panel.hidden) {
+      return;
+    }
+
     this.emit("keypress", event.keyCode);
     if (this.options.get("closeOnKeys").indexOf(event.keyCode) !== -1) {
-      if (!this.panel.hidden) {
-        event.stopPropagation();
-      }
+      event.stopPropagation();
       this.hide();
     }
   };
@@ -256,7 +257,9 @@ Tooltip.prototype = {
   },
 
   isShown: function() {
-    return this.panel.state !== "closed" && this.panel.state !== "hiding";
+    return this.panel &&
+           this.panel.state !== "closed" &&
+           this.panel.state !== "hiding";
   },
 
   setSize: function(width, height) {
@@ -738,45 +741,6 @@ Tooltip.prototype = {
   },
 
   /**
-   * Set the content of the tooltip to be the result of CSSTransformPreviewer.
-   * Meaning a canvas previewing a css transformation.
-   *
-   * @param {String} transform
-   *        The CSS transform value (e.g. "rotate(45deg) translateX(50px)")
-   * @param {PageStyleActor} pageStyle
-   *        An instance of the PageStyleActor that will be used to retrieve
-   *        computed styles
-   * @param {NodeActor} node
-   *        The NodeActor for the currently selected node
-   * @return A promise that resolves when the tooltip content is ready, or
-   *         rejects if no transform is provided or the transform is invalid
-   */
-  setCssTransformContent: Task.async(function*(transform, pageStyle, node) {
-    if (!transform) {
-      throw "Missing transform";
-    }
-
-    // Look into the computed styles to find the width and height and possibly
-    // the origin if it hadn't been provided
-    let styles = yield pageStyle.getComputed(node, {
-      filter: "user",
-      markMatched: false,
-      onlyMatched: false
-    });
-
-    let origin = styles["transform-origin"].value;
-    let width = parseInt(styles["width"].value);
-    let height = parseInt(styles["height"].value);
-
-    let root = this.doc.createElementNS(XHTML_NS, "div");
-    let previewer = new CSSTransformPreviewer(root);
-    this.content = root;
-    if (!previewer.preview(transform, origin, width, height)) {
-      throw "Invalid transform";
-    }
-  }),
-
-  /**
    * Set the content of the tooltip to display a font family preview.
    * This is based on Lea Verou's Dablet. See https://github.com/LeaVerou/dabblet
    * for more info.
@@ -875,23 +839,15 @@ SwatchBasedEditorTooltip.prototype = {
    *        - onPreview: will be called when one of the sub-classes calls preview
    *        - onRevert: will be called when the user ESCapes out of the tooltip
    *        - onCommit: will be called when the user presses ENTER or clicks
-   *        outside the tooltip. If the user-defined onCommit returns a value,
-   *        it will be used to replace originalValue, so that the swatch-based
-   *        tooltip always knows what is the current originalValue and can use
-   *        it when reverting
-   * @param {object} originalValue
-   *        The original value before the editor in the tooltip makes changes
-   *        This can be of any type, and will be passed, as is, in the revert
-   *        callback
+   *        outside the tooltip.
    */
-  addSwatch: function(swatchEl, callbacks={}, originalValue) {
+  addSwatch: function(swatchEl, callbacks={}) {
     if (!callbacks.onPreview) callbacks.onPreview = function() {};
     if (!callbacks.onRevert) callbacks.onRevert = function() {};
     if (!callbacks.onCommit) callbacks.onCommit = function() {};
 
     this.swatches.set(swatchEl, {
-      callbacks: callbacks,
-      originalValue: originalValue
+      callbacks: callbacks
     });
     swatchEl.addEventListener("click", this._onSwatchClick, false);
   },
@@ -932,7 +888,7 @@ SwatchBasedEditorTooltip.prototype = {
   revert: function() {
     if (this.activeSwatch) {
       let swatch = this.swatches.get(this.activeSwatch);
-      swatch.callbacks.onRevert(swatch.originalValue);
+      swatch.callbacks.onRevert();
     }
   },
 
@@ -942,10 +898,7 @@ SwatchBasedEditorTooltip.prototype = {
   commit: function() {
     if (this.activeSwatch) {
       let swatch = this.swatches.get(this.activeSwatch);
-      let newValue = swatch.callbacks.onCommit();
-      if (typeof newValue !== "undefined") {
-        swatch.originalValue = newValue;
-      }
+      swatch.callbacks.onCommit();
     }
   },
 
@@ -1011,6 +964,7 @@ SwatchColorPickerTooltip.prototype = Heritage.extend(SwatchBasedEditorTooltip.pr
   _selectColor: function(color) {
     if (this.activeSwatch) {
       this.activeSwatch.style.backgroundColor = color;
+      this.activeSwatch.parentNode.dataset.color = color;
       this.currentSwatchColor.textContent = color;
       this.preview(color);
     }

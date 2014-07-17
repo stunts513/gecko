@@ -157,12 +157,13 @@ nsJSUtils::CompileFunction(JSContext* aCx,
   }
 
   // Compile.
-  JSFunction* fun = JS::CompileFunction(aCx, aTarget, aOptions,
-                                        PromiseFlatCString(aName).get(),
-                                        aArgCount, aArgArray,
-                                        PromiseFlatString(aBody).get(),
-                                        aBody.Length());
-  if (!fun) {
+  JS::Rooted<JSFunction*> fun(aCx);
+  if (!JS::CompileFunction(aCx, aTarget, aOptions,
+                           PromiseFlatCString(aName).get(),
+                           aArgCount, aArgArray,
+                           PromiseFlatString(aBody).get(),
+                           aBody.Length(), &fun))
+  {
     ReportPendingException(aCx);
     return NS_ERROR_FAILURE;
   }
@@ -196,7 +197,9 @@ nsJSUtils::EvaluateString(JSContext* aCx,
                           JS::MutableHandle<JS::Value> aRetValue,
                           void **aOffThreadToken)
 {
-  PROFILER_LABEL("JS", "EvaluateString");
+  PROFILER_LABEL("nsJSUtils", "EvaluateString",
+    js::ProfileEntry::Category::JS);
+
   MOZ_ASSERT_IF(aCompileOptions.versionSet,
                 aCompileOptions.version != JSVERSION_UNKNOWN);
   MOZ_ASSERT_IF(aEvaluateOptions.coerceToString, aEvaluateOptions.needResult);

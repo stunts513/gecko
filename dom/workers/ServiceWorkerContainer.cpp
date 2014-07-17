@@ -6,9 +6,12 @@
 
 #include "ServiceWorkerContainer.h"
 
+#include "nsIDocument.h"
+#include "nsIServiceWorkerManager.h"
 #include "nsPIDOMWindow.h"
 
 #include "nsCycleCollectionParticipant.h"
+#include "nsServiceManagerUtils.h"
 
 #include "mozilla/dom/Promise.h"
 #include "mozilla/dom/ServiceWorkerContainerBinding.h"
@@ -37,18 +40,46 @@ ServiceWorkerContainer::Register(const nsAString& aScriptURL,
                                  const RegistrationOptionList& aOptions,
                                  ErrorResult& aRv)
 {
-  // FIXME(nsm): Bug 984048
-  aRv.Throw(NS_ERROR_DOM_NOT_SUPPORTED_ERR);
-  return nullptr;
+  nsCOMPtr<nsISupports> promise;
+
+  nsresult rv;
+  nsCOMPtr<nsIServiceWorkerManager> swm = do_GetService(SERVICEWORKERMANAGER_CONTRACTID, &rv);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    aRv.Throw(rv);
+    return nullptr;
+  }
+
+  aRv = swm->Register(mWindow, aOptions.mScope, aScriptURL, getter_AddRefs(promise));
+  if (aRv.Failed()) {
+    return nullptr;
+  }
+
+  nsRefPtr<Promise> ret = static_cast<Promise*>(promise.get());
+  MOZ_ASSERT(ret);
+  return ret.forget();
 }
 
 already_AddRefed<Promise>
 ServiceWorkerContainer::Unregister(const nsAString& aScope,
                                    ErrorResult& aRv)
 {
-  // FIXME(nsm): Bug 984048
-  aRv.Throw(NS_ERROR_DOM_NOT_SUPPORTED_ERR);
-  return nullptr;
+  nsCOMPtr<nsISupports> promise;
+
+  nsresult rv;
+  nsCOMPtr<nsIServiceWorkerManager> swm = do_GetService(SERVICEWORKERMANAGER_CONTRACTID, &rv);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    aRv.Throw(rv);
+    return nullptr;
+  }
+
+  aRv = swm->Unregister(mWindow, aScope, getter_AddRefs(promise));
+  if (aRv.Failed()) {
+    return nullptr;
+  }
+
+  nsRefPtr<Promise> ret = static_cast<Promise*>(promise.get());
+  MOZ_ASSERT(ret);
+  return ret.forget();
 }
 
 already_AddRefed<workers::ServiceWorker>
@@ -66,7 +97,14 @@ ServiceWorkerContainer::GetWaiting()
 }
 
 already_AddRefed<workers::ServiceWorker>
-ServiceWorkerContainer::GetCurrent()
+ServiceWorkerContainer::GetActive()
+{
+  // FIXME(nsm): Bug 1002570
+  return nullptr;
+}
+
+already_AddRefed<workers::ServiceWorker>
+ServiceWorkerContainer::GetController()
 {
   // FIXME(nsm): Bug 1002570
   return nullptr;
@@ -81,11 +119,32 @@ ServiceWorkerContainer::GetAll(ErrorResult& aRv)
 }
 
 already_AddRefed<Promise>
-ServiceWorkerContainer::WhenReady(ErrorResult& aRv)
+ServiceWorkerContainer::Ready()
 {
-  // FIXME(nsm): Bug 984048
-  aRv.Throw(NS_ERROR_DOM_NOT_SUPPORTED_ERR);
-  return nullptr;
+  // FIXME(nsm): Bug 1025077
+  nsCOMPtr<nsIGlobalObject> global = do_QueryInterface(mWindow);
+  nsRefPtr<Promise> promise = new Promise(global);
+  return promise.forget();
+}
+
+// XXXnsm, maybe this can be optimized to only add when a event handler is
+// registered.
+void
+ServiceWorkerContainer::StartListeningForEvents()
+{
+  nsCOMPtr<nsIServiceWorkerManager> swm = do_GetService(SERVICEWORKERMANAGER_CONTRACTID);
+  if (swm) {
+    swm->AddContainerEventListener(mWindow->GetDocumentURI(), this);
+  }
+}
+
+void
+ServiceWorkerContainer::StopListeningForEvents()
+{
+  nsCOMPtr<nsIServiceWorkerManager> swm = do_GetService(SERVICEWORKERMANAGER_CONTRACTID);
+  if (swm) {
+    swm->RemoveContainerEventListener(mWindow->GetDocumentURI(), this);
+  }
 }
 
 // Testing only.
@@ -94,6 +153,22 @@ ServiceWorkerContainer::ClearAllServiceWorkerData(ErrorResult& aRv)
 {
   aRv.Throw(NS_ERROR_DOM_NOT_SUPPORTED_ERR);
   return nullptr;
+}
+
+// Testing only.
+void
+ServiceWorkerContainer::GetScopeForUrl(const nsAString& aUrl,
+                                       nsString& aScope,
+                                       ErrorResult& aRv)
+{
+  nsresult rv;
+  nsCOMPtr<nsIServiceWorkerManager> swm = do_GetService(SERVICEWORKERMANAGER_CONTRACTID, &rv);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    aRv.Throw(rv);
+    return;
+  }
+
+  aRv = swm->GetScopeForUrl(aUrl, aScope);
 }
 
 // Testing only.

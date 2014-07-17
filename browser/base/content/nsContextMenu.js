@@ -344,7 +344,9 @@ nsContextMenu.prototype = {
   },
 
   initSpellingItems: function() {
-    var canSpell = InlineSpellCheckerUI.canSpellCheck && this.canSpellCheck;
+    var canSpell = InlineSpellCheckerUI.canSpellCheck &&
+                   !InlineSpellCheckerUI.initialSpellCheckPending &&
+                   this.canSpellCheck;
     var onMisspelling = InlineSpellCheckerUI.overMisspelling;
     var showUndo = canSpell && InlineSpellCheckerUI.canUndo();
     this.showItem("spell-check-enabled", canSpell);
@@ -445,7 +447,7 @@ nsContextMenu.prototype = {
     this.showItem("context-media-showcontrols", onMedia && !this.target.controls);
     this.showItem("context-media-hidecontrols", onMedia && this.target.controls);
     this.showItem("context-video-fullscreen", this.onVideo && this.target.ownerDocument.mozFullScreenElement == null);
-    var statsShowing = this.onVideo && XPCNativeWrapper.unwrap(this.target).mozMediaStatisticsShowing;
+    var statsShowing = this.onVideo && this.target.mozMediaStatisticsShowing;
     this.showItem("context-video-showstats", this.onVideo && this.target.controls && !statsShowing);
     this.showItem("context-video-hidestats", this.onVideo && this.target.controls && statsShowing);
 
@@ -1589,22 +1591,22 @@ nsContextMenu.prototype = {
   },
   markLink: function CM_markLink(origin) {
     // send link to social, if it is the page url linkURI will be null
-    SocialMarks.markLink(origin, this.linkURI ? this.linkURI.spec : null);
+    SocialMarks.markLink(origin, this.linkURI ? this.linkURI.spec : null, this.target);
   },
   shareLink: function CM_shareLink() {
-    SocialShare.sharePage(null, { url: this.linkURI.spec });
+    SocialShare.sharePage(null, { url: this.linkURI.spec }, this.target);
   },
 
   shareImage: function CM_shareImage() {
-    SocialShare.sharePage(null, { url: this.imageURL, previews: [ this.mediaURL ] });
+    SocialShare.sharePage(null, { url: this.imageURL, previews: [ this.mediaURL ] }, this.target);
   },
 
   shareVideo: function CM_shareVideo() {
-    SocialShare.sharePage(null, { url: this.mediaURL, source: this.mediaURL });
+    SocialShare.sharePage(null, { url: this.mediaURL, source: this.mediaURL }, this.target);
   },
 
   shareSelect: function CM_shareSelect(selection) {
-    SocialShare.sharePage(null, { url: this.browser.currentURI.spec, text: selection });
+    SocialShare.sharePage(null, { url: this.browser.currentURI.spec, text: selection }, this.target);
   },
 
   savePageAs: function CM_savePageAs() {

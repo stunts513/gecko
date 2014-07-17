@@ -54,7 +54,7 @@ public:
   // If you're using the external API, the only thing you can know about
   // nsIContent is that it exists with an IID
 
-  nsIContent(already_AddRefed<nsINodeInfo>& aNodeInfo)
+  nsIContent(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
     : nsINode(aNodeInfo)
   {
     MOZ_ASSERT(mNodeInfo);
@@ -242,7 +242,7 @@ public:
                   static_cast<nsIContent*>(SubtreeRoot())->IsInNativeAnonymousSubtree()),
                  "Must have binding parent when in native anonymous subtree which is in document.\n"
                  "Native anonymous subtree which is not in document must have native anonymous root.");
-    return IsInNativeAnonymousSubtree() || (!HasFlag(NODE_IS_IN_SHADOW_TREE) && GetBindingParent() != nullptr);
+    return IsInNativeAnonymousSubtree() || (!IsInShadowTree() && GetBindingParent() != nullptr);
   }
 
   /**
@@ -264,7 +264,7 @@ public:
    * Get the NodeInfo for this element
    * @return the nodes node info
    */
-  inline nsINodeInfo* NodeInfo() const
+  inline mozilla::dom::NodeInfo* NodeInfo() const
   {
     return mNodeInfo;
   }
@@ -319,13 +319,6 @@ public:
     return mNodeInfo->Equals(nsGkAtoms::children, kNameSpaceID_XBL) &&
            GetBindingParent();
   }
-
-  /**
-   * Returns an atom holding the name of the attribute of type ID on
-   * this content node (if applicable).  Returns null for non-element
-   * content nodes.
-   */
-  virtual nsIAtom *GetIDAttributeName() const = 0;
 
   /**
    * Set attribute values. All attribute values are assumed to have a
@@ -831,8 +824,7 @@ public:
 
   /**
    * Get the ID of this content node (the atom corresponding to the
-   * value of the null-namespace attribute whose name is given by
-   * GetIDAttributeName().  This may be null if there is no ID.
+   * value of the id attribute).  This may be null if there is no ID.
    */
   nsIAtom* GetID() const {
     if (HasID()) {
@@ -843,8 +835,7 @@ public:
 
   /**
    * Get the class list of this content node (this corresponds to the
-   * value of the null-namespace attribute whose name is given by
-   * GetClassAttributeName()).  This may be null if there are no
+   * value of the class attribute).  This may be null if there are no
    * classes, but that's not guaranteed.
    */
   const nsAttrValue* GetClasses() const {
@@ -892,10 +883,10 @@ public:
    */
   nsIFrame* GetPrimaryFrame() const
   {
-    return IsInDoc() ? mPrimaryFrame : nullptr;
+    return (IsInDoc() || IsInShadowTree()) ? mPrimaryFrame : nullptr;
   }
   void SetPrimaryFrame(nsIFrame* aFrame) {
-    NS_ASSERTION(IsInDoc(), "This will end badly!");
+    MOZ_ASSERT(IsInDoc() || IsInShadowTree(), "This will end badly!");
     NS_PRECONDITION(!aFrame || !mPrimaryFrame || aFrame == mPrimaryFrame,
                     "Losing track of existing primary frame");
     mPrimaryFrame = aFrame;
@@ -957,14 +948,14 @@ protected:
    * Hook for implementing GetID.  This is guaranteed to only be
    * called if HasID() is true.
    */
-  virtual nsIAtom* DoGetID() const = 0;
+  nsIAtom* DoGetID() const;
 
 private:
   /**
    * Hook for implementing GetClasses.  This is guaranteed to only be
    * called if the NODE_MAY_HAVE_CLASS flag is set.
    */
-  virtual const nsAttrValue* DoGetClasses() const = 0;
+  const nsAttrValue* DoGetClasses() const;
 
 public:
 #ifdef DEBUG

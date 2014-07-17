@@ -38,7 +38,7 @@ const BUCKET_TIMESTEPS    = [
 ];
 
 // Time after which seen Page IDs expire.
-const SEENPAGEID_EXPIRY  = 2 * 7 * 24 * 60 * 60 * 1000; // 2 weeks.
+const SEENPAGEID_EXPIRY  = 8 * 7 * 24 * 60 * 60 * 1000; // 8 weeks.
 
 
 this.UITour = {
@@ -418,6 +418,14 @@ this.UITour = {
         this.getConfiguration(contentDocument, data.configuration, data.callbackID);
         break;
       }
+
+      case "showFirefoxAccounts": {
+        // 'signup' is the only action that makes sense currently, so we don't
+        // accept arbitrary actions just to be safe...
+        // We want to replace the current tab.
+        contentDocument.location.href = "about:accounts?action=signup";
+        break;
+      }
     }
 
     if (!this.originTabs.has(window))
@@ -635,17 +643,9 @@ this.UITour = {
   },
 
   sendPageCallback: function(aDocument, aCallbackID, aData = {}) {
-    let detail = Cu.createObjectIn(aDocument.defaultView);
-    detail.data = Cu.createObjectIn(detail);
 
-    for (let key of Object.keys(aData))
-      detail.data[key] = aData[key];
-
-    Cu.makeObjectPropsNormal(detail.data);
-    Cu.makeObjectPropsNormal(detail);
-
-    detail.callbackID = aCallbackID;
-
+    let detail = {data: aData, callbackID: aCallbackID};
+    detail = Cu.cloneInto(detail, aDocument.defaultView);
     let event = new aDocument.defaultView.CustomEvent("mozUITourResponse", {
       bubbles: true,
       detail: detail
@@ -842,7 +842,7 @@ this.UITour = {
       highlighter.style.width = highlightWidth + "px";
 
       // Close a previous highlight so we can relocate the panel.
-      if (highlighter.parentElement.state == "open") {
+      if (highlighter.parentElement.state == "showing" || highlighter.parentElement.state == "open") {
         highlighter.parentElement.hidePopup();
       }
       /* The "overlap" position anchors from the top-left but we want to centre highlights at their
@@ -909,7 +909,7 @@ this.UITour = {
       let tooltipIcon = document.getElementById("UITourTooltipIcon");
       let tooltipButtons = document.getElementById("UITourTooltipButtons");
 
-      if (tooltip.state == "open") {
+      if (tooltip.state == "showing" || tooltip.state == "open") {
         tooltip.hidePopup();
       }
 

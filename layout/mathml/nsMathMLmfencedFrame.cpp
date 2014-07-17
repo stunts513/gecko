@@ -40,13 +40,12 @@ nsMathMLmfencedFrame::InheritAutomaticData(nsIFrame* aParent)
   return NS_OK;
 }
 
-nsresult
+void
 nsMathMLmfencedFrame::SetInitialChildList(ChildListID     aListID,
                                           nsFrameList&    aChildList)
 {
   // First, let the base class do its work
-  nsresult rv = nsMathMLContainerFrame::SetInitialChildList(aListID, aChildList);
-  if (NS_FAILED(rv)) return rv;
+  nsMathMLContainerFrame::SetInitialChildList(aListID, aChildList);
 
   // InheritAutomaticData will not get called if our parent is not a mathml
   // frame, so initialize NS_MATHML_STRETCH_ALL_CHILDREN_VERTICALLY for
@@ -56,7 +55,6 @@ nsMathMLmfencedFrame::SetInitialChildList(ChildListID     aListID,
   // The Style System will use Get/SetAdditionalStyleContext() to keep them
   // up-to-date if dynamic changes arise.
   CreateFencesAndSeparators(PresContext());
-  return NS_OK;
 }
 
 nsresult
@@ -191,7 +189,7 @@ nsMathMLmfencedFrame::Reflow(nsPresContext*          aPresContext,
                              nsReflowStatus&          aStatus)
 {
   aDesiredSize.Width() = aDesiredSize.Height() = 0;
-  aDesiredSize.SetTopAscent(0);
+  aDesiredSize.SetBlockStartAscent(0);
   aDesiredSize.mBoundingMetrics = nsBoundingMetrics();
 
   int32_t i;
@@ -241,11 +239,13 @@ nsMathMLmfencedFrame::Reflow(nsPresContext*          aPresContext,
     SaveReflowAndBoundingMetricsFor(childFrame, childDesiredSize,
                                     childDesiredSize.mBoundingMetrics);
 
-    nscoord childDescent = childDesiredSize.Height() - childDesiredSize.TopAscent();
+    mozilla::WritingMode wm = aReflowState.GetWritingMode();
+    nscoord childDescent = childDesiredSize.BSize(wm) -
+                           childDesiredSize.BlockStartAscent();
     if (descent < childDescent)
       descent = childDescent;
-    if (ascent < childDesiredSize.TopAscent())
-      ascent = childDesiredSize.TopAscent();
+    if (ascent < childDesiredSize.BlockStartAscent())
+      ascent = childDesiredSize.BlockStartAscent();
 
     childFrame = childFrame->GetNextSibling();
   }
@@ -274,11 +274,11 @@ nsMathMLmfencedFrame::Reflow(nsPresContext*          aPresContext,
       SaveReflowAndBoundingMetricsFor(childFrame, childDesiredSize,
                                       childDesiredSize.mBoundingMetrics);
       
-      nscoord childDescent = childDesiredSize.Height() - childDesiredSize.TopAscent();
+      nscoord childDescent = childDesiredSize.Height() - childDesiredSize.BlockStartAscent();
       if (descent < childDescent)
         descent = childDescent;
-      if (ascent < childDesiredSize.TopAscent())
-        ascent = childDesiredSize.TopAscent();
+      if (ascent < childDesiredSize.BlockStartAscent())
+        ascent = childDesiredSize.BlockStartAscent();
     }
     childFrame = childFrame->GetNextSibling();
   }
@@ -357,7 +357,7 @@ nsMathMLmfencedFrame::Reflow(nsPresContext*          aPresContext,
       aDesiredSize.mBoundingMetrics += bm;
 
     FinishReflowChild(childFrame, aPresContext, childSize, nullptr,
-                      dx, ascent - childSize.TopAscent(), 0);
+                      dx, ascent - childSize.BlockStartAscent(), 0);
     dx += childSize.Width();
 
     if (i < mSeparatorsCount) {
@@ -384,10 +384,10 @@ nsMathMLmfencedFrame::Reflow(nsPresContext*          aPresContext,
 
   aDesiredSize.Width() = aDesiredSize.mBoundingMetrics.width;
   aDesiredSize.Height() = ascent + descent;
-  aDesiredSize.SetTopAscent(ascent);
+  aDesiredSize.SetBlockStartAscent(ascent);
 
   SetBoundingMetrics(aDesiredSize.mBoundingMetrics);
-  SetReference(nsPoint(0, aDesiredSize.TopAscent()));
+  SetReference(nsPoint(0, aDesiredSize.BlockStartAscent()));
 
   // see if we should fix the spacing
   FixInterFrameSpacing(aDesiredSize);

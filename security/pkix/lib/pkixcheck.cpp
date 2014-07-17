@@ -22,10 +22,10 @@
  * limitations under the License.
  */
 
-#include <limits>
-
+#include "cert.h"
 #include "pkix/bind.h"
 #include "pkix/pkix.h"
+#include "pkix/ScopedPtr.h"
 #include "pkixcheck.h"
 #include "pkixder.h"
 #include "pkixutil.h"
@@ -33,25 +33,44 @@
 namespace mozilla { namespace pkix {
 
 Result
-CheckTimes(const CERTCertificate* cert, PRTime time)
+CheckValidity(const SECItem& encodedValidity, PRTime time)
 {
-  PR_ASSERT(cert);
-
-  SECCertTimeValidity validity = CERT_CheckCertValidTimes(cert, time, false);
-  if (validity != secCertTimeValid) {
+  Input validity;
+  if (validity.Init(encodedValidity.data, encodedValidity.len) != Success) {
+    return Fail(RecoverableError, SEC_ERROR_EXPIRED_CERTIFICATE);
+  }
+  PRTime notBefore;
+  if (der::TimeChoice(validity, notBefore) != Success) {
+    return Fail(RecoverableError, SEC_ERROR_EXPIRED_CERTIFICATE);
+  }
+  if (time < notBefore) {
     return Fail(RecoverableError, SEC_ERROR_EXPIRED_CERTIFICATE);
   }
 
-  return Success;
+  PRTime notAfter;
+  if (der::TimeChoice(validity, notAfter) != Success) {
+    return Fail(RecoverableError, SEC_ERROR_EXPIRED_CERTIFICATE);
+  }
+  if (time > notAfter) {
+    return Fail(RecoverableError, SEC_ERROR_EXPIRED_CERTIFICATE);
+  }
+
+  return der::End(validity);
 }
 
 // 4.2.1.3. Key Usage (id-ce-keyUsage)
-// Modeled after GetKeyUsage in certdb.c
+
+// As explained in the comment in CheckKeyUsage, bit 0 is the most significant
+// bit and bit 7 is the least significant bit.
+inline uint8_t KeyUsageToBitMask(KeyUsage keyUsage)
+{
+  PR_ASSERT(keyUsage != KeyUsage::noParticularKeyUsageRequired);
+  return 0x80u >> static_cast<uint8_t>(keyUsage);
+}
+
 Result
-CheckKeyUsage(EndEntityOrCA endEntityOrCA,
-              const SECItem* encodedKeyUsage,
-              KeyUsages requiredKeyUsagesIfPresent,
-              PLArenaPool* arena)
+CheckKeyUsage(EndEntityOrCA endEntityOrCA, const SECItem* encodedKeyUsage,
+              KeyUsage requiredKeyUsageIfPresent)
 {
   if (!encodedKeyUsage) {
     // TODO(bug 970196): Reject certificates that are being used to verify
@@ -68,39 +87,92 @@ CheckKeyUsage(EndEntityOrCA endEntityOrCA,
     return Success;
   }
 
-  SECItem tmpItem;
-  Result rv = MapSECStatus(SEC_QuickDERDecodeItem(arena, &tmpItem,
-                              SEC_ASN1_GET(SEC_BitStringTemplate),
-                              encodedKeyUsage));
-  if (rv != Success) {
-    return rv;
+  Input input;
+  if (input.Init(encodedKeyUsage->data, encodedKeyUsage->len) != Success) {
+    return Fail(RecoverableError, SEC_ERROR_INADEQUATE_KEY_USAGE);
   }
-
-  // TODO XXX: Why is tmpItem.len > 1?
-
-  KeyUsages allowedKeyUsages = tmpItem.data[0];
-  if ((allowedKeyUsages & requiredKeyUsagesIfPresent)
-        != requiredKeyUsagesIfPresent) {
+  Input value;
+  if (der::ExpectTagAndGetValue(input, der::BIT_STRING, value) != Success) {
     return Fail(RecoverableError, SEC_ERROR_INADEQUATE_KEY_USAGE);
   }
 
-  if (endEntityOrCA == EndEntityOrCA::MustBeCA) {
-   // "If the keyUsage extension is present, then the subject public key
-   //  MUST NOT be used to verify signatures on certificates or CRLs unless
-   //  the corresponding keyCertSign or cRLSign bit is set."
-   if ((allowedKeyUsages & KU_KEY_CERT_SIGN) == 0) {
+  uint8_t numberOfPaddingBits;
+  if (value.Read(numberOfPaddingBits) != Success) {
+    return Fail(RecoverableError, SEC_ERROR_INADEQUATE_KEY_USAGE);
+  }
+  if (numberOfPaddingBits > 7) {
+    return Fail(RecoverableError, SEC_ERROR_INADEQUATE_KEY_USAGE);
+  }
+
+  uint8_t bits;
+  if (value.Read(bits) != Success) {
+    // Reject empty bit masks.
+    return Fail(RecoverableError, SEC_ERROR_INADEQUATE_KEY_USAGE);
+  }
+
+  // The most significant bit is numbered 0 (digitalSignature) and the least
+  // significant bit is numbered 7 (encipherOnly), and the padding is in the
+  // least significant bits of the last byte. The numbering of bits in a byte
+  // is backwards from how we usually interpret them.
+  //
+  // For example, let's say bits is encoded in one byte with of value 0xB0 and
+  // numberOfPaddingBits == 4. Then, bits is 10110000 in binary:
+  //
+  //      bit 0  bit 3
+  //          |  |
+  //          v  v
+  //          10110000
+  //              ^^^^
+  //               |
+  //               4 padding bits
+  //
+  // Since bits is the last byte, we have to consider the padding by ensuring
+  // that the least significant 4 bits are all zero, since DER rules require
+  // all padding bits to be zero. Then we have to look at the bit N bits to the
+  // right of the most significant bit, where N is a value from the KeyUsage
+  // enumeration.
+  //
+  // Let's say we're interested in the keyCertSign (5) bit. We'd need to look
+  // at bit 5, which is zero, so keyCertSign is not asserted. (Since we check
+  // that the padding is all zeros, it is OK to read from the padding bits.)
+  //
+  // Let's say we're interested in the digitalSignature (0) bit. We'd need to
+  // look at the bit 0 (the most significant bit), which is set, so that means
+  // digitalSignature is asserted. Similarly, keyEncipherment (2) and
+  // dataEncipherment (3) are asserted.
+  //
+  // Note that since the KeyUsage enumeration is limited to values 0-7, we
+  // only ever need to examine the first byte test for
+  // requiredKeyUsageIfPresent.
+
+  if (requiredKeyUsageIfPresent != KeyUsage::noParticularKeyUsageRequired) {
+    // Check that the required key usage bit is set.
+    if ((bits & KeyUsageToBitMask(requiredKeyUsageIfPresent)) == 0) {
       return Fail(RecoverableError, SEC_ERROR_INADEQUATE_KEY_USAGE);
     }
-  } else {
-    // "The keyCertSign bit is asserted when the subject public key is
-    //  used for verifying signatures on public key certificates.  If the
-    //  keyCertSign bit is asserted, then the cA bit in the basic
-    //  constraints extension (Section 4.2.1.9) MUST also be asserted."
-    // TODO XXX: commented out to match classic NSS behavior.
-    //if ((allowedKeyUsages & KU_KEY_CERT_SIGN) != 0) {
-    //  // XXX: better error code.
-    //  return Fail(RecoverableError, SEC_ERROR_INADEQUATE_CERT_TYPE);
-    //}
+  }
+
+  if (endEntityOrCA != EndEntityOrCA::MustBeCA) {
+    // RFC 5280 says "The keyCertSign bit is asserted when the subject public
+    // key is used for verifying signatures on public key certificates. If the
+    // keyCertSign bit is asserted, then the cA bit in the basic constraints
+    // extension (Section 4.2.1.9) MUST also be asserted."
+    if ((bits & KeyUsageToBitMask(KeyUsage::keyCertSign)) != 0) {
+      return Fail(RecoverableError, SEC_ERROR_INADEQUATE_KEY_USAGE);
+    }
+  }
+
+  // The padding applies to the last byte, so skip to the last byte.
+  while (!value.AtEnd()) {
+    if (value.Read(bits) != Success) {
+      return Fail(RecoverableError, SEC_ERROR_INADEQUATE_KEY_USAGE);
+    }
+  }
+
+  // All of the padding bits must be zero, according to DER rules.
+  uint8_t paddingMask = static_cast<uint8_t>((1 << numberOfPaddingBits) - 1);
+  if ((bits & paddingMask) != 0) {
+    return Fail(RecoverableError, SEC_ERROR_INADEQUATE_KEY_USAGE);
   }
 
   return Success;
@@ -130,8 +202,8 @@ bool CertPolicyId::IsAnyPolicy() const
 //         policyIdentifier   CertPolicyId,
 //         policyQualifiers   SEQUENCE SIZE (1..MAX) OF
 //                                 PolicyQualifierInfo OPTIONAL }
-inline der::Result
-CheckPolicyInformation(der::Input& input, EndEntityOrCA endEntityOrCA,
+inline Result
+CheckPolicyInformation(Input& input, EndEntityOrCA endEntityOrCA,
                        const CertPolicyId& requiredPolicy,
                        /*in/out*/ bool& found)
 {
@@ -154,7 +226,7 @@ CheckPolicyInformation(der::Input& input, EndEntityOrCA endEntityOrCA,
   // Skip unmatched OID and/or policyQualifiers
   input.SkipToEnd();
 
-  return der::Success;
+  return Success;
 }
 
 // certificatePolicies ::= SEQUENCE SIZE (1..MAX) OF PolicyInformation
@@ -199,17 +271,17 @@ CheckCertificatePolicies(EndEntityOrCA endEntityOrCA,
 
   bool found = false;
 
-  der::Input input;
+  Input input;
   if (input.Init(encodedCertificatePolicies->data,
-                 encodedCertificatePolicies->len) != der::Success) {
+                 encodedCertificatePolicies->len) != Success) {
     return Fail(RecoverableError, SEC_ERROR_POLICY_VALIDATION_FAILED);
   }
   if (der::NestedOf(input, der::SEQUENCE, der::SEQUENCE, der::EmptyAllowed::No,
                     bind(CheckPolicyInformation, _1, endEntityOrCA,
-                         requiredPolicy, ref(found))) != der::Success) {
+                         requiredPolicy, ref(found))) != Success) {
     return Fail(RecoverableError, SEC_ERROR_POLICY_VALIDATION_FAILED);
   }
-  if (der::End(input) != der::Success) {
+  if (der::End(input) != Success) {
     return Fail(RecoverableError, SEC_ERROR_POLICY_VALIDATION_FAILED);
   }
   if (!found) {
@@ -224,8 +296,8 @@ static const long UNLIMITED_PATH_LEN = -1; // must be less than zero
 //  BasicConstraints ::= SEQUENCE {
 //          cA                      BOOLEAN DEFAULT FALSE,
 //          pathLenConstraint       INTEGER (0..MAX) OPTIONAL }
-static der::Result
-DecodeBasicConstraints(der::Input& input, /*out*/ bool& isCA,
+static Result
+DecodeBasicConstraints(Input& input, /*out*/ bool& isCA,
                        /*out*/ long& pathLenConstraint)
 {
   // TODO(bug 989518): cA is by default false. According to DER, default
@@ -234,19 +306,19 @@ DecodeBasicConstraints(der::Input& input, /*out*/ bool& isCA,
   // has issued many certificates with this improper encoding, so we can't
   // enforce this yet (hence passing true for allowInvalidExplicitEncoding
   // to der::OptionalBoolean).
-  if (der::OptionalBoolean(input, true, isCA) != der::Success) {
-    return der::Fail(SEC_ERROR_EXTENSION_VALUE_INVALID);
+  if (der::OptionalBoolean(input, true, isCA) != Success) {
+    return Fail(SEC_ERROR_EXTENSION_VALUE_INVALID);
   }
 
   // TODO(bug 985025): If isCA is false, pathLenConstraint MUST NOT
   // be included (as per RFC 5280 section 4.2.1.9), but for compatibility
   // reasons, we don't check this for now.
-  if (OptionalInteger(input, UNLIMITED_PATH_LEN, pathLenConstraint)
-        != der::Success) {
-    return der::Fail(SEC_ERROR_EXTENSION_VALUE_INVALID);
+  if (der::OptionalInteger(input, UNLIMITED_PATH_LEN, pathLenConstraint)
+        != Success) {
+    return Fail(SEC_ERROR_EXTENSION_VALUE_INVALID);
   }
 
-  return der::Success;
+  return Success;
 }
 
 // RFC5280 4.2.1.9. Basic Constraints (id-ce-basicConstraints)
@@ -260,17 +332,17 @@ CheckBasicConstraints(EndEntityOrCA endEntityOrCA,
   long pathLenConstraint = UNLIMITED_PATH_LEN;
 
   if (encodedBasicConstraints) {
-    der::Input input;
+    Input input;
     if (input.Init(encodedBasicConstraints->data,
-                   encodedBasicConstraints->len) != der::Success) {
+                   encodedBasicConstraints->len) != Success) {
       return Fail(RecoverableError, SEC_ERROR_EXTENSION_VALUE_INVALID);
     }
     if (der::Nested(input, der::SEQUENCE,
                     bind(DecodeBasicConstraints, _1, ref(isCA),
-                         ref(pathLenConstraint))) != der::Success) {
+                         ref(pathLenConstraint))) != Success) {
       return Fail(RecoverableError, SEC_ERROR_EXTENSION_VALUE_INVALID);
     }
-    if (der::End(input) != der::Success) {
+    if (der::End(input) != Success) {
       return Fail(RecoverableError, SEC_ERROR_EXTENSION_VALUE_INVALID);
     }
   } else {
@@ -324,56 +396,56 @@ CheckBasicConstraints(EndEntityOrCA endEntityOrCA,
   return Success;
 }
 
-Result
-BackCert::GetConstrainedNames(/*out*/ const CERTGeneralName** result)
-{
-  if (!constrainedNames) {
-    if (!GetArena()) {
-      return FatalError;
-    }
+// 4.2.1.10. Name Constraints
 
-    constrainedNames =
-      CERT_GetConstrainedCertificateNames(nssCert, arena.get(),
-                                          includeCN == IncludeCN::Yes);
-    if (!constrainedNames) {
-      return MapSECStatus(SECFailure);
-    }
-  }
-
-  *result = constrainedNames;
-  return Success;
+inline void
+PORT_FreeArena_false(PLArenaPool* arena) {
+  // PL_FreeArenaPool can't be used because it doesn't actually free the
+  // memory, which doesn't work well with memory analysis tools
+  return PORT_FreeArena(arena, PR_FALSE);
 }
 
-// 4.2.1.10. Name Constraints
 Result
-CheckNameConstraints(BackCert& cert)
+CheckNameConstraints(const SECItem& encodedNameConstraints,
+                     const BackCert& firstChild,
+                     KeyPurposeId requiredEKUIfPresent)
 {
-  if (!cert.encodedNameConstraints) {
-    return Success;
-  }
-
-  PLArenaPool* arena = cert.GetArena();
+  ScopedPtr<PLArenaPool, PORT_FreeArena_false>
+    arena(PORT_NewArena(DER_DEFAULT_CHUNKSIZE));
   if (!arena) {
-    return FatalError;
+    return MapSECStatus(SECFailure);
   }
 
   // Owned by arena
   const CERTNameConstraints* constraints =
-    CERT_DecodeNameConstraintsExtension(arena, cert.encodedNameConstraints);
+    CERT_DecodeNameConstraintsExtension(arena.get(), &encodedNameConstraints);
   if (!constraints) {
     return MapSECStatus(SECFailure);
   }
 
-  for (BackCert* prev = cert.childCert; prev; prev = prev->childCert) {
-    const CERTGeneralName* names = nullptr;
-    Result rv = prev->GetConstrainedNames(&names);
-    if (rv != Success) {
-      return rv;
+  for (const BackCert* child = &firstChild; child; child = child->childCert) {
+    ScopedPtr<CERTCertificate, CERT_DestroyCertificate>
+      nssCert(CERT_NewTempCertificate(CERT_GetDefaultCertDB(),
+                                      const_cast<SECItem*>(&child->GetDER()),
+                                      nullptr, false, true));
+    if (!nssCert) {
+      return MapSECStatus(SECFailure);
     }
-    PORT_Assert(names);
+
+    bool includeCN = child->endEntityOrCA == EndEntityOrCA::MustBeEndEntity &&
+                     requiredEKUIfPresent == KeyPurposeId::id_kp_serverAuth;
+    // owned by arena
+    const CERTGeneralName*
+      names(CERT_GetConstrainedCertificateNames(nssCert.get(), arena.get(),
+                                                includeCN));
+    if (!names) {
+      return MapSECStatus(SECFailure);
+    }
+
     CERTGeneralName* currentName = const_cast<CERTGeneralName*>(names);
     do {
-      if (CERT_CheckNameSpace(arena, constraints, currentName) != SECSuccess) {
+      if (CERT_CheckNameSpace(arena.get(), constraints, currentName)
+            != SECSuccess) {
         // XXX: It seems like CERT_CheckNameSpace doesn't always call
         // PR_SetError when it fails. We set the error code here, though this
         // may be papering over some fatal errors. NSS's
@@ -389,8 +461,8 @@ CheckNameConstraints(BackCert& cert)
 
 // 4.2.1.12. Extended Key Usage (id-ce-extKeyUsage)
 
-static der::Result
-MatchEKU(der::Input& value, KeyPurposeId requiredEKU,
+static Result
+MatchEKU(Input& value, KeyPurposeId requiredEKU,
          EndEntityOrCA endEntityOrCA, /*in/out*/ bool& found,
          /*in/out*/ bool& foundOCSPSigning)
 {
@@ -427,51 +499,49 @@ MatchEKU(der::Input& value, KeyPurposeId requiredEKU,
         // Comodo has issued certificates that require this behavior that don't
         // expire until June 2020! TODO(bug 982932): Limit this exception to
         // old certificates.
-        match = value.MatchBytes(server) ||
+        match = value.MatchRest(server) ||
                 (endEntityOrCA == EndEntityOrCA::MustBeCA &&
-                 value.MatchBytes(serverStepUp));
+                 value.MatchRest(serverStepUp));
         break;
 
       case KeyPurposeId::id_kp_clientAuth:
-        match = value.MatchBytes(client);
+        match = value.MatchRest(client);
         break;
 
       case KeyPurposeId::id_kp_codeSigning:
-        match = value.MatchBytes(code);
+        match = value.MatchRest(code);
         break;
 
       case KeyPurposeId::id_kp_emailProtection:
-        match = value.MatchBytes(email);
+        match = value.MatchRest(email);
         break;
 
       case KeyPurposeId::id_kp_OCSPSigning:
-        match = value.MatchBytes(ocsp);
+        match = value.MatchRest(ocsp);
         break;
 
       case KeyPurposeId::anyExtendedKeyUsage:
         PR_NOT_REACHED("anyExtendedKeyUsage should start with found==true");
-        return der::Fail(SEC_ERROR_LIBRARY_FAILURE);
+        return Fail(SEC_ERROR_LIBRARY_FAILURE);
 
       default:
         PR_NOT_REACHED("unrecognized EKU");
-        return der::Fail(SEC_ERROR_LIBRARY_FAILURE);
+        return Fail(SEC_ERROR_LIBRARY_FAILURE);
     }
   }
 
   if (match) {
-    if (value.AtEnd()) {
-      found = true;
-      if (requiredEKU == KeyPurposeId::id_kp_OCSPSigning) {
-        foundOCSPSigning = true;
-      }
+    found = true;
+    if (requiredEKU == KeyPurposeId::id_kp_OCSPSigning) {
+      foundOCSPSigning = true;
     }
-  } else if (value.MatchBytes(ocsp) && value.AtEnd()) {
+  } else if (value.MatchRest(ocsp)) {
     foundOCSPSigning = true;
   }
 
   value.SkipToEnd(); // ignore unmatched OIDs.
 
-  return der::Success;
+  return Success;
 }
 
 Result
@@ -489,18 +559,18 @@ CheckExtendedKeyUsage(EndEntityOrCA endEntityOrCA,
   if (encodedExtendedKeyUsage) {
     bool found = requiredEKU == KeyPurposeId::anyExtendedKeyUsage;
 
-    der::Input input;
+    Input input;
     if (input.Init(encodedExtendedKeyUsage->data,
-                   encodedExtendedKeyUsage->len) != der::Success) {
+                   encodedExtendedKeyUsage->len) != Success) {
       return Fail(RecoverableError, SEC_ERROR_INADEQUATE_CERT_TYPE);
     }
     if (der::NestedOf(input, der::SEQUENCE, der::OIDTag, der::EmptyAllowed::No,
                       bind(MatchEKU, _1, requiredEKU, endEntityOrCA,
                            ref(found), ref(foundOCSPSigning)))
-          != der::Success) {
+          != Success) {
       return Fail(RecoverableError, SEC_ERROR_INADEQUATE_CERT_TYPE);
     }
-    if (der::End(input) != der::Success) {
+    if (der::End(input) != Success) {
       return Fail(RecoverableError, SEC_ERROR_INADEQUATE_CERT_TYPE);
     }
 
@@ -548,10 +618,9 @@ CheckExtendedKeyUsage(EndEntityOrCA endEntityOrCA,
 
 Result
 CheckIssuerIndependentProperties(TrustDomain& trustDomain,
-                                 BackCert& cert,
+                                 const BackCert& cert,
                                  PRTime time,
-                                 EndEntityOrCA endEntityOrCA,
-                                 KeyUsages requiredKeyUsagesIfPresent,
+                                 KeyUsage requiredKeyUsageIfPresent,
                                  KeyPurposeId requiredEKUIfPresent,
                                  const CertPolicyId& requiredPolicy,
                                  unsigned int subCACount,
@@ -559,11 +628,11 @@ CheckIssuerIndependentProperties(TrustDomain& trustDomain,
 {
   Result rv;
 
+  const EndEntityOrCA endEntityOrCA = cert.endEntityOrCA;
+
   TrustLevel trustLevel;
-  rv = MapSECStatus(trustDomain.GetCertTrust(endEntityOrCA,
-                                             requiredPolicy,
-                                             cert.GetNSSCert(),
-                                             &trustLevel));
+  rv = MapSECStatus(trustDomain.GetCertTrust(endEntityOrCA, requiredPolicy,
+                                             cert.GetDER(), &trustLevel));
   if (rv != Success) {
     return rv;
   }
@@ -580,33 +649,20 @@ CheckIssuerIndependentProperties(TrustDomain& trustDomain,
     *trustLevelOut = trustLevel;
   }
 
-  // XXX: Good enough for now. There could be an illegal explicit version
-  // number or one we don't support, but we can safely treat those all as v3
-  // for now since processing of v3 certificates is strictly more strict than
-  // processing of v1 certificates.
-  der::Version version = (!cert.GetNSSCert()->version.data &&
-                          !cert.GetNSSCert()->version.len) ? der::Version::v1
-                                                           : der::Version::v3;
-
-  PLArenaPool* arena = cert.GetArena();
-  if (!arena) {
-    return FatalError;
-  }
-
   // 4.2.1.1. Authority Key Identifier is ignored (see bug 965136).
 
   // 4.2.1.2. Subject Key Identifier is ignored (see bug 965136).
 
   // 4.2.1.3. Key Usage
-  rv = CheckKeyUsage(endEntityOrCA, cert.encodedKeyUsage,
-                     requiredKeyUsagesIfPresent, arena);
+  rv = CheckKeyUsage(endEntityOrCA, cert.GetKeyUsage(),
+                     requiredKeyUsageIfPresent);
   if (rv != Success) {
     return rv;
   }
 
   // 4.2.1.4. Certificate Policies
-  rv = CheckCertificatePolicies(endEntityOrCA, cert.encodedCertificatePolicies,
-                                cert.encodedInhibitAnyPolicy, trustLevel,
+  rv = CheckCertificatePolicies(endEntityOrCA, cert.GetCertificatePolicies(),
+                                cert.GetInhibitAnyPolicy(), trustLevel,
                                 requiredPolicy);
   if (rv != Success) {
     return rv;
@@ -624,8 +680,8 @@ CheckIssuerIndependentProperties(TrustDomain& trustDomain,
   //          checking.
 
   // 4.2.1.9. Basic Constraints.
-  rv = CheckBasicConstraints(endEntityOrCA, cert.encodedBasicConstraints,
-                             version, trustLevel, subCACount);
+  rv = CheckBasicConstraints(endEntityOrCA, cert.GetBasicConstraints(),
+                             cert.GetVersion(), trustLevel, subCACount);
   if (rv != Success) {
     return rv;
   }
@@ -636,7 +692,7 @@ CheckIssuerIndependentProperties(TrustDomain& trustDomain,
   //           documentation about policy enforcement in pkix.h.
 
   // 4.2.1.12. Extended Key Usage
-  rv = CheckExtendedKeyUsage(endEntityOrCA, cert.encodedExtendedKeyUsage,
+  rv = CheckExtendedKeyUsage(endEntityOrCA, cert.GetExtKeyUsage(),
                              requiredEKUIfPresent);
   if (rv != Success) {
     return rv;
@@ -651,7 +707,7 @@ CheckIssuerIndependentProperties(TrustDomain& trustDomain,
 
   // IMPORTANT: This check must come after the other checks in order for error
   // ranking to work correctly.
-  rv = CheckTimes(cert.GetNSSCert(), time);
+  rv = CheckValidity(cert.GetValidity(), time);
   if (rv != Success) {
     return rv;
   }

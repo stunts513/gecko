@@ -58,7 +58,6 @@ import org.mozilla.gecko.util.HardwareUtils;
 import org.mozilla.gecko.util.NativeEventListener;
 import org.mozilla.gecko.util.NativeJSObject;
 import org.mozilla.gecko.util.ThreadUtils;
-import org.mozilla.gecko.util.UiAsyncTask;
 import org.mozilla.gecko.webapp.EventListener;
 import org.mozilla.gecko.webapp.UninstallListener;
 import org.mozilla.gecko.widget.ButtonToast;
@@ -111,7 +110,6 @@ import android.view.MotionEvent;
 import android.view.OrientationEventListener;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
-import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewStub;
@@ -148,7 +146,7 @@ public abstract class GeckoApp
     }
 
     public static final String ACTION_ALERT_CALLBACK       = "org.mozilla.gecko.ACTION_ALERT_CALLBACK";
-    public static final String ACTION_BOOKMARK             = "org.mozilla.gecko.BOOKMARK";
+    public static final String ACTION_HOMESCREEN_SHORTCUT  = "org.mozilla.gecko.BOOKMARK";
     public static final String ACTION_DEBUG                = "org.mozilla.gecko.DEBUG";
     public static final String ACTION_LAUNCH_SETTINGS      = "org.mozilla.gecko.SETTINGS";
     public static final String ACTION_LOAD                 = "org.mozilla.gecko.LOAD";
@@ -175,10 +173,9 @@ public abstract class GeckoApp
 
     protected RelativeLayout mMainLayout;
     protected RelativeLayout mGeckoLayout;
-    public View getView() { return mGeckoLayout; }
     private View mCameraView;
     private OrientationEventListener mCameraOrientationEventListener;
-    public List<GeckoAppShell.AppStateListener> mAppStateListeners;
+    public List<GeckoAppShell.AppStateListener> mAppStateListeners = new LinkedList<GeckoAppShell.AppStateListener>();
     protected MenuPanel mMenuPanel;
     protected Menu mMenu;
     protected GeckoProfile mProfile;
@@ -499,10 +496,6 @@ public abstract class GeckoApp
     protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
 
-        if (mToast != null) {
-            mToast.onSaveInstanceState(outState);
-        }
-
         outState.putBoolean(SAVED_STATE_IN_BACKGROUND, isApplicationInBackground());
         outState.putString(SAVED_STATE_PRIVATE_SESSION, mPrivateBrowsingSession);
     }
@@ -542,14 +535,14 @@ public abstract class GeckoApp
             final String url = message.getString("url");
             final String title = message.getString("title");
             final Context context = this;
-            ThreadUtils.postToUiThread(new Runnable() {
+            ThreadUtils.postToBackgroundThread(new Runnable() {
                 @Override
                 public void run() {
-                    Toast.makeText(context, R.string.bookmark_added, Toast.LENGTH_SHORT).show();
-                    ThreadUtils.postToBackgroundThread(new Runnable() {
+                    BrowserDB.addBookmark(getContentResolver(), title, url);
+                    ThreadUtils.postToUiThread(new Runnable() {
                         @Override
                         public void run() {
-                            BrowserDB.addBookmark(getContentResolver(), title, url);
+                            Toast.makeText(context, R.string.bookmark_added, Toast.LENGTH_SHORT).show();
                         }
                     });
                 }
@@ -847,8 +840,8 @@ public abstract class GeckoApp
         mFullScreenPluginContainer = new FullScreenHolder(this);
 
         FrameLayout.LayoutParams layoutParams = new FrameLayout.LayoutParams(
-                            ViewGroup.LayoutParams.FILL_PARENT,
-                            ViewGroup.LayoutParams.FILL_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT,
                             Gravity.CENTER);
         mFullScreenPluginContainer.addView(view, layoutParams);
 
@@ -1329,7 +1322,6 @@ public abstract class GeckoApp
         });
 
         GeckoAppShell.setNotificationClient(makeNotificationClient());
-        NotificationHelper.init(getApplicationContext());
         IntentHelper.init(this);
     }
 
@@ -1381,11 +1373,10 @@ public abstract class GeckoApp
         mFormAssistPopup = (FormAssistPopup) findViewById(R.id.form_assist_popup);
 
         if (mCameraView == null) {
+            // Pre-ICS devices need the camera surface in a visible layout.
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.ICE_CREAM_SANDWICH) {
                 mCameraView = new SurfaceView(this);
                 ((SurfaceView)mCameraView).getHolder().setType(SurfaceHolder.SURFACE_TYPE_PUSH_BUFFERS);
-            } else {
-                mCameraView = new TextureView(this);
             }
         }
 
@@ -1635,6 +1626,8 @@ public abstract class GeckoApp
 
         if (ACTION_ALERT_CALLBACK.equals(action)) {
             processAlertCallback(intent);
+        } else if (NotificationHelper.HELPER_BROADCAST_ACTION.equals(action)) {
+            NotificationHelper.getInstance(getApplicationContext()).handleNotificationIntent(intent);
         }
     }
 
@@ -1790,17 +1783,15 @@ public abstract class GeckoApp
         mCameraOrientationEventListener.enable();
 
         // Try to make it fully transparent.
-        if (mCameraView instanceof SurfaceView) {
+        if (mCameraView != null && (mCameraView instanceof SurfaceView)) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.HONEYCOMB) {
                 mCameraView.setAlpha(0.0f);
             }
-        } else if (mCameraView instanceof TextureView) {
-            mCameraView.setAlpha(0.0f);
+            ViewGroup mCameraLayout = (ViewGroup) findViewById(R.id.camera_layout);
+            // Some phones (eg. nexus S) need at least a 8x16 preview size
+            mCameraLayout.addView(mCameraView,
+                                  new AbsoluteLayout.LayoutParams(8, 16, 0, 0));
         }
-        ViewGroup mCameraLayout = (ViewGroup) findViewById(R.id.camera_layout);
-        // Some phones (eg. nexus S) need at least a 8x16 preview size
-        mCameraLayout.addView(mCameraView,
-                              new AbsoluteLayout.LayoutParams(8, 16, 0, 0));
     }
 
     public void disableCameraView() {
@@ -1808,8 +1799,10 @@ public abstract class GeckoApp
             mCameraOrientationEventListener.disable();
             mCameraOrientationEventListener = null;
         }
-        ViewGroup mCameraLayout = (ViewGroup) findViewById(R.id.camera_layout);
-        mCameraLayout.removeView(mCameraView);
+        if (mCameraView != null) {
+          ViewGroup mCameraLayout = (ViewGroup) findViewById(R.id.camera_layout);
+          mCameraLayout.removeView(mCameraView);
+        }
     }
 
     public String getDefaultUAString() {
@@ -1901,7 +1894,7 @@ public abstract class GeckoApp
             // application registry.
             String uri = getURIFromIntent(intent);
             GeckoAppShell.sendEventToGecko(GeckoEvent.createWebappLoadEvent(uri));
-        } else if (ACTION_BOOKMARK.equals(action)) {
+        } else if (ACTION_HOMESCREEN_SHORTCUT.equals(action)) {
             String uri = getURIFromIntent(intent);
             GeckoAppShell.sendEventToGecko(GeckoEvent.createBookmarkLoadEvent(uri));
         } else if (Intent.ACTION_SEARCH.equals(action)) {
@@ -1909,6 +1902,8 @@ public abstract class GeckoApp
             GeckoAppShell.sendEventToGecko(GeckoEvent.createURILoadEvent(uri));
         } else if (ACTION_ALERT_CALLBACK.equals(action)) {
             processAlertCallback(intent);
+        } else if (NotificationHelper.HELPER_BROADCAST_ACTION.equals(action)) {
+            NotificationHelper.getInstance(getApplicationContext()).handleNotificationIntent(intent);
         } else if (ACTION_LAUNCH_SETTINGS.equals(action)) {
             // Check if launched from data reporting notification.
             Intent settingsIntent = new Intent(GeckoApp.this, GeckoPreferences.class);
@@ -1924,14 +1919,14 @@ public abstract class GeckoApp
      */
     protected String getURIFromIntent(Intent intent) {
         final String action = intent.getAction();
-        if (ACTION_ALERT_CALLBACK.equals(action))
+        if (ACTION_ALERT_CALLBACK.equals(action) || NotificationHelper.HELPER_BROADCAST_ACTION.equals(action))
             return null;
 
         String uri = intent.getDataString();
         if (uri != null)
             return uri;
 
-        if ((action != null && action.startsWith(ACTION_WEBAPP_PREFIX)) || ACTION_BOOKMARK.equals(action)) {
+        if ((action != null && action.startsWith(ACTION_WEBAPP_PREFIX)) || ACTION_HOMESCREEN_SHORTCUT.equals(action)) {
             uri = intent.getStringExtra("args");
             if (uri != null && uri.startsWith("--url=")) {
                 uri.replace("--url=", "");

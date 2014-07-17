@@ -32,8 +32,8 @@
 namespace mozilla {
 namespace dom {
 
-class ContentParent;
-class ContentChild;
+class nsIContentParent;
+class nsIContentChild;
 class ClonedMessageData;
 class MessageManagerReporter;
 
@@ -99,10 +99,10 @@ public:
   }
 
 protected:
-  bool BuildClonedMessageDataForParent(ContentParent* aParent,
+  bool BuildClonedMessageDataForParent(nsIContentParent* aParent,
                                        const StructuredCloneData& aData,
                                        ClonedMessageData& aClonedData);
-  bool BuildClonedMessageDataForChild(ContentChild* aChild,
+  bool BuildClonedMessageDataForChild(nsIContentChild* aChild,
                                       const StructuredCloneData& aData,
                                       ClonedMessageData& aClonedData);
 };
@@ -184,6 +184,7 @@ public:
     }
   }
 
+private:
   ~nsFrameMessageManager()
   {
     for (int32_t i = mChildManagers.Count(); i > 0; --i) {
@@ -205,6 +206,7 @@ public:
     }
   }
 
+public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_CLASS_AMBIGUOUS(nsFrameMessageManager,
                                            nsIContentFrameMessageManager)
@@ -217,7 +219,7 @@ public:
   NS_DECL_NSIPROCESSCHECKER
 
   static nsFrameMessageManager*
-  NewProcessMessageManager(mozilla::dom::ContentParent* aProcess);
+  NewProcessMessageManager(mozilla::dom::nsIContentParent* aProcess);
 
   nsresult ReceiveMessage(nsISupports* aTarget, const nsAString& aMessage,
                           bool aIsSync, const StructuredCloneData* aCloneData,
@@ -410,6 +412,8 @@ protected:
 
 class nsScriptCacheCleaner MOZ_FINAL : public nsIObserver
 {
+  ~nsScriptCacheCleaner() {}
+
   NS_DECL_ISUPPORTS
 
   nsScriptCacheCleaner()

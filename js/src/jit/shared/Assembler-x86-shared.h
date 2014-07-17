@@ -112,6 +112,16 @@ class Operand
         JS_ASSERT(kind() == MEM_ADDRESS32);
         return reinterpret_cast<void *>(disp_);
     }
+
+    bool containsReg(Register r) const {
+        switch (kind()) {
+          case REG:          return r.code() == reg();
+          case MEM_REG_DISP: return r.code() == base();
+          case MEM_SCALE:    return r.code() == base() || r.code() == index();
+          default: MOZ_CRASH("Unexpected Operand kind");
+        }
+        return false;
+    }
 };
 
 class AssemblerX86Shared : public AssemblerShared
@@ -134,7 +144,6 @@ class AssemblerX86Shared : public AssemblerShared
     CompactBufferWriter jumpRelocations_;
     CompactBufferWriter dataRelocations_;
     CompactBufferWriter preBarriers_;
-    bool enoughMemory_;
 
     void writeDataRelocation(const Value &val) {
         if (val.isMarkable()) {
@@ -239,15 +248,10 @@ class AssemblerX86Shared : public AssemblerShared
         MOZ_ASSUME_UNREACHABLE("Unknown double condition");
     }
 
-    static void staticAsserts() {
+    static void StaticAsserts() {
         // DoubleConditionBits should not interfere with x86 condition codes.
         JS_STATIC_ASSERT(!((Equal | NotEqual | Above | AboveOrEqual | Below |
                             BelowOrEqual | Parity | NoParity) & DoubleConditionBits));
-    }
-
-    AssemblerX86Shared()
-      : enoughMemory_(true)
-    {
     }
 
     static Condition InvertCondition(Condition cond);
@@ -265,8 +269,8 @@ class AssemblerX86Shared : public AssemblerShared
     void trace(JSTracer *trc);
 
     bool oom() const {
-        return masm.oom() ||
-               !enoughMemory_ ||
+        return AssemblerShared::oom() ||
+               masm.oom() ||
                jumpRelocations_.oom() ||
                dataRelocations_.oom() ||
                preBarriers_.oom();
@@ -278,6 +282,9 @@ class AssemblerX86Shared : public AssemblerShared
 
     void executableCopy(void *buffer);
     void processCodeLabels(uint8_t *rawCode);
+    static int32_t ExtractCodeLabelOffset(uint8_t *code) {
+        return *(uintptr_t *)code;
+    }
     void copyJumpRelocationTable(uint8_t *dest);
     void copyDataRelocationTable(uint8_t *dest);
     void copyPreBarrierTable(uint8_t *dest);
@@ -668,7 +675,6 @@ class AssemblerX86Shared : public AssemblerShared
     }
     void cmpEAX(Label *label) { cmpSrc(label); }
     void bind(Label *label) {
-        JSC::MacroAssembler::Label jsclabel;
         JSC::X86Assembler::JmpDst dst(masm.label());
         if (label->used()) {
             bool more;
@@ -683,7 +689,6 @@ class AssemblerX86Shared : public AssemblerShared
         label->bind(dst.offset());
     }
     void bind(RepatchLabel *label) {
-        JSC::MacroAssembler::Label jsclabel;
         JSC::X86Assembler::JmpDst dst(masm.label());
         if (label->used()) {
             JSC::X86Assembler::JmpSrc jmp(label->offset());
@@ -697,7 +702,6 @@ class AssemblerX86Shared : public AssemblerShared
 
     // Re-routes pending jumps to a new label.
     void retarget(Label *label, Label *target) {
-        JSC::MacroAssembler::Label jsclabel;
         if (label->used()) {
             bool more;
             JSC::X86Assembler::JmpSrc jmp(label->offset());
@@ -884,6 +888,9 @@ class AssemblerX86Shared : public AssemblerShared
             break;
           case Operand::MEM_REG_DISP:
             masm.testl_i32m(rhs.value, lhs.disp(), lhs.base());
+            break;
+          case Operand::MEM_ADDRESS32:
+            masm.testl_i32m(rhs.value, lhs.address());
             break;
           default:
             MOZ_ASSUME_UNREACHABLE("unexpected operand kind");
@@ -1633,41 +1640,46 @@ class AssemblerX86Shared : public AssemblerShared
 
     // Patching.
 
-    static size_t patchWrite_NearCallSize() {
+    static size_t PatchWrite_NearCallSize() {
         return 5;
     }
-    static uintptr_t getPointer(uint8_t *instPtr) {
+    static uintptr_t GetPointer(uint8_t *instPtr) {
         uintptr_t *ptr = ((uintptr_t *) instPtr) - 1;
         return *ptr;
     }
     // Write a relative call at the start location |dataLabel|.
     // Note that this DOES NOT patch data that comes before |label|.
-    static void patchWrite_NearCall(CodeLocationLabel startLabel, CodeLocationLabel target) {
+    static void PatchWrite_NearCall(CodeLocationLabel startLabel, CodeLocationLabel target) {
         uint8_t *start = startLabel.raw();
         *start = 0xE8;
-        ptrdiff_t offset = target - startLabel - patchWrite_NearCallSize();
+        ptrdiff_t offset = target - startLabel - PatchWrite_NearCallSize();
         JS_ASSERT(int32_t(offset) == offset);
         *((int32_t *) (start + 1)) = offset;
     }
 
-    static void patchWrite_Imm32(CodeLocationLabel dataLabel, Imm32 toWrite) {
+    static void PatchWrite_Imm32(CodeLocationLabel dataLabel, Imm32 toWrite) {
         *((int32_t *) dataLabel.raw() - 1) = toWrite.value;
     }
 
-    static void patchDataWithValueCheck(CodeLocationLabel data, PatchedImmPtr newData,
+    static void PatchDataWithValueCheck(CodeLocationLabel data, PatchedImmPtr newData,
                                         PatchedImmPtr expectedData) {
         // The pointer given is a pointer to *after* the data.
         uintptr_t *ptr = ((uintptr_t *) data.raw()) - 1;
         JS_ASSERT(*ptr == (uintptr_t)expectedData.value);
         *ptr = (uintptr_t)newData.value;
     }
-    static void patchDataWithValueCheck(CodeLocationLabel data, ImmPtr newData, ImmPtr expectedData) {
-        patchDataWithValueCheck(data, PatchedImmPtr(newData.value), PatchedImmPtr(expectedData.value));
+    static void PatchDataWithValueCheck(CodeLocationLabel data, ImmPtr newData, ImmPtr expectedData) {
+        PatchDataWithValueCheck(data, PatchedImmPtr(newData.value), PatchedImmPtr(expectedData.value));
     }
-    static uint32_t nopSize() {
+
+    static void PatchInstructionImmediate(uint8_t *code, PatchedImmPtr imm) {
+        MOZ_ASSUME_UNREACHABLE("Unused.");
+    }
+
+    static uint32_t NopSize() {
         return 1;
     }
-    static uint8_t *nextInstruction(uint8_t *cur, uint32_t *count) {
+    static uint8_t *NextInstruction(uint8_t *cur, uint32_t *count) {
         MOZ_ASSUME_UNREACHABLE("nextInstruction NYI on x86");
     }
 

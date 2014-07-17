@@ -7,60 +7,80 @@ const promise = require("projecteditor/helpers/promise");
 const ProjectEditor = require("projecteditor/projecteditor");
 
 const SAMPLE_PATH = buildTempDirectoryStructure();
-const SAMPLE_NAME = "DevTools Content";
-const SAMPLE_PROJECT_URL = "http://mozilla.org";
-const SAMPLE_ICON = "chrome://browser/skin/devtools/tool-options.svg";
+const SAMPLE_NAME = "DevTools Content Application Name";
+const SAMPLE_PROJECT_URL = "data:text/html;charset=utf-8,<body><h1>Project Overview</h1></body>";
+const SAMPLE_ICON = "chrome://browser/skin/devtools/tool-debugger.svg";
 
 /**
  * Create a workspace for working on projecteditor, available at
  * chrome://browser/content/devtools/projecteditor-loader.xul.
  * This emulates the integration points that the app manager uses.
  */
+let appManagerEditor;
+
+// Log a message to the project overview URL to make development easier
+function log(msg) {
+  if (!appManagerEditor) {
+    return;
+  }
+
+  let doc = appManagerEditor.iframe.contentDocument;
+  let el = doc.createElement("p");
+  el.textContent = msg;
+  doc.body.appendChild(el);
+}
+
 document.addEventListener("DOMContentLoaded", function onDOMReady(e) {
   document.removeEventListener("DOMContentLoaded", onDOMReady, false);
   let iframe = document.getElementById("projecteditor-iframe");
   window.projecteditor = ProjectEditor.ProjectEditor(iframe);
 
-  projecteditor.on("onEditorCreated", (editor) => {
-    console.log("editor created: " + editor);
+  projecteditor.on("onEditorCreated", (editor, a) => {
+    log("editor created: " + editor);
+    if (editor.label === "app-manager") {
+      appManagerEditor = editor;
+      appManagerEditor.on("load", function foo() {
+        appManagerEditor.off("load", foo);
+        log("Working on: " + SAMPLE_PATH);
+      })
+    }
   });
   projecteditor.on("onEditorDestroyed", (editor) => {
-    console.log("editor destroyed: " + editor);
+    log("editor destroyed: " + editor);
   });
   projecteditor.on("onEditorSave", (editor, resource) => {
-    console.log("editor saved: " + editor, resource.path);
+    log("editor saved: " + editor, resource.path);
   });
   projecteditor.on("onTreeSelected", (resource) => {
-    console.log("tree selected: " + resource.path);
+    log("tree selected: " + resource.path);
   });
   projecteditor.on("onEditorLoad", (editor) => {
-    console.log("editor loaded: " + editor);
+    log("editor loaded: " + editor);
   });
   projecteditor.on("onEditorActivated", (editor) => {
-    console.log("editor focused: " + editor);
+    log("editor focused: " + editor);
   });
   projecteditor.on("onEditorDeactivated", (editor) => {
-    console.log("editor blur: " + editor);
+    log("editor blur: " + editor);
   });
   projecteditor.on("onEditorChange", (editor) => {
-    console.log("editor changed: " + editor);
-  });
-  projecteditor.on("onEditorCursorActivity", (editor) => {
-    console.log("editor cursor activity: " + editor);
+    log("editor changed: " + editor);
   });
   projecteditor.on("onCommand", (cmd) => {
-    console.log("Command: " + cmd);
+    log("Command: " + cmd);
   });
 
   projecteditor.loaded.then(() => {
     projecteditor.setProjectToAppPath(SAMPLE_PATH, {
       name: SAMPLE_NAME,
       iconUrl: SAMPLE_ICON,
-      projectOverviewURL: SAMPLE_PROJECT_URL
+      projectOverviewURL: SAMPLE_PROJECT_URL,
+      validationStatus: "valid"
     }).then(() => {
       let allResources = projecteditor.project.allResources();
       console.log("All resources have been loaded", allResources, allResources.map(r=>r.basename).join("|"));
     });
+
   });
 
 }, false);

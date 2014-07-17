@@ -539,7 +539,10 @@ def run_app(harness_root_dir, manifest_rdf, harness_options,
     outfile_tail = follow_file(outfile)
     def maybe_remove_outfile():
         if os.path.exists(outfile):
-            os.remove(outfile)
+            try:
+                os.remove(outfile)
+            except Exception, e:
+                print "Error Cleaning up: " + str(e)
     atexit.register(maybe_remove_outfile)
     outf = open(outfile, "w")
     popen_kwargs = { 'stdout': outf, 'stderr': outf}
@@ -715,7 +718,7 @@ def run_app(harness_root_dir, manifest_rdf, harness_options,
 
     done = False
     result = None
-    test_name = "unknown"
+    test_name = "Jetpack startup"
 
     def Timeout(message, test_name, parseable):
         if parseable:

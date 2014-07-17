@@ -126,15 +126,11 @@ public:
     // which is strongly referenced by the runnable that called
     // AudioDestinationNode::FireOfflineCompletionEvent.
 
-    // We need the global for the context so that we can enter its compartment.
-    JSObject* global = context->GetGlobalJSObject();
-    if (NS_WARN_IF(!global)) {
+    AutoJSAPI jsapi;
+    if (NS_WARN_IF(!jsapi.Init(aNode->GetOwner()))) {
       return;
     }
-
-    AutoJSAPI jsapi;
     JSContext* cx = jsapi.cx();
-    JSAutoCompartment ac(cx, global);
 
     // Create the input buffer
     ErrorResult rv;
@@ -178,13 +174,43 @@ private:
   float mSampleRate;
 };
 
+class InputMutedRunnable : public nsRunnable
+{
+public:
+  InputMutedRunnable(AudioNodeStream* aStream,
+                     bool aInputMuted)
+    : mStream(aStream)
+    , mInputMuted(aInputMuted)
+  {
+  }
+
+  NS_IMETHOD Run()
+  {
+    MOZ_ASSERT(NS_IsMainThread());
+    nsRefPtr<AudioNode> node = mStream->Engine()->NodeMainThread();
+
+    if (node) {
+      nsRefPtr<AudioDestinationNode> destinationNode =
+        static_cast<AudioDestinationNode*>(node.get());
+      destinationNode->InputMuted(mInputMuted);
+    }
+    return NS_OK;
+  }
+
+private:
+  nsRefPtr<AudioNodeStream> mStream;
+  bool mInputMuted;
+};
+
 class DestinationNodeEngine : public AudioNodeEngine
 {
 public:
   explicit DestinationNodeEngine(AudioDestinationNode* aNode)
     : AudioNodeEngine(aNode)
     , mVolume(1.0f)
+    , mLastInputMuted(true)
   {
+    MOZ_ASSERT(aNode);
   }
 
   virtual void ProcessBlock(AudioNodeStream* aStream,
@@ -194,6 +220,16 @@ public:
   {
     *aOutput = aInput;
     aOutput->mVolume *= mVolume;
+
+    bool newInputMuted = aInput.IsNull() || aInput.IsMuted();
+    if (newInputMuted != mLastInputMuted) {
+      mLastInputMuted = newInputMuted;
+
+      nsRefPtr<InputMutedRunnable> runnable =
+        new InputMutedRunnable(aStream, newInputMuted);
+      aStream->Graph()->
+        DispatchToMainThreadAfterStreamStateUpdate(runnable.forget());
+    }
   }
 
   virtual void SetDoubleParameter(uint32_t aIndex, double aParam) MOZ_OVERRIDE
@@ -214,6 +250,7 @@ public:
 
 private:
   float mVolume;
+  bool mLastInputMuted;
 };
 
 static bool UseAudioChannelService()
@@ -227,7 +264,6 @@ NS_IMPL_CYCLE_COLLECTION_INHERITED(AudioDestinationNode, AudioNode,
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION_INHERITED(AudioDestinationNode)
   NS_INTERFACE_MAP_ENTRY(nsIDOMEventListener)
   NS_INTERFACE_MAP_ENTRY(nsIAudioChannelAgentCallback)
-  NS_INTERFACE_MAP_ENTRY(nsISupportsWeakReference)
 NS_INTERFACE_MAP_END_INHERITING(AudioNode)
 
 NS_IMPL_ADDREF_INHERITED(AudioDestinationNode, AudioNode)
@@ -247,6 +283,7 @@ AudioDestinationNode::AudioDestinationNode(AudioContext* aContext,
   , mAudioChannel(AudioChannel::Normal)
   , mIsOffline(aIsOffline)
   , mHasFinished(false)
+  , mAudioChannelAgentPlaying(false)
   , mExtraCurrentTime(0)
   , mExtraCurrentTimeSinceLastStartedBlocking(0)
   , mExtraCurrentTimeUpdatedSinceLastStableState(false)
@@ -279,6 +316,10 @@ AudioDestinationNode::AudioDestinationNode(AudioContext* aContext,
 
     CreateAudioChannelAgent();
   }
+}
+
+AudioDestinationNode::~AudioDestinationNode()
+{
 }
 
 size_t
@@ -426,7 +467,18 @@ AudioDestinationNode::HandleEvent(nsIDOMEvent* aEvent)
 NS_IMETHODIMP
 AudioDestinationNode::CanPlayChanged(int32_t aCanPlay)
 {
-  SetCanPlay(aCanPlay == AudioChannelState::AUDIO_CHANNEL_STATE_NORMAL);
+  bool playing = aCanPlay == AudioChannelState::AUDIO_CHANNEL_STATE_NORMAL;
+  if (playing == mAudioChannelAgentPlaying) {
+    return NS_OK;
+  }
+
+  mAudioChannelAgentPlaying = playing;
+  SetCanPlay(playing);
+
+  Context()->DispatchTrustedEvent(
+    playing ? NS_LITERAL_STRING("mozinterruptend")
+            : NS_LITERAL_STRING("mozinterruptbegin"));
+
   return NS_OK;
 }
 
@@ -528,10 +580,6 @@ AudioDestinationNode::CreateAudioChannelAgent()
     docshell->GetIsActive(&isActive);
     mAudioChannelAgent->SetVisibilityState(isActive);
   }
-
-  int32_t state = 0;
-  mAudioChannelAgent->StartPlaying(&state);
-  SetCanPlay(state == AudioChannelState::AUDIO_CHANNEL_STATE_NORMAL);
 }
 
 void
@@ -603,6 +651,26 @@ AudioDestinationNode::SetIsOnlyNodeForContext(bool aIsOnlyNode)
   }
 }
 
+void
+AudioDestinationNode::InputMuted(bool aMuted)
+{
+  MOZ_ASSERT(Context() && !Context()->IsOffline());
+
+  if (!mAudioChannelAgent) {
+    return;
+  }
+
+  if (aMuted) {
+    mAudioChannelAgent->StopPlaying();
+    return;
+  }
+
+  int32_t state = 0;
+  mAudioChannelAgent->StartPlaying(&state);
+  mAudioChannelAgentPlaying =
+    state == AudioChannelState::AUDIO_CHANNEL_STATE_NORMAL;
+  SetCanPlay(mAudioChannelAgentPlaying);
 }
 
-}
+} // dom namespace
+} // mozilla namespace

@@ -66,7 +66,22 @@ SVGDocument::GetRootElement(ErrorResult& aRv)
 }
 
 nsresult
-SVGDocument::Clone(nsINodeInfo *aNodeInfo, nsINode **aResult) const
+SVGDocument::InsertChildAt(nsIContent* aKid, uint32_t aIndex, bool aNotify)
+{
+  nsresult rv = XMLDocument::InsertChildAt(aKid, aIndex, aNotify);
+
+  if (NS_SUCCEEDED(rv) && aKid->IsElement() && !aKid->IsSVG()) {
+    // We can get here when well formed XML with a non-SVG root element is
+    // served with the SVG MIME type, for example. In that case we need to load
+    // the non-SVG UA sheets or else we can get bugs like bug 1016145.
+    EnsureNonSVGUserAgentStyleSheetsLoaded();
+  }
+
+  return rv;
+}
+
+nsresult
+SVGDocument::Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const
 {
   NS_ASSERTION(aNodeInfo->NodeInfoManager() == mNodeInfoManager,
                "Can't import this document into another document!");
@@ -128,7 +143,7 @@ SVGDocument::EnsureNonSVGUserAgentStyleSheetsLoaded()
             nsCOMPtr<nsIURI> uri;
             NS_NewURI(getter_AddRefs(uri), spec);
             if (uri) {
-              nsRefPtr<nsCSSStyleSheet> cssSheet;
+              nsRefPtr<CSSStyleSheet> cssSheet;
               cssLoader->LoadSheetSync(uri, true, true, getter_AddRefs(cssSheet));
               if (cssSheet) {
                 EnsureOnDemandBuiltInUASheet(cssSheet);
@@ -140,12 +155,13 @@ SVGDocument::EnsureNonSVGUserAgentStyleSheetsLoaded()
     }
   }
 
-  nsCSSStyleSheet* sheet = nsLayoutStylesheetCache::NumberControlSheet();
+  CSSStyleSheet* sheet = nsLayoutStylesheetCache::NumberControlSheet();
   if (sheet) {
     // number-control.css can be behind a pref
     EnsureOnDemandBuiltInUASheet(sheet);
   }
   EnsureOnDemandBuiltInUASheet(nsLayoutStylesheetCache::FormsSheet());
+  EnsureOnDemandBuiltInUASheet(nsLayoutStylesheetCache::CounterStylesSheet());
   EnsureOnDemandBuiltInUASheet(nsLayoutStylesheetCache::HTMLSheet());
   EnsureOnDemandBuiltInUASheet(nsLayoutStylesheetCache::UASheet());
 }

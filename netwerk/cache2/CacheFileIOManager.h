@@ -115,7 +115,7 @@ public:
     HandleHashKey(KeyTypePointer aKey)
     {
       MOZ_COUNT_CTOR(HandleHashKey);
-      mHash = (SHA1Sum::Hash*)new uint8_t[SHA1Sum::HashSize];
+      mHash = (SHA1Sum::Hash*)new uint8_t[SHA1Sum::kHashSize];
       memcpy(mHash, aKey, sizeof(SHA1Sum::Hash));
     }
     HandleHashKey(const HandleHashKey& aOther)
@@ -280,6 +280,9 @@ public:
   };
 
   static void GetCacheDirectory(nsIFile** result);
+#if defined(MOZ_WIDGET_ANDROID)
+  static void GetProfilelessCacheDirectory(nsIFile** result);
+#endif
 
   // Calls synchronously OnEntryInfo for an entry with the given hash.
   // Tries to find an existing entry in the service hashtables first, if not
@@ -328,7 +331,8 @@ private:
   nsresult WriteInternal(CacheFileHandle *aHandle, int64_t aOffset,
                          const char *aBuf, int32_t aCount, bool aValidate);
   nsresult DoomFileInternal(CacheFileHandle *aHandle);
-  nsresult DoomFileByKeyInternal(const SHA1Sum::Hash *aHash);
+  nsresult DoomFileByKeyInternal(const SHA1Sum::Hash *aHash,
+                                 bool aFailIfAlreadyDoomed);
   nsresult ReleaseNSPRHandleInternal(CacheFileHandle *aHandle);
   nsresult TruncateSeekSetEOFInternal(CacheFileHandle *aHandle,
                                       int64_t aTruncatePos, int64_t aEOFPos);
@@ -373,7 +377,7 @@ private:
   // It is called in EvictIfOverLimitInternal() just before we decide whether to
   // start overlimit eviction or not and also in OverLimitEvictionInternal()
   // before we start an eviction loop.
-  nsresult UpdateSmartCacheSize();
+  nsresult UpdateSmartCacheSize(int64_t aFreeSpace);
 
   // Memory reporting (private part)
   size_t SizeOfExcludingThisInternal(mozilla::MallocSizeOf mallocSizeOf) const;
@@ -383,6 +387,13 @@ private:
   bool                                 mShuttingDown;
   nsRefPtr<CacheIOThread>              mIOThread;
   nsCOMPtr<nsIFile>                    mCacheDirectory;
+#if defined(MOZ_WIDGET_ANDROID)
+  // On Android we add the active profile directory name between the path
+  // and the 'cache2' leaf name.  However, to delete any leftover data from
+  // times before we were doing it, we still need to access the directory
+  // w/o the profile name in the path.  Here it is stored.
+  nsCOMPtr<nsIFile>                    mCacheProfilelessDirectory;
+#endif
   bool                                 mTreeCreated;
   CacheFileHandles                     mHandles;
   nsTArray<CacheFileHandle *>          mHandlesByLastUsed;

@@ -411,22 +411,6 @@ void nsCaret::SetVisibilityDuringSelection(bool aVisibility)
   mShowDuringSelection = aVisibility;
 }
 
-static
-nsFrameSelection::HINT GetHintForPosition(nsIDOMNode* aNode, int32_t aOffset)
-{
-  nsFrameSelection::HINT hint = nsFrameSelection::HINTLEFT;
-  nsCOMPtr<nsIContent> node = do_QueryInterface(aNode);
-  if (!node || aOffset < 1) {
-    return hint;
-  }
-  const nsTextFragment* text = node->GetText();
-  if (text && text->CharAt(aOffset - 1) == '\n') {
-    // Attach the caret to the next line if needed
-    hint = nsFrameSelection::HINTRIGHT;
-  }
-  return hint;
-}
-
 nsresult nsCaret::DrawAtPosition(nsIDOMNode* aNode, int32_t aOffset)
 {
   NS_ENSURE_ARG(aNode);
@@ -442,8 +426,9 @@ nsresult nsCaret::DrawAtPosition(nsIDOMNode* aNode, int32_t aOffset)
   // ourselves, our consumer will take care of that.
   mBlinkRate = 0;
 
+  nsCOMPtr<nsIContent> node = do_QueryInterface(aNode);
   nsresult rv = DrawAtPositionWithHint(aNode, aOffset,
-                                       GetHintForPosition(aNode, aOffset),
+                                       nsFrameSelection::GetHintForPosition(node, aOffset),
                                        bidiLevel, true)
     ?  NS_OK : NS_ERROR_FAILURE;
   ToggleDrawnStatus();
@@ -866,6 +851,25 @@ nsCaret::CheckCaretDrawingState()
     if (mPendingDraw && (mVisible && MustDrawCaret(true)))
       DrawCaret(true);
   }
+}
+
+size_t nsCaret::SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const
+{
+  size_t total = aMallocSizeOf(this);
+  if (mPresShell) {
+    // We only want the size of the nsWeakReference object, not the PresShell
+    // (since we don't own the PresShell).
+    total += mPresShell->SizeOfOnlyThis(aMallocSizeOf);
+  }
+  if (mDomSelectionWeak) {
+    // We only want size of the nsWeakReference object, not the selection
+    // (again, we don't own the selection).
+    total += mDomSelectionWeak->SizeOfOnlyThis(aMallocSizeOf);
+  }
+  if (mBlinkTimer) {
+    total += mBlinkTimer->SizeOfIncludingThis(aMallocSizeOf);
+  }
+  return total;
 }
 
 /*-----------------------------------------------------------------------------

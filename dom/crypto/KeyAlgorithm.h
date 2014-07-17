@@ -18,7 +18,8 @@
 namespace mozilla {
 namespace dom {
 
-class Key;
+class CryptoKey;
+class KeyAlgorithm;
 
 enum KeyAlgorithmStructuredCloneTags {
   SCTAG_KEYALG,
@@ -27,6 +28,10 @@ enum KeyAlgorithmStructuredCloneTags {
   SCTAG_RSAKEYALG,
   SCTAG_RSAHASHEDKEYALG
 };
+
+}
+
+namespace dom {
 
 class KeyAlgorithm : public nsISupports,
                      public nsWrapperCache
@@ -37,8 +42,6 @@ public:
 
 public:
   KeyAlgorithm(nsIGlobalObject* aGlobal, const nsString& aName);
-
-  virtual ~KeyAlgorithm();
 
   nsIGlobalObject* GetParentObject() const
   {
@@ -61,6 +64,8 @@ public:
   }
 
 protected:
+  virtual ~KeyAlgorithm();
+
   nsRefPtr<nsIGlobalObject> mGlobal;
   nsString mName;
   CK_MECHANISM_TYPE mMechanism;

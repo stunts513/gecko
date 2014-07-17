@@ -26,10 +26,13 @@
 #include <vector>
 #include <gtest/gtest.h>
 
+#include "pkixgtest.h"
 #include "pkix/bind.h"
 #include "pkixder.h"
 
+using namespace mozilla::pkix;
 using namespace mozilla::pkix::der;
+using namespace mozilla::pkix::test;
 
 namespace {
 
@@ -40,6 +43,26 @@ protected:
   {
     PR_SetError(0, 0);
   }
+};
+
+static const uint8_t DER_SEQUENCE_EMPTY[] = {
+  0x30,                       // SEQUENCE
+  0x00,                       // length
+};
+
+static const uint8_t DER_SEQUENCE_NOT_EMPTY[] = {
+  0x30,                       // SEQUENCE
+  0x01,                       // length
+  'X',                        // value
+};
+
+static const uint8_t DER_SEQUENCE_NOT_EMPTY_VALUE[] = {
+  'X',                        // value
+};
+
+static const uint8_t DER_SEQUENCE_NOT_EMPTY_VALUE_TRUNCATED[] = {
+  0x30,                       // SEQUENCE
+  0x01,                       // length
 };
 
 const uint8_t DER_SEQUENCE_OF_INT8[] = {
@@ -74,11 +97,8 @@ const uint8_t DER_INT16[] = {
 
 TEST_F(pkixder_input_tests, FailWithError)
 {
-  ASSERT_EQ(Failure, Fail(SEC_ERROR_BAD_DER));
-  ASSERT_EQ(SEC_ERROR_BAD_DER, PR_GetError());
-
-  ASSERT_EQ(Failure, Fail(SEC_ERROR_INVALID_ARGS));
-  ASSERT_EQ(SEC_ERROR_INVALID_ARGS, PR_GetError());
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER, Fail(SEC_ERROR_BAD_DER));
+  ASSERT_FatalError(SEC_ERROR_INVALID_ARGS, Fail(SEC_ERROR_INVALID_ARGS));
 }
 
 TEST_F(pkixder_input_tests, InputInit)
@@ -91,11 +111,9 @@ TEST_F(pkixder_input_tests, InputInit)
 TEST_F(pkixder_input_tests, InputInitWithNullPointerOrZeroLength)
 {
   Input input;
-  ASSERT_EQ(Failure, input.Init(nullptr, 0));
-  ASSERT_EQ(SEC_ERROR_BAD_DER, PR_GetError());
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER, input.Init(nullptr, 0));
 
-  ASSERT_EQ(Failure, input.Init(nullptr, 100));
-  ASSERT_EQ(SEC_ERROR_BAD_DER, PR_GetError());
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER, input.Init(nullptr, 100));
 
   // Though it seems odd to initialize with zero-length and non-null ptr, this
   // is working as intended. The Input class was intended to protect against
@@ -110,8 +128,8 @@ TEST_F(pkixder_input_tests, InputInitWithLargeData)
   Input input;
   // Data argument length does not matter, it is not touched, just
   // needs to be non-null
-  ASSERT_EQ(Failure, input.Init((const uint8_t*) "", 0xffff+1));
-  ASSERT_EQ(SEC_ERROR_BAD_DER, PR_GetError());
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER,
+                          input.Init((const uint8_t*) "", 0xffff+1));
 
   ASSERT_EQ(Success, input.Init((const uint8_t*) "", 0xffff));
 }
@@ -123,9 +141,9 @@ TEST_F(pkixder_input_tests, InputInitMultipleTimes)
   ASSERT_EQ(Success,
             input.Init(DER_SEQUENCE_OF_INT8, sizeof DER_SEQUENCE_OF_INT8));
 
-  ASSERT_EQ(Failure,
-            input.Init(DER_SEQUENCE_OF_INT8, sizeof DER_SEQUENCE_OF_INT8));
-  ASSERT_EQ(SEC_ERROR_INVALID_ARGS, PR_GetError());
+  ASSERT_FatalError(SEC_ERROR_INVALID_ARGS,
+                    input.Init(DER_SEQUENCE_OF_INT8,
+                               sizeof DER_SEQUENCE_OF_INT8));
 }
 
 TEST_F(pkixder_input_tests, ExpectSuccess)
@@ -147,8 +165,8 @@ TEST_F(pkixder_input_tests, ExpectMismatch)
             input.Init(DER_SEQUENCE_OF_INT8, sizeof DER_SEQUENCE_OF_INT8));
 
   const uint8_t expected[] = { 0x11, 0x22 };
-  ASSERT_EQ(Failure, input.Expect(expected, sizeof expected));
-  ASSERT_EQ(SEC_ERROR_BAD_DER, PR_GetError());
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER,
+                          input.Expect(expected, sizeof expected));
 }
 
 TEST_F(pkixder_input_tests, ExpectTooMuch)
@@ -159,8 +177,8 @@ TEST_F(pkixder_input_tests, ExpectTooMuch)
   ASSERT_EQ(Success, input.Init(der, sizeof der));
 
   const uint8_t expected[] = { 0x11, 0x22, 0x33 };
-  ASSERT_EQ(Failure, input.Expect(expected, sizeof expected));
-  ASSERT_EQ(SEC_ERROR_BAD_DER, PR_GetError());
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER,
+                          input.Expect(expected, sizeof expected));
 }
 
 TEST_F(pkixder_input_tests, PeekWithinBounds)
@@ -211,9 +229,24 @@ TEST_F(pkixder_input_tests, ReadBytePastEnd)
   ASSERT_EQ(0x11, readByte1);
 
   uint8_t readByte2 = 0;
-  ASSERT_EQ(Failure, input.Read(readByte2));
-  ASSERT_EQ(SEC_ERROR_BAD_DER, PR_GetError());
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER, input.Read(readByte2));
   ASSERT_NE(0x22, readByte2);
+}
+
+TEST_F(pkixder_input_tests, ReadByteWrapAroundPointer)
+{
+  // The original implementation of our buffer read overflow checks was
+  // susceptible to integer overflows which could make the checks ineffective.
+  // This attempts to verify that we've fixed that. Unfortunately, decrementing
+  // a null pointer is undefined behavior according to the C++ language spec.,
+  // but this should catch the problem on at least some compilers, if not all of
+  // them.
+  const uint8_t* der = nullptr;
+  --der;
+  Input input;
+  ASSERT_EQ(Success, input.Init(der, 0));
+  uint8_t b;
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER, input.Read(b));
 }
 
 TEST_F(pkixder_input_tests, ReadWord)
@@ -243,8 +276,7 @@ TEST_F(pkixder_input_tests, ReadWordPastEnd)
   ASSERT_EQ(0x1122, readWord1);
 
   uint16_t readWord2 = 0;
-  ASSERT_EQ(Failure, input.Read(readWord2));
-  ASSERT_EQ(SEC_ERROR_BAD_DER, PR_GetError());
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER, input.Read(readWord2));
   ASSERT_NE(0x3344, readWord2);
 }
 
@@ -255,8 +287,24 @@ TEST_F(pkixder_input_tests, ReadWordWithInsufficentData)
   ASSERT_EQ(Success, input.Init(der, 1));
 
   uint16_t readWord1 = 0;
-  ASSERT_EQ(Failure, input.Read(readWord1));
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER, input.Read(readWord1));
   ASSERT_NE(0x1122, readWord1);
+}
+
+TEST_F(pkixder_input_tests, ReadWordWrapAroundPointer)
+{
+  // The original implementation of our buffer read overflow checks was
+  // susceptible to integer overflows which could make the checks ineffective.
+  // This attempts to verify that we've fixed that. Unfortunately, decrementing
+  // a null pointer is undefined behavior according to the C++ language spec.,
+  // but this should catch the problem on at least some compilers, if not all of
+  // them.
+  const uint8_t* der = nullptr;
+  --der;
+  Input input;
+  ASSERT_EQ(Success, input.Init(der, 0));
+  uint16_t b;
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER, input.Read(b));
 }
 
 TEST_F(pkixder_input_tests, InputSkip)
@@ -293,8 +341,7 @@ TEST_F(pkixder_input_tests, InputSkipPastEnd)
   const uint8_t der[] = { 0x11, 0x22, 0x33, 0x44 };
   ASSERT_EQ(Success, input.Init(der, sizeof der));
 
-  ASSERT_EQ(Failure, input.Skip(sizeof der + 1));
-  ASSERT_EQ(SEC_ERROR_BAD_DER, PR_GetError());
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER, input.Skip(sizeof der + 1));
 }
 
 TEST_F(pkixder_input_tests, InputSkipToNewInput)
@@ -331,8 +378,8 @@ TEST_F(pkixder_input_tests, InputSkipToNewInputPastEnd)
   ASSERT_EQ(Success, input.Init(der, sizeof der));
 
   Input skippedInput;
-  ASSERT_EQ(Failure, input.Skip(sizeof der * 2, skippedInput));
-  ASSERT_EQ(SEC_ERROR_BAD_DER, PR_GetError());
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER,
+                          input.Skip(sizeof der * 2, skippedInput));
 }
 
 TEST_F(pkixder_input_tests, InputSkipToSECItem)
@@ -351,6 +398,21 @@ TEST_F(pkixder_input_tests, InputSkipToSECItem)
   ASSERT_EQ(0, memcmp(item.data, expectedItemData, sizeof expectedItemData));
 }
 
+TEST_F(pkixder_input_tests, SkipWrapAroundPointer)
+{
+  // The original implementation of our buffer read overflow checks was
+  // susceptible to integer overflows which could make the checks ineffective.
+  // This attempts to verify that we've fixed that. Unfortunately, decrementing
+  // a null pointer is undefined behavior according to the C++ language spec.,
+  // but this should catch the problem on at least some compilers, if not all of
+  // them.
+  const uint8_t* der = nullptr;
+  --der;
+  Input input;
+  ASSERT_EQ(Success, input.Init(der, 0));
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER, input.Skip(1));
+}
+
 TEST_F(pkixder_input_tests, SkipToSECItemPastEnd)
 {
   Input input;
@@ -358,8 +420,8 @@ TEST_F(pkixder_input_tests, SkipToSECItemPastEnd)
   ASSERT_EQ(Success, input.Init(der, sizeof der));
 
   SECItem skippedSECItem;
-  ASSERT_EQ(Failure, input.Skip(sizeof der + 1, skippedSECItem));
-  ASSERT_EQ(SEC_ERROR_BAD_DER, PR_GetError());
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER,
+                          input.Skip(sizeof der + 1, skippedSECItem));
 }
 
 TEST_F(pkixder_input_tests, ExpectTagAndSkipValue)
@@ -378,7 +440,8 @@ TEST_F(pkixder_input_tests, ExpectTagAndSkipValueWithTruncatedData)
   ASSERT_EQ(Success, input.Init(DER_TRUNCATED_SEQUENCE_OF_INT8,
                                 sizeof DER_TRUNCATED_SEQUENCE_OF_INT8));
 
-  ASSERT_EQ(Failure, ExpectTagAndSkipValue(input, SEQUENCE));
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER,
+                          ExpectTagAndSkipValue(input, SEQUENCE));
 }
 
 TEST_F(pkixder_input_tests, ExpectTagAndSkipValueWithOverrunData)
@@ -387,7 +450,7 @@ TEST_F(pkixder_input_tests, ExpectTagAndSkipValueWithOverrunData)
   ASSERT_EQ(Success, input.Init(DER_OVERRUN_SEQUENCE_OF_INT8,
                                 sizeof DER_OVERRUN_SEQUENCE_OF_INT8));
   ASSERT_EQ(Success, ExpectTagAndSkipValue(input, SEQUENCE));
-  ASSERT_EQ(Failure, End(input));
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER, End(input));
 }
 
 TEST_F(pkixder_input_tests, AtEndOnUnInitializedInput)
@@ -449,8 +512,8 @@ TEST_F(pkixder_input_tests, MarkAndGetSECItemDifferentInput)
   ASSERT_EQ(Success, input.Skip(3));
 
   SECItem item;
-  ASSERT_EQ(Failure, input.GetSECItem(siBuffer, mark, item));
-  ASSERT_EQ(SEC_ERROR_INVALID_ARGS, PR_GetError());
+  ASSERT_FatalError(SEC_ERROR_INVALID_ARGS,
+                    input.GetSECItem(siBuffer, mark, item));
 }
 #endif
 
@@ -470,8 +533,8 @@ TEST_F(pkixder_input_tests, ExpectTagAndLengthWithWrongLength)
   ASSERT_EQ(Success, input.Init(DER_INT16, sizeof DER_INT16));
 
   // Wrong length
-  ASSERT_EQ(Failure, ExpectTagAndLength(input, INTEGER, 4));
-  ASSERT_EQ(SEC_ERROR_BAD_DER, PR_GetError());
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER,
+                          ExpectTagAndLength(input, INTEGER, 4));
 }
 
 TEST_F(pkixder_input_tests, ExpectTagAndLengthWithWrongTag)
@@ -480,8 +543,8 @@ TEST_F(pkixder_input_tests, ExpectTagAndLengthWithWrongTag)
   ASSERT_EQ(Success, input.Init(DER_INT16, sizeof DER_INT16));
 
   // Wrong type
-  ASSERT_EQ(Failure, ExpectTagAndLength(input, OCTET_STRING, 2));
-  ASSERT_EQ(SEC_ERROR_BAD_DER, PR_GetError());
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER,
+                          ExpectTagAndLength(input, OCTET_STRING, 2));
 }
 
 TEST_F(pkixder_input_tests, ExpectTagAndGetLength)
@@ -491,7 +554,8 @@ TEST_F(pkixder_input_tests, ExpectTagAndGetLength)
             input.Init(DER_SEQUENCE_OF_INT8, sizeof DER_SEQUENCE_OF_INT8));
 
   uint16_t length = 0;
-  ASSERT_EQ(Success, internal::ExpectTagAndGetLength(input, SEQUENCE, length));
+  ASSERT_EQ(Success,
+            der::internal::ExpectTagAndGetLength(input, SEQUENCE, length));
   ASSERT_EQ(sizeof DER_SEQUENCE_OF_INT8 - 2, length);
   ASSERT_EQ(Success, input.Skip(length));
   ASSERT_TRUE(input.AtEnd());
@@ -504,8 +568,9 @@ TEST_F(pkixder_input_tests, ExpectTagAndGetLengthWithWrongTag)
             input.Init(DER_SEQUENCE_OF_INT8, sizeof DER_SEQUENCE_OF_INT8));
 
   uint16_t length = 0;
-  ASSERT_EQ(Failure, internal::ExpectTagAndGetLength(input, INTEGER, length));
-  ASSERT_EQ(SEC_ERROR_BAD_DER, PR_GetError());
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER,
+                          der::internal::ExpectTagAndGetLength(input, INTEGER,
+                                                               length));
 }
 
 TEST_F(pkixder_input_tests, ExpectTagAndGetLengthWithWrongLength)
@@ -515,8 +580,180 @@ TEST_F(pkixder_input_tests, ExpectTagAndGetLengthWithWrongLength)
                                 sizeof DER_TRUNCATED_SEQUENCE_OF_INT8));
 
   uint16_t length = 0;
-  ASSERT_EQ(Failure, internal::ExpectTagAndGetLength(input, SEQUENCE, length));
-  ASSERT_EQ(SEC_ERROR_BAD_DER, PR_GetError());
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER,
+                          der::internal::ExpectTagAndGetLength(input, SEQUENCE,
+                                                               length));
+}
+
+TEST_F(pkixder_input_tests, ExpectTagAndGetValue_Input_ValidEmpty)
+{
+  Input input;
+  ASSERT_EQ(Success,
+            input.Init(DER_SEQUENCE_EMPTY, sizeof DER_SEQUENCE_EMPTY));
+  Input value;
+  ASSERT_EQ(Success, ExpectTagAndGetValue(input, SEQUENCE, value));
+  ASSERT_TRUE(value.AtEnd());
+  ASSERT_TRUE(input.AtEnd());
+}
+
+TEST_F(pkixder_input_tests, ExpectTagAndGetValue_Input_ValidNotEmpty)
+{
+  Input input;
+  ASSERT_EQ(Success,
+            input.Init(DER_SEQUENCE_NOT_EMPTY, sizeof DER_SEQUENCE_NOT_EMPTY));
+  Input value;
+  ASSERT_EQ(Success, ExpectTagAndGetValue(input, SEQUENCE, value));
+  ASSERT_TRUE(value.MatchRest(DER_SEQUENCE_NOT_EMPTY_VALUE));
+  ASSERT_TRUE(input.AtEnd());
+}
+
+TEST_F(pkixder_input_tests,
+       ExpectTagAndGetValue_Input_InvalidNotEmptyValueTruncated)
+{
+  Input input;
+  ASSERT_EQ(Success,
+            input.Init(DER_SEQUENCE_NOT_EMPTY_VALUE_TRUNCATED,
+                       sizeof DER_SEQUENCE_NOT_EMPTY_VALUE_TRUNCATED));
+  Input value;
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER,
+                          ExpectTagAndGetValue(input, SEQUENCE, value));
+}
+
+TEST_F(pkixder_input_tests, ExpectTagAndGetValue_Input_InvalidWrongLength)
+{
+  Input input;
+  ASSERT_EQ(Success, input.Init(DER_TRUNCATED_SEQUENCE_OF_INT8,
+                                sizeof DER_TRUNCATED_SEQUENCE_OF_INT8));
+  Input value;
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER,
+                          ExpectTagAndGetValue(input, SEQUENCE, value));
+}
+
+TEST_F(pkixder_input_tests, ExpectTagAndGetLength_Input_InvalidWrongTag)
+{
+  Input input;
+  ASSERT_EQ(Success,
+            input.Init(DER_SEQUENCE_NOT_EMPTY, sizeof DER_SEQUENCE_NOT_EMPTY));
+  Input value;
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER,
+                          ExpectTagAndGetValue(input, INTEGER, value));
+}
+
+TEST_F(pkixder_input_tests, ExpectTagAndGetValue_SECItem_ValidEmpty)
+{
+  Input input;
+  ASSERT_EQ(Success,
+            input.Init(DER_SEQUENCE_EMPTY, sizeof DER_SEQUENCE_EMPTY));
+  SECItem value = { siBuffer, nullptr, 5 };
+  ASSERT_EQ(Success, ExpectTagAndGetValue(input, SEQUENCE, value));
+  ASSERT_EQ(0u, value.len);
+  ASSERT_TRUE(input.AtEnd());
+}
+
+TEST_F(pkixder_input_tests, ExpectTagAndGetValue_SECItem_ValidNotEmpty)
+{
+  Input input;
+  ASSERT_EQ(Success,
+            input.Init(DER_SEQUENCE_NOT_EMPTY, sizeof DER_SEQUENCE_NOT_EMPTY));
+  SECItem value;
+  ASSERT_EQ(Success, ExpectTagAndGetValue(input, SEQUENCE, value));
+  ASSERT_EQ(sizeof(DER_SEQUENCE_NOT_EMPTY_VALUE), value.len);
+  ASSERT_TRUE(value.data);
+  ASSERT_FALSE(memcmp(value.data, DER_SEQUENCE_NOT_EMPTY_VALUE,
+                      sizeof(DER_SEQUENCE_NOT_EMPTY_VALUE)));
+  ASSERT_TRUE(input.AtEnd());
+}
+
+TEST_F(pkixder_input_tests,
+       ExpectTagAndGetValue_SECItem_InvalidNotEmptyValueTruncated)
+{
+  Input input;
+  ASSERT_EQ(Success,
+            input.Init(DER_SEQUENCE_NOT_EMPTY_VALUE_TRUNCATED,
+                       sizeof DER_SEQUENCE_NOT_EMPTY_VALUE_TRUNCATED));
+  SECItem value;
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER,
+                          ExpectTagAndGetValue(input, SEQUENCE, value));
+}
+
+TEST_F(pkixder_input_tests, ExpectTagAndGetValue_SECItem_InvalidWrongLength)
+{
+  Input input;
+  ASSERT_EQ(Success, input.Init(DER_TRUNCATED_SEQUENCE_OF_INT8,
+                                sizeof DER_TRUNCATED_SEQUENCE_OF_INT8));
+  SECItem value;
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER,
+                          ExpectTagAndGetValue(input, SEQUENCE, value));
+}
+
+TEST_F(pkixder_input_tests, ExpectTagAndGetLength_SECItem_InvalidWrongTag)
+{
+  Input input;
+  ASSERT_EQ(Success,
+            input.Init(DER_SEQUENCE_NOT_EMPTY, sizeof DER_SEQUENCE_NOT_EMPTY));
+  SECItem value;
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER,
+                          ExpectTagAndGetValue(input, INTEGER, value));
+}
+
+TEST_F(pkixder_input_tests, ExpectTagAndGetTLV_SECItem_ValidEmpty)
+{
+  Input input;
+  ASSERT_EQ(Success,
+            input.Init(DER_SEQUENCE_EMPTY, sizeof DER_SEQUENCE_EMPTY));
+  SECItem tlv = { siBuffer, nullptr, 5 };
+  ASSERT_EQ(Success, ExpectTagAndGetTLV(input, SEQUENCE, tlv));
+  ASSERT_EQ(sizeof DER_SEQUENCE_EMPTY, tlv.len);
+  ASSERT_TRUE(tlv.data);
+  ASSERT_FALSE(memcmp(tlv.data, DER_SEQUENCE_EMPTY,
+                      sizeof DER_SEQUENCE_EMPTY));
+  ASSERT_TRUE(input.AtEnd());
+}
+
+TEST_F(pkixder_input_tests, ExpectTagAndGetTLV_SECItem_ValidNotEmpty)
+{
+  Input input;
+  ASSERT_EQ(Success,
+            input.Init(DER_SEQUENCE_NOT_EMPTY, sizeof DER_SEQUENCE_NOT_EMPTY));
+  SECItem tlv;
+  ASSERT_EQ(Success, ExpectTagAndGetTLV(input, SEQUENCE, tlv));
+  ASSERT_EQ(sizeof(DER_SEQUENCE_NOT_EMPTY), tlv.len);
+  ASSERT_TRUE(tlv.data);
+  ASSERT_FALSE(memcmp(tlv.data, DER_SEQUENCE_NOT_EMPTY,
+                      sizeof(DER_SEQUENCE_NOT_EMPTY)));
+  ASSERT_TRUE(input.AtEnd());
+}
+
+TEST_F(pkixder_input_tests,
+       ExpectTagAndGetTLV_SECItem_InvalidNotEmptyValueTruncated)
+{
+  Input input;
+  ASSERT_EQ(Success,
+            input.Init(DER_SEQUENCE_NOT_EMPTY_VALUE_TRUNCATED,
+                       sizeof DER_SEQUENCE_NOT_EMPTY_VALUE_TRUNCATED));
+  SECItem tlv;
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER,
+                          ExpectTagAndGetTLV(input, SEQUENCE, tlv));
+}
+
+TEST_F(pkixder_input_tests, ExpectTagAndGetTLV_SECItem_InvalidWrongLength)
+{
+  Input input;
+  ASSERT_EQ(Success, input.Init(DER_TRUNCATED_SEQUENCE_OF_INT8,
+                                sizeof DER_TRUNCATED_SEQUENCE_OF_INT8));
+  SECItem tlv;
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER,
+                          ExpectTagAndGetTLV(input, SEQUENCE, tlv));
+}
+
+TEST_F(pkixder_input_tests, ExpectTagAndGetTLV_SECItem_InvalidWrongTag)
+{
+  Input input;
+  ASSERT_EQ(Success,
+            input.Init(DER_SEQUENCE_NOT_EMPTY, sizeof DER_SEQUENCE_NOT_EMPTY));
+  SECItem tlv;
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER,
+                          ExpectTagAndGetTLV(input, INTEGER, tlv));
 }
 
 TEST_F(pkixder_input_tests, ExpectTagAndSkipLength)
@@ -531,8 +768,8 @@ TEST_F(pkixder_input_tests, ExpectTagAndSkipLengthWithWrongTag)
   Input input;
   ASSERT_EQ(Success, input.Init(DER_INT16, sizeof DER_INT16));
 
-  ASSERT_EQ(Failure, ExpectTagAndSkipLength(input, OCTET_STRING));
-  ASSERT_EQ(SEC_ERROR_BAD_DER, PR_GetError());
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER,
+                          ExpectTagAndSkipLength(input, OCTET_STRING));
 }
 
 TEST_F(pkixder_input_tests, EndAtEnd)
@@ -548,16 +785,14 @@ TEST_F(pkixder_input_tests, EndBeforeEnd)
   Input input;
   ASSERT_EQ(Success, input.Init(DER_INT16, sizeof DER_INT16));
   ASSERT_EQ(Success, input.Skip(2));
-  ASSERT_EQ(Failure, End(input));
-  ASSERT_EQ(SEC_ERROR_BAD_DER, PR_GetError());
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER, End(input));
 }
 
 TEST_F(pkixder_input_tests, EndAtBeginning)
 {
   Input input;
   ASSERT_EQ(Success, input.Init(DER_INT16, sizeof DER_INT16));
-  ASSERT_EQ(Failure, End(input));
-  ASSERT_EQ(SEC_ERROR_BAD_DER, PR_GetError());
+  ASSERT_RecoverableError(SEC_ERROR_BAD_DER, End(input));
 }
 
 // TODO: Need tests for Nested too?
@@ -565,8 +800,10 @@ TEST_F(pkixder_input_tests, EndAtBeginning)
 Result NestedOfHelper(Input& input, std::vector<uint8_t>& readValues)
 {
   uint8_t value = 0;
-  if (input.Read(value) != Success) {
-    return Failure;
+  Result rv = input.Read(value);
+  EXPECT_EQ(Success, rv);
+  if (rv != Success) {
+    return rv;
   }
   readValues.push_back(value);
   return Success;
@@ -597,64 +834,60 @@ TEST_F(pkixder_input_tests, NestedOfWithTruncatedData)
                                 sizeof DER_TRUNCATED_SEQUENCE_OF_INT8));
 
   std::vector<uint8_t> readValues;
-  ASSERT_EQ(Failure,
+  ASSERT_RecoverableError(
+    SEC_ERROR_BAD_DER,
     NestedOf(input, SEQUENCE, INTEGER, EmptyAllowed::No,
              mozilla::pkix::bind(NestedOfHelper, mozilla::pkix::_1,
                                  mozilla::pkix::ref(readValues))));
-  ASSERT_EQ(SEC_ERROR_BAD_DER, PR_GetError());
   ASSERT_EQ((size_t) 0, readValues.size());
 }
 
-TEST_F(pkixder_input_tests, MatchBytesAtEnd)
+TEST_F(pkixder_input_tests, MatchRestAtEnd)
 {
   Input input;
   static const uint8_t der[1] = { };
   ASSERT_EQ(Success, input.Init(der, 0));
   ASSERT_TRUE(input.AtEnd());
   static const uint8_t toMatch[] = { 1 };
-  ASSERT_FALSE(input.MatchBytes(toMatch));
+  ASSERT_FALSE(input.MatchRest(toMatch));
 }
 
-TEST_F(pkixder_input_tests, MatchBytes1Match)
+TEST_F(pkixder_input_tests, MatchRest1Match)
 {
   Input input;
   static const uint8_t der[] = { 1 };
   ASSERT_EQ(Success, input.Init(der, sizeof der));
   ASSERT_FALSE(input.AtEnd());
-  ASSERT_TRUE(input.MatchBytes(der));
-  ASSERT_TRUE(input.AtEnd());
+  ASSERT_TRUE(input.MatchRest(der));
 }
 
-TEST_F(pkixder_input_tests, MatchBytes1Mismatch)
+TEST_F(pkixder_input_tests, MatchRest1Mismatch)
 {
   Input input;
   static const uint8_t der[] = { 1 };
   ASSERT_EQ(Success, input.Init(der, sizeof der));
   static const uint8_t toMatch[] = { 2 };
-  ASSERT_FALSE(input.MatchBytes(toMatch));
+  ASSERT_FALSE(input.MatchRest(toMatch));
   ASSERT_FALSE(input.AtEnd());
 }
 
-TEST_F(pkixder_input_tests, MatchBytes2Match)
+TEST_F(pkixder_input_tests, MatchRest2WithTrailingByte)
 {
   Input input;
   static const uint8_t der[] = { 1, 2, 3 };
   ASSERT_EQ(Success, input.Init(der, sizeof der));
   static const uint8_t toMatch[] = { 1, 2 };
-  ASSERT_TRUE(input.MatchBytes(toMatch));
-  uint8_t followingByte;
-  ASSERT_EQ(Success, input.Read(followingByte));
-  ASSERT_EQ(3, followingByte);
+  ASSERT_FALSE(input.MatchRest(toMatch));
 }
 
-TEST_F(pkixder_input_tests, MatchBytes2Mismatch)
+TEST_F(pkixder_input_tests, MatchRest2Mismatch)
 {
   Input input;
   static const uint8_t der[] = { 1, 2, 3 };
   ASSERT_EQ(Success, input.Init(der, sizeof der));
   static const uint8_t toMatchMismatch[] = { 1, 3 };
-  ASSERT_FALSE(input.MatchBytes(toMatchMismatch));
-  ASSERT_TRUE(input.MatchBytes(der));
+  ASSERT_FALSE(input.MatchRest(toMatchMismatch));
+  ASSERT_TRUE(input.MatchRest(der));
 }
 
 } // unnamed namespace

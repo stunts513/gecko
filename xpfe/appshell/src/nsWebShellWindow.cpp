@@ -111,6 +111,7 @@ nsresult nsWebShellWindow::Initialize(nsIXULWindow* aParent,
                                       int32_t aInitialWidth,
                                       int32_t aInitialHeight,
                                       bool aIsHiddenWindow,
+                                      nsITabParent *aOpeningTab,
                                       nsWidgetInitData& widgetInitData)
 {
   nsresult rv;
@@ -182,6 +183,8 @@ nsresult nsWebShellWindow::Initialize(nsIXULWindow* aParent,
   // Create web shell
   mDocShell = do_CreateInstance("@mozilla.org/docshell;1");
   NS_ENSURE_TRUE(mDocShell, NS_ERROR_FAILURE);
+
+  mDocShell->SetOpener(aOpeningTab);
 
   // Make sure to set the item type on the docshell _before_ calling
   // Create() so it knows what type it is.
@@ -327,6 +330,8 @@ nsWebShellWindow::SizeModeChanged(nsSizeMode sizeMode)
   nsCOMPtr<nsPIDOMWindow> ourWindow =
     mDocShell ? mDocShell->GetWindow() : nullptr;
   if (ourWindow) {
+    MOZ_ASSERT(ourWindow->IsOuterWindow());
+
     // Let the application know if it's in fullscreen mode so it
     // can update its UI.
     if (sizeMode == nsSizeMode_Fullscreen) {
@@ -337,7 +342,7 @@ nsWebShellWindow::SizeModeChanged(nsSizeMode sizeMode)
     }
 
     // And always fire a user-defined sizemodechange event on the window
-    ourWindow->DispatchCustomEvent("sizemodechange");
+    ourWindow->DispatchCustomEvent(NS_LITERAL_STRING("sizemodechange"));
   }
 
   // Note the current implementation of SetSizeMode just stores
@@ -457,6 +462,8 @@ public:
   }
 
 private:
+  ~WebShellWindowTimerCallback() {}
+
   nsRefPtr<nsWebShellWindow> mWindow;
 };
 

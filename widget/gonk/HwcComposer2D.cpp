@@ -19,9 +19,9 @@
 
 #include "libdisplay/GonkDisplay.h"
 #include "Framebuffer.h"
-#include "GLContext.h"                  // for GLContext
 #include "HwcUtils.h"
 #include "HwcComposer2D.h"
+#include "LayerScope.h"
 #include "mozilla/layers/LayerManagerComposite.h"
 #include "mozilla/layers/PLayerTransaction.h"
 #include "mozilla/layers/ShadowLayerUtilsGralloc.h"
@@ -69,6 +69,7 @@ static StaticRefPtr<HwcComposer2D> sInstance;
 HwcComposer2D::HwcComposer2D()
     : mHwc(nullptr)
     , mList(nullptr)
+    , mGLContext(nullptr)
     , mMaxLayerCount(0)
     , mColorFill(false)
     , mRBSwapSupport(false)
@@ -85,7 +86,7 @@ HwcComposer2D::~HwcComposer2D() {
 }
 
 int
-HwcComposer2D::Init(hwc_display_t dpy, hwc_surface_t sur)
+HwcComposer2D::Init(hwc_display_t dpy, hwc_surface_t sur, gl::GLContext* aGLContext)
 {
     MOZ_ASSERT(!Initialized());
 
@@ -123,6 +124,7 @@ HwcComposer2D::Init(hwc_display_t dpy, hwc_surface_t sur)
 
     mDpy = dpy;
     mSur = sur;
+    mGLContext = aGLContext;
 
     return 0;
 }
@@ -377,9 +379,9 @@ HwcComposer2D::PrepareLayerList(Layer* aLayer,
         // Reflection is applied before rotation
         gfxMatrix rotation = transform * aGLWorldTransform;
         // Compute fuzzy zero like PreservesAxisAlignedRectangles()
-        if (fabs(rotation.xx) < 1e-6) {
-            if (rotation.xy < 0) {
-                if (rotation.yx > 0) {
+        if (fabs(rotation._11) < 1e-6) {
+            if (rotation._21 < 0) {
+                if (rotation._12 > 0) {
                     // 90 degree rotation
                     //
                     // |  0  -1  |
@@ -403,7 +405,7 @@ HwcComposer2D::PrepareLayerList(Layer* aLayer,
                     LOGD("Layer vertically reflected then rotated 270 degrees");
                 }
             } else {
-                if (rotation.yx < 0) {
+                if (rotation._12 < 0) {
                     // 270 degree rotation
                     //
                     // |  0   1  |
@@ -427,8 +429,8 @@ HwcComposer2D::PrepareLayerList(Layer* aLayer,
                     LOGD("Layer horizontally reflected then rotated 270 degrees");
                 }
             }
-        } else if (rotation.xx < 0) {
-            if (rotation.yy > 0) {
+        } else if (rotation._11 < 0) {
+            if (rotation._22 > 0) {
                 // Horizontal reflection
                 //
                 // | -1   0  |
@@ -452,7 +454,7 @@ HwcComposer2D::PrepareLayerList(Layer* aLayer,
                 LOGD("Layer rotated 180 degrees");
             }
         } else {
-            if (rotation.yy < 0) {
+            if (rotation._22 < 0) {
                 // Vertical reflection
                 //
                 // |  1   0  |
@@ -583,6 +585,13 @@ HwcComposer2D::TryHwComposition()
             // GPU or partial OVERLAY Composition
             return false;
         } else if (blitComposite) {
+            // Some EGLSurface implementations require glClear() on blit composition.
+            // See bug 1029856.
+            if (mGLContext) {
+                mGLContext->MakeCurrent();
+                mGLContext->fClearColor(0.0, 0.0, 0.0, 0.0);
+                mGLContext->fClear(LOCAL_GL_COLOR_BUFFER_BIT);
+            }
             // BLIT Composition, flip FB target
             GetGonkDisplay()->UpdateFBSurface(mDpy, mSur);
             FramebufferSurface* fbsurface = (FramebufferSurface*)(GetGonkDisplay()->GetFBSurface());
@@ -682,6 +691,25 @@ HwcComposer2D::Commit()
     hwc_display_contents_1_t *displays[HWC_NUM_DISPLAY_TYPES] = { nullptr };
     displays[HWC_DISPLAY_PRIMARY] = mList;
 
+    for (uint32_t j=0; j < (mList->numHwLayers - 1); j++) {
+        if (mHwcLayerMap.IsEmpty() ||
+            (mList->hwLayers[j].compositionType == HWC_FRAMEBUFFER)) {
+            continue;
+        }
+        LayerRenderState state = mHwcLayerMap[j]->GetLayer()->GetRenderState();
+        if (!state.mTexture) {
+            continue;
+        }
+        TextureHostOGL* texture = state.mTexture->AsHostOGL();
+        if (!texture) {
+            continue;
+        }
+        sp<Fence> fence = texture->GetAndResetAcquireFence();
+        if (fence.get() && fence->isValid()) {
+            mList->hwLayers[j].acquireFenceFd = fence->dup();
+        }
+    }
+
     int err = mHwc->set(mHwc, HWC_NUM_DISPLAY_TYPES, displays);
 
     mPrevDisplayFence = mPrevRetireFence;
@@ -774,17 +802,37 @@ HwcComposer2D::TryRender(Layer* aRoot,
                           gfxMatrix(),
                           aGLWorldTransform))
     {
+        mHwcLayerMap.Clear();
         LOGD("Render aborted. Nothing was drawn to the screen");
         return false;
     }
 
+    // Send data to LayerScope for debugging
+    SendtoLayerScope();
+
     if (!TryHwComposition()) {
         LOGD("H/W Composition failed");
+        LayerScope::CleanLayer();
         return false;
     }
 
     LOGD("Frame rendered");
     return true;
+}
+
+void
+HwcComposer2D::SendtoLayerScope()
+{
+    if (!LayerScope::CheckSendable()) {
+        return;
+    }
+
+    const int len = mList->numHwLayers;
+    for (int i = 0; i < len; ++i) {
+        LayerComposite* layer = mHwcLayerMap[i];
+        const hwc_rect_t r = mList->hwLayers[i].displayFrame;
+        LayerScope::SendLayer(layer, r.right - r.left, r.bottom - r.top);
+    }
 }
 
 } // namespace mozilla

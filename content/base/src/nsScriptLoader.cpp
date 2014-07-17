@@ -49,7 +49,7 @@
 #include "nsCrossSiteListenerProxy.h"
 #include "nsSandboxFlags.h"
 #include "nsContentTypeParser.h"
-#include "nsINetworkSeer.h"
+#include "nsINetworkPredictor.h"
 #include "mozilla/dom/EncodingUtils.h"
 
 #include "mozilla/CORSMode.h"
@@ -69,6 +69,11 @@ using namespace mozilla::dom;
 //////////////////////////////////////////////////////////////
 
 class nsScriptLoadRequest MOZ_FINAL : public nsISupports {
+  ~nsScriptLoadRequest()
+  {
+    js_free(mScriptTextBuf);
+  }
+
 public:
   nsScriptLoadRequest(nsIScriptElement* aElement,
                       uint32_t aVersion,
@@ -83,11 +88,6 @@ public:
       mLineNo(1),
       mCORSMode(aCORSMode)
   {
-  }
-
-  ~nsScriptLoadRequest()
-  {
-    js_free(mScriptTextBuf);
   }
 
   NS_DECL_THREADSAFE_ISUPPORTS
@@ -345,8 +345,8 @@ nsScriptLoader::StartLoad(nsScriptLoadRequest *aRequest, const nsAString &aType,
   }
 
   nsCOMPtr<nsILoadContext> loadContext(do_QueryInterface(docshell));
-  mozilla::net::SeerLearn(aRequest->mURI, mDocument->GetDocumentURI(),
-      nsINetworkSeer::LEARN_LOAD_SUBRESOURCE, loadContext);
+  mozilla::net::PredictorLearn(aRequest->mURI, mDocument->GetDocumentURI(),
+      nsINetworkPredictor::LEARN_LOAD_SUBRESOURCE, loadContext);
 
   // Set the initiator type
   nsCOMPtr<nsITimedChannel> timedChannel(do_QueryInterface(httpChannel));
@@ -887,16 +887,15 @@ nsScriptLoader::AttemptAsyncScriptParse(nsScriptLoadRequest* aRequest)
     return NS_ERROR_FAILURE;
   }
 
-  nsCOMPtr<nsIScriptContext> context = globalObject->GetScriptContext();
-  if (!context) {
+  AutoJSAPI jsapi;
+  if (!jsapi.InitWithLegacyErrorReporting(globalObject)) {
     return NS_ERROR_FAILURE;
   }
 
-  AutoPushJSContext cx(context->GetNativeContext());
+  JSContext* cx = jsapi.cx();
   JS::Rooted<JSObject*> global(cx, globalObject->GetGlobalJSObject());
-
   JS::CompileOptions options(cx);
-  FillCompileOptionsForRequest(aRequest, global, &options);
+  FillCompileOptionsForRequest(jsapi, aRequest, global, &options);
 
   if (!JS::CanCompileOffThread(cx, options, aRequest->mScriptTextLength)) {
     return NS_ERROR_FAILURE;
@@ -1067,7 +1066,8 @@ nsScriptLoader::GetScriptGlobalObject()
 }
 
 void
-nsScriptLoader::FillCompileOptionsForRequest(nsScriptLoadRequest *aRequest,
+nsScriptLoader::FillCompileOptionsForRequest(const AutoJSAPI &jsapi,
+                                             nsScriptLoadRequest *aRequest,
                                              JS::Handle<JSObject *> aScopeChain,
                                              JS::CompileOptions *aOptions)
 {
@@ -1086,15 +1086,9 @@ nsScriptLoader::FillCompileOptionsForRequest(nsScriptLoadRequest *aRequest,
     aOptions->setOriginPrincipals(nsJSPrincipals::get(aRequest->mOriginPrincipal));
   }
 
-  AutoJSContext cx;
+  JSContext* cx = jsapi.cx();
   JS::Rooted<JS::Value> elementVal(cx);
   MOZ_ASSERT(aRequest->mElement);
-  // XXXbz this is super-fragile, because the code that _uses_ the
-  // JS::CompileOptions is nowhere near us, but we have to coordinate
-  // compartments with it... and in particular, it will compile in the
-  // compartment of aScopeChain, so we want to wrap into that compartment as
-  // well.
-  JSAutoCompartment ac(cx, aScopeChain);
   if (NS_SUCCEEDED(nsContentUtils::WrapNative(cx, aRequest->mElement,
                                               &elementVal,
                                               /* aAllowWrapping = */ true))) {
@@ -1166,7 +1160,7 @@ nsScriptLoader::EvaluateScript(nsScriptLoadRequest* aRequest,
     }
 
     JS::CompileOptions options(entryScript.cx());
-    FillCompileOptionsForRequest(aRequest, global, &options);
+    FillCompileOptionsForRequest(entryScript, aRequest, global, &options);
     rv = nsJSUtils::EvaluateString(entryScript.cx(), aSrcBuf, global, options,
                                    aOffThreadToken);
   }
@@ -1477,9 +1471,11 @@ nsScriptLoader::PrepareLoadedRequest(nsScriptLoadRequest* aRequest,
     }
 
     nsAutoCString sourceMapURL;
-    httpChannel->GetResponseHeader(NS_LITERAL_CSTRING("X-SourceMap"), sourceMapURL);
-    aRequest->mHasSourceMapURL = true;
-    aRequest->mSourceMapURL = NS_ConvertUTF8toUTF16(sourceMapURL);
+    rv = httpChannel->GetResponseHeader(NS_LITERAL_CSTRING("X-SourceMap"), sourceMapURL);
+    if (NS_SUCCEEDED(rv)) {
+      aRequest->mHasSourceMapURL = true;
+      aRequest->mSourceMapURL = NS_ConvertUTF8toUTF16(sourceMapURL);
+    }
   }
 
   nsCOMPtr<nsIChannel> channel = do_QueryInterface(req);

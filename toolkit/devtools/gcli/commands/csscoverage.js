@@ -29,20 +29,34 @@ exports.items = [
   {
     name: "csscoverage start",
     hidden: true,
-    description: l10n.lookup("csscoverageStartDesc"),
+    description: l10n.lookup("csscoverageStartDesc2"),
+    params: [
+      {
+        name: "noreload",
+        type: "boolean",
+        description: l10n.lookup("csscoverageStartNoReloadDesc"),
+        manual: l10n.lookup("csscoverageStartNoReloadManual")
+      }
+    ],
     exec: function*(args, context) {
       let usage = yield csscoverage.getUsage(context.environment.target);
+      if (usage == null) {
+        throw new Error(l10n.lookup("csscoverageNoRemoteError"));
+      }
       yield usage.start(context.environment.chromeWindow,
-                        context.environment.target);
+                        context.environment.target, args.noreload);
     }
   },
   {
     name: "csscoverage stop",
     hidden: true,
-    description: l10n.lookup("csscoverageStopDesc"),
+    description: l10n.lookup("csscoverageStopDesc2"),
     exec: function*(args, context) {
       let target = context.environment.target;
       let usage = yield csscoverage.getUsage(target);
+      if (usage == null) {
+        throw new Error(l10n.lookup("csscoverageNoRemoteError"));
+      }
       yield usage.stop();
       yield gDevTools.showToolbox(target, "styleeditor");
     }
@@ -50,10 +64,13 @@ exports.items = [
   {
     name: "csscoverage oneshot",
     hidden: true,
-    description: l10n.lookup("csscoverageOneShotDesc"),
+    description: l10n.lookup("csscoverageOneShotDesc2"),
     exec: function*(args, context) {
       let target = context.environment.target;
       let usage = yield csscoverage.getUsage(target);
+      if (usage == null) {
+        throw new Error(l10n.lookup("csscoverageNoRemoteError"));
+      }
       yield usage.oneshot();
       yield gDevTools.showToolbox(target, "styleeditor");
     }
@@ -61,26 +78,47 @@ exports.items = [
   {
     name: "csscoverage toggle",
     hidden: true,
-    description: l10n.lookup("csscoverageToggleDesc"),
+    description: l10n.lookup("csscoverageToggleDesc2"),
+    state: {
+      isChecked: function(target) {
+        return csscoverage.getUsage(target).then(usage => {
+          return usage.isRunning();
+        });
+      },
+      onChange: function(target, handler) {
+        csscoverage.getUsage(target).then(usage => {
+          this.handler = ev => { handler("state-change", ev); };
+          usage.on("state-change", this.handler);
+        });
+      },
+      offChange: function(target, handler) {
+        csscoverage.getUsage(target).then(usage => {
+          usage.off("state-change", this.handler);
+          this.handler = undefined;
+        });
+      },
+    },
     exec: function*(args, context) {
       let target = context.environment.target;
       let usage = yield csscoverage.getUsage(target);
-
-      let running = yield usage.toggle();
-      if (running) {
-        return l10n.lookup("csscoverageRunningReply");
+      if (usage == null) {
+        throw new Error(l10n.lookup("csscoverageNoRemoteError"));
       }
 
-      yield usage.stop();
-      yield gDevTools.showToolbox(target, "styleeditor");
+      yield usage.toggle(context.environment.chromeWindow,
+                         context.environment.target);
     }
   },
   {
     name: "csscoverage report",
     hidden: true,
-    description: l10n.lookup("csscoverageReportDesc"),
+    description: l10n.lookup("csscoverageReportDesc2"),
     exec: function*(args, context) {
       let usage = yield csscoverage.getUsage(context.environment.target);
+      if (usage == null) {
+        throw new Error(l10n.lookup("csscoverageNoRemoteError"));
+      }
+
       return {
         isTypedData: true,
         type: "csscoveragePageReport",

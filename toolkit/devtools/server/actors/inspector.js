@@ -61,7 +61,13 @@ const events = require("sdk/event/core");
 const {Unknown} = require("sdk/platform/xpcom");
 const {Class} = require("sdk/core/heritage");
 const {PageStyleActor} = require("devtools/server/actors/styles");
-const {HighlighterActor} = require("devtools/server/actors/highlighter");
+const {
+  HighlighterActor,
+  CustomHighlighterActor,
+  HIGHLIGHTER_CLASSES
+} = require("devtools/server/actors/highlighter");
+const {getLayoutChangesObserver, releaseLayoutChangesObserver} =
+  require("devtools/server/actors/layout");
 
 const FONT_FAMILY_PREVIEW_TEXT = "The quick brown fox jumps over the lazy dog";
 const FONT_FAMILY_PREVIEW_TEXT_SIZE = 20;
@@ -177,6 +183,10 @@ var NodeActor = exports.NodeActor = protocol.ActorClass({
     protocol.Actor.prototype.initialize.call(this, null);
     this.walker = walker;
     this.rawNode = node;
+
+    // Storing the original display of the node, to track changes when reflows
+    // occur
+    this.wasDisplayed = this.isDisplayed;
   },
 
   toString: function() {
@@ -227,6 +237,8 @@ var NodeActor = exports.NodeActor = protocol.ActorClass({
       attrs: this.writeAttrs(),
 
       pseudoClassLocks: this.writePseudoClassLocks(),
+
+      isDisplayed: this.isDisplayed,
     };
 
     if (this.isDocumentElement()) {
@@ -245,6 +257,29 @@ var NodeActor = exports.NodeActor = protocol.ActorClass({
     }
 
     return form;
+  },
+
+  get computedStyle() {
+    if (Cu.isDeadWrapper(this.rawNode) ||
+        this.rawNode.nodeType !== Ci.nsIDOMNode.ELEMENT_NODE ||
+        !this.rawNode.ownerDocument ||
+        !this.rawNode.ownerDocument.defaultView) {
+      return null;
+    }
+    return this.rawNode.ownerDocument.defaultView.getComputedStyle(this.rawNode);
+  },
+
+  /**
+   * Is the node's display computed style value other than "none"
+   */
+  get isDisplayed() {
+    let style = this.computedStyle;
+    if (!style) {
+      // Consider all non-element nodes as displayed
+      return true;
+    } else {
+      return style.display !== "none";
+    }
   },
 
   writeAttrs: function() {
@@ -548,6 +583,12 @@ let NodeFront = protocol.FrontClass(NodeActor, {
     return this.pseudoClassLocks.some(locked => locked === pseudo);
   },
 
+  get isDisplayed() {
+    // The NodeActor's form contains the isDisplayed information as a boolean
+    // starting from FF32. Before that, the property is missing
+    return "isDisplayed" in this._form ? this._form.isDisplayed : true;
+  },
+
   getNodeValue: protocol.custom(function() {
     if (!this.incompleteValue) {
       return delayedResolve(new ShortLongString(this.shortValue));
@@ -686,7 +727,7 @@ var NodeListActor = exports.NodeListActor = protocol.ActorClass({
   initialize: function(walker, nodeList) {
     protocol.Actor.prototype.initialize.call(this);
     this.walker = walker;
-    this.nodeList = nodeList;
+    this.nodeList = nodeList || [];
   },
 
   destroy: function() {
@@ -836,6 +877,10 @@ var WalkerActor = protocol.ActorClass({
     },
     "highlighter-hide" : {
       type: "highlighter-hide"
+    },
+    "display-change" : {
+      type: "display-change",
+      nodes: Arg(0, "array:domnode")
     }
   },
 
@@ -875,6 +920,10 @@ var WalkerActor = protocol.ActorClass({
     // Ensure that the root document node actor is ready and
     // managed.
     this.rootNode = this.document();
+
+    this.reflowObserver = getLayoutChangesObserver(this.tabActor);
+    this._onReflows = this._onReflows.bind(this);
+    this.reflowObserver.on("reflows", this._onReflows);
   },
 
   // Returns the JSON representation of this object over the wire.
@@ -890,10 +939,18 @@ var WalkerActor = protocol.ActorClass({
   },
 
   destroy: function() {
-    this._hoveredNode = null;
+    this._destroyed = true;
+
     this.clearPseudoClassLocks();
     this._activePseudoClassLocks = null;
+
+    this._hoveredNode = null;
     this.rootDoc = null;
+
+    this.reflowObserver.off("reflows", this._onReflows);
+    this.reflowObserver = null;
+    releaseLayoutChangesObserver(this.tabActor);
+
     events.emit(this, "destroyed");
     protocol.Actor.prototype.destroy.call(this);
   },
@@ -904,7 +961,7 @@ var WalkerActor = protocol.ActorClass({
     if (actor instanceof NodeActor) {
       if (this._activePseudoClassLocks &&
           this._activePseudoClassLocks.has(actor)) {
-        this.clearPsuedoClassLocks(actor);
+        this.clearPseudoClassLocks(actor);
       }
       this._refMap.delete(actor.rawNode);
     }
@@ -926,6 +983,28 @@ var WalkerActor = protocol.ActorClass({
       this._watchDocument(actor);
     }
     return actor;
+  },
+
+  _onReflows: function(reflows) {
+    // Going through the nodes the walker knows about, see which ones have
+    // had their display changed and send a display-change event if any
+    let changes = [];
+    for (let [node, actor] of this._refMap) {
+      if (Cu.isDeadWrapper(node)) {
+        continue;
+      }
+
+      let isDisplayed = actor.isDisplayed;
+      if (isDisplayed !== actor.wasDisplayed) {
+        changes.push(actor);
+        // Updating the original value
+        actor.wasDisplayed = isDisplayed;
+      }
+    }
+
+    if (changes.length) {
+      events.emit(this, "display-change", changes);
+    }
   },
 
   /**
@@ -1643,13 +1722,14 @@ var WalkerActor = protocol.ActorClass({
     if (!node.writePseudoClassLocks()) {
       this._activePseudoClassLocks.delete(node);
     }
+
     this._queuePseudoClassMutation(node);
     return true;
   },
 
   /**
-   * Clear all the pseudo-classes on a given node
-   * or all nodes.
+   * Clear all the pseudo-classes on a given node or all nodes.
+   * @param {NodeActor} node Optional node to clear pseudo-classes on
    */
   clearPseudoClassLocks: method(function(node) {
     if (node) {
@@ -1861,7 +1941,7 @@ var WalkerActor = protocol.ActorClass({
   }),
 
   queueMutation: function(mutation) {
-    if (!this.actorID) {
+    if (!this.actorID || this._destroyed) {
       // We've been destroyed, don't bother queueing this mutation.
       return;
     }
@@ -2529,6 +2609,19 @@ var InspectorActor = protocol.ActorClass({
     }
   }),
 
+  /**
+   * The most used highlighter actor is the HighlighterActor which can be
+   * conveniently retrieved by this method.
+   * The same instance will always be returned by this method when called
+   * several times.
+   * The highlighter actor returned here is used to highlighter elements's
+   * box-models from the markup-view, layout-view, console, debugger, ... as
+   * well as select elements with the pointer (pick).
+   *
+   * @param {Boolean} autohide Optionally autohide the highlighter after an
+   * element has been picked
+   * @return {HighlighterActor}
+   */
   getHighlighter: method(function (autohide) {
     if (this._highlighterPromise) {
       return this._highlighterPromise;
@@ -2539,9 +2632,37 @@ var InspectorActor = protocol.ActorClass({
     });
     return this._highlighterPromise;
   }, {
-    request: { autohide: Arg(0, "boolean") },
+    request: {
+      autohide: Arg(0, "boolean")
+    },
     response: {
       highligter: RetVal("highlighter")
+    }
+  }),
+
+  /**
+   * If consumers need to display several highlighters at the same time or
+   * different types of highlighters, then this method should be used, passing
+   * the type name of the highlighter needed as argument.
+   * A new instance will be created everytime the method is called, so it's up
+   * to the consumer to release it when it is not needed anymore
+   *
+   * @param {String} type The type of highlighter to create
+   * @return {Highlighter} The highlighter actor instance or null if the
+   * typeName passed doesn't match any available highlighter
+   */
+  getHighlighterByType: method(function (typeName) {
+    if (HIGHLIGHTER_CLASSES[typeName]) {
+      return CustomHighlighterActor(this, typeName);
+    } else {
+      return null;
+    }
+  }, {
+    request: {
+      typeName: Arg(0)
+    },
+    response: {
+      highlighter: RetVal("nullable:customhighlighter")
     }
   }),
 
@@ -2607,7 +2728,6 @@ var InspectorFront = exports.InspectorFront = protocol.FrontClass(InspectorActor
 
     // XXX: This is the first actor type in its hierarchy to use the protocol
     // library, so we're going to self-own on the client side for now.
-    client.addActorPool(this);
     this.manage(this);
   },
 
@@ -2659,6 +2779,10 @@ function nodeDocument(node) {
  * See TreeWalker documentation for explanations of the methods.
  */
 function DocumentWalker(aNode, aRootWin, aShow, aFilter, aExpandEntityReferences) {
+  if (!aRootWin.location) {
+    throw new Error("Got an invalid root window in DocumentWalker");
+  }
+
   let doc = nodeDocument(aNode);
   this.layoutHelpers = new LayoutHelpers(aRootWin);
   this.walker = doc.createTreeWalker(doc,

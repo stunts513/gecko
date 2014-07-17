@@ -82,9 +82,12 @@ VideoDecoderConfig::Update(sp<MetaData>& aMetaData, const char* aMimeType)
   size_t size;
   uint32_t type;
 
-  if (aMetaData->findData(kKeyAVCC, &type, &data, &size)) {
-    mozilla::Vector<uint8_t> extra_data;
+  if (aMetaData->findData(kKeyAVCC, &type, &data, &size) && size >= 7) {
+    extra_data.clear();
     extra_data.append(reinterpret_cast<const uint8_t*>(data), size);
+    // Set size of the NAL length to 4. The demuxer formats its output with
+    // this NAL length size.
+    extra_data[4] |= 3;
     annex_b = AnnexB::ConvertExtraDataToAnnexB(extra_data);
   }
 }
@@ -123,6 +126,31 @@ MP4Sample::Update()
   is_sync_point = FindInt32(m, kKeyIsSyncFrame);
   data = reinterpret_cast<uint8_t*>(mMediaBuffer->data());
   size = mMediaBuffer->range_length();
+}
+
+void
+MP4Sample::Pad(size_t aPaddingBytes)
+{
+  MOZ_ASSERT(data == mMediaBuffer->data());
+
+  size_t newSize = size + aPaddingBytes;
+
+  // If the existing MediaBuffer has enough space then we just recycle it. If
+  // not then we copy to a new buffer.
+  uint8_t* newData = mMediaBuffer && newSize <= mMediaBuffer->size()
+                       ? data
+                       : new uint8_t[newSize];
+
+  memset(newData + size, 0, aPaddingBytes);
+
+  if (newData != data) {
+    memcpy(newData, data, size);
+    extra_buffer = data = newData;
+    if (mMediaBuffer) {
+      mMediaBuffer->release();
+      mMediaBuffer = nullptr;
+    }
+  }
 }
 
 void

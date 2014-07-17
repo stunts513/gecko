@@ -163,10 +163,6 @@ const kEventConstructors = {
                                                          return new ErrorEvent(aName, aProps);
                                                        },
   },
-  ElementReplaceEvent:                       { create: function (aName, aProps) {
-                                                         return new ElementReplaceEvent(aName, aProps);
-                                                       },
-                                             },
   FocusEvent:                                { create: function (aName, aProps) {
                                                          return new FocusEvent(aName, aProps);
                                                        },
@@ -253,6 +249,10 @@ const kEventConstructors = {
                                                           return new MozEmergencyCbModeEvent(aName, aProps);
                                                        },
                                              },
+  MozMessageDeletedEvent:                    { create: function (aName, aProps) {
+                                                         return new MozMessageDeletedEvent(aName, aProps);
+                                                       },
+                                             },
   MozMmsEvent:                               { create: function (aName, aProps) {
                                                          return new MozMmsEvent(aName, aProps);
                                                        },
@@ -283,6 +283,10 @@ const kEventConstructors = {
                                              },
   MozWifiStatusChangeEvent:                  { create: function (aName, aProps) {
                                                           return new MozWifiStatusChangeEvent(aName, aProps);
+                                                       },
+                                             },
+  MozWifiStationInfoEvent:                   { create: function (aName, aProps) {
+                                                          return new MozWifiStationInfoEvent(aName, aProps);
                                                        },
                                              },
   MutationEvent:                             { create: function (aName, aProps) {

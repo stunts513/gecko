@@ -52,7 +52,6 @@
 #include "gfxBlur.h"
 #include "gfxUtils.h"
 
-#include "nsFrameManager.h"
 #include "nsFrameLoader.h"
 #include "nsBidi.h"
 #include "nsBidiPresUtils.h"
@@ -70,6 +69,7 @@
 #include "mozilla/Alignment.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/CheckedInt.h"
+#include "mozilla/DebugOnly.h"
 #include "mozilla/dom/ContentParent.h"
 #include "mozilla/dom/ImageData.h"
 #include "mozilla/dom/PBrowserParent.h"
@@ -92,6 +92,7 @@
 #include "mozilla/dom/HTMLVideoElement.h"
 #include "mozilla/dom/TextMetrics.h"
 #include "mozilla/dom/UnionTypes.h"
+#include "mozilla/dom/SVGMatrix.h"
 #include "nsGlobalWindow.h"
 #include "GLContext.h"
 #include "GLContextProvider.h"
@@ -144,11 +145,12 @@ static int64_t gCanvasAzureMemoryUsed = 0;
 // underlying surface implementations.  See bug 655638 for details.
 class Canvas2dPixelsReporter MOZ_FINAL : public nsIMemoryReporter
 {
+  ~Canvas2dPixelsReporter() {}
 public:
   NS_DECL_ISUPPORTS
 
   NS_IMETHOD CollectReports(nsIHandleReportCallback* aHandleReport,
-                            nsISupports* aData)
+                            nsISupports* aData, bool aAnonymize)
   {
     return MOZ_COLLECT_REPORT(
       "canvas-2d-pixels", KIND_OTHER, UNITS_BYTES,
@@ -261,7 +263,8 @@ public:
         mode = ExtendMode::REPEAT;
       }
       mPattern = new (mSurfacePattern.addr())
-        SurfacePattern(state.patternStyles[aStyle]->mSurface, mode);
+        SurfacePattern(state.patternStyles[aStyle]->mSurface, mode,
+                       state.patternStyles[aStyle]->mTransform);
     }
 
     return *mPattern;
@@ -364,7 +367,7 @@ public:
                                          mCtx->CurrentState().op);
   }
 
-  operator DrawTarget*() 
+  operator DrawTarget*()
   {
     return mTarget;
   }
@@ -380,6 +383,12 @@ private:
   Float mSigma;
   mgfx::Rect mTempRect;
 };
+
+void
+CanvasPattern::SetTransform(SVGMatrix& aMatrix)
+{
+  mTransform = ToMatrix(aMatrix.GetMatrix());
+}
 
 void
 CanvasGradient::AddColorStop(float offset, const nsAString& colorstr, ErrorResult& rv)
@@ -550,7 +559,11 @@ DrawTarget* CanvasRenderingContext2D::sErrorTarget = nullptr;
 
 
 CanvasRenderingContext2D::CanvasRenderingContext2D()
-  : mForceSoftware(false), mZero(false), mOpaque(false), mResetLayer(true)
+  : mForceSoftware(false)
+  // these are the default values from the Canvas spec
+  , mWidth(300), mHeight(150)
+  , mZero(false), mOpaque(false)
+  , mResetLayer(true)
   , mIPC(false)
   , mStream(nullptr)
   , mIsEntireFrameInvalid(false)
@@ -931,7 +944,8 @@ CanvasRenderingContext2D::EnsureTarget()
         if (glue && glue->GetGrContext() && glue->GetGLContext()) {
           mTarget = Factory::CreateDrawTargetSkiaWithGrContext(glue->GetGrContext(), size, format);
           if (mTarget) {
-            mStream = gfx::SurfaceStream::CreateForType(SurfaceStreamType::TripleBuffer, glue->GetGLContext());
+            mStream = gl::SurfaceStream::CreateForType(gl::SurfaceStreamType::TripleBuffer,
+                                                       glue->GetGLContext());
             AddDemotableContext(this);
           } else {
             printf_stderr("Failed to create a SkiaGL DrawTarget, falling back to software\n");
@@ -962,6 +976,15 @@ CanvasRenderingContext2D::EnsureTarget()
     }
 
     mTarget->ClearRect(mgfx::Rect(Point(0, 0), Size(mWidth, mHeight)));
+    if (mTarget->GetBackendType() == mgfx::BackendType::CAIRO) {
+      // Cairo doesn't play well with huge clips. When given a very big clip it
+      // will try to allocate big mask surface without taking the target
+      // size into account which can cause OOM. See bug 1034593.
+      // This limits the clip extents to the size of the canvas.
+      // A fix in Cairo would probably be preferable, but requires somewhat
+      // invasive changes.
+      mTarget->PushClipRect(mgfx::Rect(Point(0, 0), Size(mWidth, mHeight)));
+    }
     // Force a full layer transaction since we didn't have a layer before
     // and now we might need one.
     if (mCanvasElement) {
@@ -1049,6 +1072,11 @@ CanvasRenderingContext2D::InitializeWithSurface(nsIDocShell *shell,
     mTarget = sErrorTarget;
   }
 
+  if (mTarget->GetBackendType() == mgfx::BackendType::CAIRO) {
+    // Cf comment in EnsureTarget
+    mTarget->PushClipRect(mgfx::Rect(Point(0, 0), Size(mWidth, mHeight)));
+  }
+
   return NS_OK;
 }
 
@@ -1058,10 +1086,6 @@ CanvasRenderingContext2D::SetIsOpaque(bool isOpaque)
   if (isOpaque != mOpaque) {
     mOpaque = isOpaque;
     ClearTarget();
-  }
-
-  if (mOpaque) {
-    EnsureTarget();
   }
 
   return NS_OK;
@@ -1266,8 +1290,9 @@ CanvasRenderingContext2D::SetTransform(double m11, double m12,
   mTarget->SetTransform(matrix);
 }
 
-JSObject*
-MatrixToJSObject(JSContext* cx, const Matrix& matrix, ErrorResult& error)
+static void
+MatrixToJSObject(JSContext* cx, const Matrix& matrix,
+                 JS::MutableHandle<JSObject*> result, ErrorResult& error)
 {
   double elts[6] = { matrix._11, matrix._12,
                      matrix._21, matrix._22,
@@ -1277,10 +1302,9 @@ MatrixToJSObject(JSContext* cx, const Matrix& matrix, ErrorResult& error)
   JS::Rooted<JS::Value> val(cx);
   if (!ToJSValue(cx, elts, &val)) {
     error.Throw(NS_ERROR_OUT_OF_MEMORY);
-    return nullptr;
+  } else {
+    result.set(&val.toObject());
   }
-
-  return &val.toObject();
 }
 
 static bool
@@ -1333,11 +1357,13 @@ CanvasRenderingContext2D::SetMozCurrentTransform(JSContext* cx,
   }
 }
 
-JSObject*
+void
 CanvasRenderingContext2D::GetMozCurrentTransform(JSContext* cx,
+                                                 JS::MutableHandle<JSObject*> result,
                                                  ErrorResult& error) const
 {
-  return MatrixToJSObject(cx, mTarget ? mTarget->GetTransform() : Matrix(), error);
+  MatrixToJSObject(cx, mTarget ? mTarget->GetTransform() : Matrix(),
+                   result, error);
 }
 
 void
@@ -1360,12 +1386,14 @@ CanvasRenderingContext2D::SetMozCurrentTransformInverse(JSContext* cx,
   }
 }
 
-JSObject*
+void
 CanvasRenderingContext2D::GetMozCurrentTransformInverse(JSContext* cx,
+                                                        JS::MutableHandle<JSObject*> result,
                                                         ErrorResult& error) const
 {
   if (!mTarget) {
-    return MatrixToJSObject(cx, Matrix(), error);
+    MatrixToJSObject(cx, Matrix(), result, error);
+    return;
   }
 
   Matrix ctm = mTarget->GetTransform();
@@ -1375,7 +1403,7 @@ CanvasRenderingContext2D::GetMozCurrentTransformInverse(JSContext* cx,
     ctm = Matrix(NaN, NaN, NaN, NaN, NaN, NaN);
   }
 
-  return MatrixToJSObject(cx, ctm, error);
+  MatrixToJSObject(cx, ctm, result, error);
 }
 
 //
@@ -2313,14 +2341,15 @@ CanvasRenderingContext2D::SetFont(const nsAString& font,
                      fontStyle->mFont.sizeAdjust,
                      fontStyle->mFont.systemFont,
                      printerFont,
-                     fontStyle->mFont.variant == NS_STYLE_FONT_VARIANT_SMALL_CAPS,
+                     fontStyle->mFont.synthesis & NS_FONT_SYNTHESIS_WEIGHT,
+                     fontStyle->mFont.synthesis & NS_FONT_SYNTHESIS_STYLE,
                      fontStyle->mFont.languageOverride);
 
   fontStyle->mFont.AddFontFeaturesToStyle(&style);
 
   nsPresContext *c = presShell->GetPresContext();
   CurrentState().fontGroup =
-      gfxPlatform::GetPlatform()->CreateFontGroup(fontStyle->mFont.name,
+      gfxPlatform::GetPlatform()->CreateFontGroup(fontStyle->mFont.fontlist,
                                                   &style,
                                                   c->GetUserFontSet());
   NS_ASSERTION(CurrentState().fontGroup, "Could not get font group");
@@ -2494,7 +2523,7 @@ CanvasRenderingContext2D::AddHitRegion(const HitRegionOptions& options, ErrorRes
                                 nsINode::DeleteProperty<bool>);
 #endif
   }
-  
+
   // finally, add the region to the list
   RegionInfo info;
   info.mId = options.mId;
@@ -2997,7 +3026,7 @@ gfxFontGroup *CanvasRenderingContext2D::GetCurrentFontStyle()
       gfxFontStyle style;
       style.size = kDefaultFontSize;
       CurrentState().fontGroup =
-        gfxPlatform::GetPlatform()->CreateFontGroup(NS_LITERAL_STRING("sans-serif"),
+        gfxPlatform::GetPlatform()->CreateFontGroup(FontFamilyList(eFamily_sans_serif),
                                                     &style,
                                                     nullptr);
       if (CurrentState().fontGroup) {
@@ -3110,10 +3139,12 @@ CanvasRenderingContext2D::SetMozDash(JSContext* cx,
   }
 }
 
-JS::Value
-CanvasRenderingContext2D::GetMozDash(JSContext* cx, ErrorResult& error)
+void
+CanvasRenderingContext2D::GetMozDash(JSContext* cx,
+                                     JS::MutableHandle<JS::Value> retval,
+                                     ErrorResult& error)
 {
-  return DashArrayToJSVal(CurrentState().dash, cx, error);
+  DashArrayToJSVal(CurrentState().dash, cx, retval, error);
 }
 
 void
@@ -3434,7 +3465,7 @@ CanvasRenderingContext2D::DrawDirectlyToCanvas(
 
   nsRefPtr<gfxContext> context = new gfxContext(tempTarget);
   context->SetMatrix(contextMatrix);
-  
+
   // FLAG_CLAMP is added for increased performance
   uint32_t modifiedFlags = image.mDrawingFlags | imgIContainer::FLAG_CLAMP;
 
@@ -3640,7 +3671,11 @@ CanvasRenderingContext2D::DrawWindow(nsGlobalWindow& window, double x,
   }
   nsRefPtr<gfxContext> thebes;
   RefPtr<DrawTarget> drawDT;
-  if (gfxPlatform::GetPlatform()->SupportsAzureContentForDrawTarget(mTarget)) {
+  // Rendering directly is faster and can be done if mTarget supports Azure
+  // and does not need alpha blending.
+  if (gfxPlatform::GetPlatform()->SupportsAzureContentForDrawTarget(mTarget) &&
+      GlobalAlpha() == 1.0f)
+  {
     thebes = new gfxContext(mTarget);
     thebes->SetMatrix(gfxMatrix(matrix._11, matrix._12, matrix._21,
                                 matrix._22, matrix._31, matrix._32));
@@ -3678,7 +3713,7 @@ CanvasRenderingContext2D::DrawWindow(nsGlobalWindow& window, double x,
     mgfx::Rect sourceRect(0, 0, sw, sh);
     mTarget->DrawSurface(source, destRect, sourceRect,
                          DrawSurfaceOptions(mgfx::Filter::POINT),
-                         DrawOptions(1.0f, CompositionOp::OP_OVER,
+                         DrawOptions(GlobalAlpha(), CompositionOp::OP_OVER,
                                      AntialiasMode::NONE));
     mTarget->Flush();
   } else {
@@ -4006,7 +4041,9 @@ void
 CanvasRenderingContext2D::PutImageData(ImageData& imageData, double dx,
                                        double dy, ErrorResult& error)
 {
-  dom::Uint8ClampedArray arr(imageData.GetDataObject());
+  dom::Uint8ClampedArray arr;
+  DebugOnly<bool> inited = arr.Init(imageData.GetDataObject());
+  MOZ_ASSERT(inited);
 
   error = PutImageData_explicit(JS_DoubleToInt32(dx), JS_DoubleToInt32(dy),
                                 imageData.Width(), imageData.Height(),
@@ -4020,7 +4057,9 @@ CanvasRenderingContext2D::PutImageData(ImageData& imageData, double dx,
                                        double dirtyHeight,
                                        ErrorResult& error)
 {
-  dom::Uint8ClampedArray arr(imageData.GetDataObject());
+  dom::Uint8ClampedArray arr;
+  DebugOnly<bool> inited = arr.Init(imageData.GetDataObject());
+  MOZ_ASSERT(inited);
 
   error = PutImageData_explicit(JS_DoubleToInt32(dx), JS_DoubleToInt32(dy),
                                 imageData.Width(), imageData.Height(),
@@ -4041,7 +4080,7 @@ CanvasRenderingContext2D::PutImageData_explicit(int32_t x, int32_t y, uint32_t w
                                                 int32_t dirtyWidth, int32_t dirtyHeight)
 {
   if (w == 0 || h == 0) {
-    return NS_ERROR_DOM_SYNTAX_ERR;
+    return NS_ERROR_DOM_INVALID_STATE_ERR;
   }
 
   IntRect dirtyRect;
@@ -4095,7 +4134,7 @@ CanvasRenderingContext2D::PutImageData_explicit(int32_t x, int32_t y, uint32_t w
 
   uint32_t len = w * h * 4;
   if (dataLen != len) {
-    return NS_ERROR_DOM_SYNTAX_ERR;
+    return NS_ERROR_DOM_INVALID_STATE_ERR;
   }
 
   nsRefPtr<gfxImageSurface> imgsurf = new gfxImageSurface(gfxIntSize(w, h),
@@ -4216,6 +4255,12 @@ CanvasRenderingContext2D::GetCanvasLayer(nsDisplayListBuilder* aBuilder,
                                          CanvasLayer *aOldLayer,
                                          LayerManager *aManager)
 {
+  if (mOpaque) {
+    // If we're opaque then make sure we have a surface so we paint black
+    // instead of transparent.
+    EnsureTarget();
+  }
+
   // Don't call EnsureTarget() ... if there isn't already a surface, then
   // we have nothing to paint and there is no need to create a surface just
   // to paint nothing. Also, EnsureTarget() can cause creation of a persistent
@@ -4339,7 +4384,7 @@ CanvasPath::CanvasPath(nsISupports* aParent)
   mPathBuilder = gfxPlatform::GetPlatform()->ScreenReferenceDrawTarget()->CreatePathBuilder();
 }
 
-CanvasPath::CanvasPath(nsISupports* aParent, RefPtr<PathBuilder> aPathBuilder)
+CanvasPath::CanvasPath(nsISupports* aParent, TemporaryRef<PathBuilder> aPathBuilder)
   : mParent(aParent), mPathBuilder(aPathBuilder)
 {
   SetIsDOMBinding();
@@ -4536,8 +4581,8 @@ CanvasPath::BezierTo(const gfx::Point& aCP1,
   mPathBuilder->BezierTo(aCP1, aCP2, aCP3);
 }
 
-RefPtr<gfx::Path>
-CanvasPath::GetPath(const CanvasWindingRule& winding, const mozilla::RefPtr<mozilla::gfx::DrawTarget>& mTarget) const
+TemporaryRef<gfx::Path>
+CanvasPath::GetPath(const CanvasWindingRule& winding, const DrawTarget* aTarget) const
 {
   FillRule fillRule = FillRule::FILL_WINDING;
   if (winding == CanvasWindingRule::Evenodd) {
@@ -4545,7 +4590,7 @@ CanvasPath::GetPath(const CanvasWindingRule& winding, const mozilla::RefPtr<mozi
   }
 
   if (mPath &&
-      (mPath->GetBackendType() == mTarget->GetType()) &&
+      (mPath->GetBackendType() == aTarget->GetBackendType()) &&
       (mPath->GetFillRule() == fillRule)) {
     return mPath;
   }
@@ -4561,8 +4606,8 @@ CanvasPath::GetPath(const CanvasWindingRule& winding, const mozilla::RefPtr<mozi
   }
 
   // retarget our backend if we're used with a different backend
-  if (mPath->GetBackendType() != mTarget->GetType()) {
-    RefPtr<PathBuilder> tmpPathBuilder = mTarget->CreatePathBuilder(fillRule);
+  if (mPath->GetBackendType() != aTarget->GetBackendType()) {
+    RefPtr<PathBuilder> tmpPathBuilder = aTarget->CreatePathBuilder(fillRule);
     mPath->StreamToSink(tmpPathBuilder);
     mPath = tmpPathBuilder->Finish();
   } else if (mPath->GetFillRule() != fillRule) {

@@ -31,6 +31,7 @@
 
 #include "mozilla/Endian.h"
 #include "mozilla/FloatingPoint.h"
+#include "mozilla/TypedEnum.h"
 
 #include <algorithm>
 
@@ -53,7 +54,7 @@ using mozilla::LittleEndian;
 using mozilla::NativeEndian;
 using JS::CanonicalizeNaN;
 
-enum StructuredDataType {
+enum StructuredDataType MOZ_ENUM_TYPE(uint32_t) {
     /* Structured data types provided by the engine */
     SCTAG_FLOAT_MAX = 0xFFF00000,
     SCTAG_NULL = 0xFFFF0000,
@@ -74,16 +75,16 @@ enum StructuredDataType {
     SCTAG_DO_NOT_USE_2, // Required for backwards compatibility
     SCTAG_TYPED_ARRAY_OBJECT,
     SCTAG_TYPED_ARRAY_V1_MIN = 0xFFFF0100,
-    SCTAG_TYPED_ARRAY_V1_INT8 = SCTAG_TYPED_ARRAY_V1_MIN + ScalarTypeDescr::TYPE_INT8,
-    SCTAG_TYPED_ARRAY_V1_UINT8 = SCTAG_TYPED_ARRAY_V1_MIN + ScalarTypeDescr::TYPE_UINT8,
-    SCTAG_TYPED_ARRAY_V1_INT16 = SCTAG_TYPED_ARRAY_V1_MIN + ScalarTypeDescr::TYPE_INT16,
-    SCTAG_TYPED_ARRAY_V1_UINT16 = SCTAG_TYPED_ARRAY_V1_MIN + ScalarTypeDescr::TYPE_UINT16,
-    SCTAG_TYPED_ARRAY_V1_INT32 = SCTAG_TYPED_ARRAY_V1_MIN + ScalarTypeDescr::TYPE_INT32,
-    SCTAG_TYPED_ARRAY_V1_UINT32 = SCTAG_TYPED_ARRAY_V1_MIN + ScalarTypeDescr::TYPE_UINT32,
-    SCTAG_TYPED_ARRAY_V1_FLOAT32 = SCTAG_TYPED_ARRAY_V1_MIN + ScalarTypeDescr::TYPE_FLOAT32,
-    SCTAG_TYPED_ARRAY_V1_FLOAT64 = SCTAG_TYPED_ARRAY_V1_MIN + ScalarTypeDescr::TYPE_FLOAT64,
-    SCTAG_TYPED_ARRAY_V1_UINT8_CLAMPED = SCTAG_TYPED_ARRAY_V1_MIN + ScalarTypeDescr::TYPE_UINT8_CLAMPED,
-    SCTAG_TYPED_ARRAY_V1_MAX = SCTAG_TYPED_ARRAY_V1_MIN + ScalarTypeDescr::TYPE_MAX - 1,
+    SCTAG_TYPED_ARRAY_V1_INT8 = SCTAG_TYPED_ARRAY_V1_MIN + Scalar::Int8,
+    SCTAG_TYPED_ARRAY_V1_UINT8 = SCTAG_TYPED_ARRAY_V1_MIN + Scalar::Uint8,
+    SCTAG_TYPED_ARRAY_V1_INT16 = SCTAG_TYPED_ARRAY_V1_MIN + Scalar::Int16,
+    SCTAG_TYPED_ARRAY_V1_UINT16 = SCTAG_TYPED_ARRAY_V1_MIN + Scalar::Uint16,
+    SCTAG_TYPED_ARRAY_V1_INT32 = SCTAG_TYPED_ARRAY_V1_MIN + Scalar::Int32,
+    SCTAG_TYPED_ARRAY_V1_UINT32 = SCTAG_TYPED_ARRAY_V1_MIN + Scalar::Uint32,
+    SCTAG_TYPED_ARRAY_V1_FLOAT32 = SCTAG_TYPED_ARRAY_V1_MIN + Scalar::Float32,
+    SCTAG_TYPED_ARRAY_V1_FLOAT64 = SCTAG_TYPED_ARRAY_V1_MIN + Scalar::Float64,
+    SCTAG_TYPED_ARRAY_V1_UINT8_CLAMPED = SCTAG_TYPED_ARRAY_V1_MIN + Scalar::Uint8Clamped,
+    SCTAG_TYPED_ARRAY_V1_MAX = SCTAG_TYPED_ARRAY_V1_MIN + Scalar::TypeMax - 1,
 
     /*
      * Define a separate range of numbers for Transferable-only tags, since
@@ -134,6 +135,7 @@ struct SCOutput {
     bool writePair(uint32_t tag, uint32_t data);
     bool writeDouble(double d);
     bool writeBytes(const void *p, size_t nbytes);
+    bool writeChars(const Latin1Char *p, size_t nchars);
     bool writeChars(const jschar *p, size_t nchars);
     bool writePtr(const void *);
 
@@ -164,6 +166,7 @@ class SCInput {
     bool readPair(uint32_t *tagp, uint32_t *datap);
     bool readDouble(double *p);
     bool readBytes(void *p, size_t nbytes);
+    bool readChars(Latin1Char *p, size_t nchars);
     bool readChars(jschar *p, size_t nchars);
     bool readPtr(void **);
 
@@ -211,8 +214,11 @@ struct JSStructuredCloneReader {
 
     bool readTransferMap();
 
+    template <typename CharT>
+    JSString *readStringImpl(uint32_t nchars);
+    JSString *readString(uint32_t data);
+
     bool checkDouble(double d);
-    JSString *readString(uint32_t nchars);
     bool readTypedArray(uint32_t arrayType, uint32_t nelems, Value *vp, bool v1Read = false);
     bool readArrayBuffer(uint32_t nbytes, Value *vp);
     bool readV1ArrayBuffer(uint32_t arrayType, uint32_t nelems, Value *vp);
@@ -321,7 +327,7 @@ js_GetSCOffset(JSStructuredCloneWriter* writer)
 
 JS_STATIC_ASSERT(SCTAG_END_OF_BUILTIN_TYPES <= JS_SCTAG_USER_MIN);
 JS_STATIC_ASSERT(JS_SCTAG_USER_MIN <= JS_SCTAG_USER_MAX);
-JS_STATIC_ASSERT(ScalarTypeDescr::TYPE_INT8 == 0);
+JS_STATIC_ASSERT(Scalar::Int8 == 0);
 
 static void
 ReportErrorTransferable(JSContext *cx, const JSStructuredCloneCallbacks *callbacks)
@@ -370,7 +376,7 @@ Discard(uint64_t *buffer, size_t nbytes, const JSStructuredCloneCallbacks *cb, v
         return;
 
     // freeTransfer should not GC
-    JS::AutoAssertNoGC nogc;
+    JS::AutoSuppressGCAnalysis nogc;
 
     uint64_t numTransferables = LittleEndian::readUint64(point++);
     while (numTransferables--) {
@@ -553,6 +559,13 @@ SCInput::readBytes(void *p, size_t nbytes)
 }
 
 bool
+SCInput::readChars(Latin1Char *p, size_t nchars)
+{
+    static_assert(sizeof(Latin1Char) == sizeof(uint8_t), "Latin1Char must fit in 1 byte");
+    return readBytes(p, nchars);
+}
+
+bool
 SCInput::readChars(jschar *p, size_t nchars)
 {
     JS_ASSERT(sizeof(jschar) == sizeof(uint16_t));
@@ -573,7 +586,7 @@ SCInput::readPtr(void **p)
     uint64_t u;
     if (!readNativeEndian(&u))
         return false;
-    *p = reinterpret_cast<void*>(u);
+    *p = reinterpret_cast<void*>(NativeEndian::swapFromLittleEndian(u));
     return true;
 }
 
@@ -689,6 +702,13 @@ SCOutput::writeChars(const jschar *p, size_t nchars)
 }
 
 bool
+SCOutput::writeChars(const Latin1Char *p, size_t nchars)
+{
+    static_assert(sizeof(Latin1Char) == sizeof(uint8_t), "Latin1Char must fit in 1 byte");
+    return writeBytes(p, nchars);
+}
+
+bool
 SCOutput::writePtr(const void *p)
 {
     return write(reinterpret_cast<uint64_t>(p));
@@ -774,11 +794,21 @@ JSStructuredCloneWriter::reportErrorTransferable()
 bool
 JSStructuredCloneWriter::writeString(uint32_t tag, JSString *str)
 {
-    size_t length = str->length();
-    const jschar *chars = str->getChars(context());
-    if (!chars)
+    JSLinearString *linear = str->ensureLinear(context());
+    if (!linear)
         return false;
-    return out.writePair(tag, uint32_t(length)) && out.writeChars(chars, length);
+
+    static_assert(JSString::MAX_LENGTH <= INT32_MAX, "String length must fit in 31 bits");
+
+    uint32_t length = linear->length();
+    uint32_t lengthAndEncoding = length | (uint32_t(linear->hasLatin1Chars()) << 31);
+    if (!out.writePair(tag, lengthAndEncoding))
+        return false;
+
+    JS::AutoCheckCannotGC nogc;
+    return linear->hasLatin1Chars()
+           ? out.writeChars(linear->latin1Chars(nogc), length)
+           : out.writeChars(linear->twoByteChars(nogc), length);
 }
 
 bool
@@ -1133,9 +1163,10 @@ JSStructuredCloneReader::checkDouble(double d)
 
 namespace {
 
+template <typename CharT>
 class Chars {
     JSContext *cx;
-    jschar *p;
+    CharT *p;
   public:
     explicit Chars(JSContext *cx) : cx(cx), p(nullptr) {}
     ~Chars() { js_free(p); }
@@ -1143,34 +1174,43 @@ class Chars {
     bool allocate(size_t len) {
         JS_ASSERT(!p);
         // We're going to null-terminate!
-        p = cx->pod_malloc<jschar>(len + 1);
+        p = cx->pod_malloc<CharT>(len + 1);
         if (p) {
-            p[len] = jschar(0);
+            p[len] = CharT(0);
             return true;
         }
         return false;
     }
-    jschar *get() { return p; }
+    CharT *get() { return p; }
     void forget() { p = nullptr; }
 };
 
 } /* anonymous namespace */
 
+template <typename CharT>
 JSString *
-JSStructuredCloneReader::readString(uint32_t nchars)
+JSStructuredCloneReader::readStringImpl(uint32_t nchars)
 {
     if (nchars > JSString::MAX_LENGTH) {
         JS_ReportErrorNumber(context(), js_GetErrorMessage, nullptr,
                              JSMSG_SC_BAD_SERIALIZED_DATA, "string length");
         return nullptr;
     }
-    Chars chars(context());
+    Chars<CharT> chars(context());
     if (!chars.allocate(nchars) || !in.readChars(chars.get(), nchars))
         return nullptr;
-    JSString *str = js_NewString<CanGC>(context(), chars.get(), nchars);
+    JSString *str = NewString<CanGC>(context(), chars.get(), nchars);
     if (str)
         chars.forget();
     return str;
+}
+
+JSString *
+JSStructuredCloneReader::readString(uint32_t data)
+{
+    uint32_t nchars = data & JS_BITMASK(31);
+    bool latin1 = data & (1 << 31);
+    return latin1 ? readStringImpl<Latin1Char>(nchars) : readStringImpl<jschar>(nchars);
 }
 
 static uint32_t
@@ -1184,7 +1224,7 @@ bool
 JSStructuredCloneReader::readTypedArray(uint32_t arrayType, uint32_t nelems, Value *vp,
                                         bool v1Read)
 {
-    if (arrayType > ScalarTypeDescr::TYPE_UINT8_CLAMPED) {
+    if (arrayType > Scalar::Uint8Clamped) {
         JS_ReportErrorNumber(context(), js_GetErrorMessage, nullptr,
                              JSMSG_SC_BAD_SERIALIZED_DATA, "unhandled typed array element type");
         return false;
@@ -1215,31 +1255,31 @@ JSStructuredCloneReader::readTypedArray(uint32_t arrayType, uint32_t nelems, Val
     RootedObject obj(context(), nullptr);
 
     switch (arrayType) {
-      case ScalarTypeDescr::TYPE_INT8:
+      case Scalar::Int8:
         obj = JS_NewInt8ArrayWithBuffer(context(), buffer, byteOffset, nelems);
         break;
-      case ScalarTypeDescr::TYPE_UINT8:
+      case Scalar::Uint8:
         obj = JS_NewUint8ArrayWithBuffer(context(), buffer, byteOffset, nelems);
         break;
-      case ScalarTypeDescr::TYPE_INT16:
+      case Scalar::Int16:
         obj = JS_NewInt16ArrayWithBuffer(context(), buffer, byteOffset, nelems);
         break;
-      case ScalarTypeDescr::TYPE_UINT16:
+      case Scalar::Uint16:
         obj = JS_NewUint16ArrayWithBuffer(context(), buffer, byteOffset, nelems);
         break;
-      case ScalarTypeDescr::TYPE_INT32:
+      case Scalar::Int32:
         obj = JS_NewInt32ArrayWithBuffer(context(), buffer, byteOffset, nelems);
         break;
-      case ScalarTypeDescr::TYPE_UINT32:
+      case Scalar::Uint32:
         obj = JS_NewUint32ArrayWithBuffer(context(), buffer, byteOffset, nelems);
         break;
-      case ScalarTypeDescr::TYPE_FLOAT32:
+      case Scalar::Float32:
         obj = JS_NewFloat32ArrayWithBuffer(context(), buffer, byteOffset, nelems);
         break;
-      case ScalarTypeDescr::TYPE_FLOAT64:
+      case Scalar::Float64:
         obj = JS_NewFloat64ArrayWithBuffer(context(), buffer, byteOffset, nelems);
         break;
-      case ScalarTypeDescr::TYPE_UINT8_CLAMPED:
+      case Scalar::Uint8Clamped:
         obj = JS_NewUint8ClampedArrayWithBuffer(context(), buffer, byteOffset, nelems);
         break;
       default:
@@ -1271,18 +1311,18 @@ static size_t
 bytesPerTypedArrayElement(uint32_t arrayType)
 {
     switch (arrayType) {
-      case ScalarTypeDescr::TYPE_INT8:
-      case ScalarTypeDescr::TYPE_UINT8:
-      case ScalarTypeDescr::TYPE_UINT8_CLAMPED:
+      case Scalar::Int8:
+      case Scalar::Uint8:
+      case Scalar::Uint8Clamped:
         return sizeof(uint8_t);
-      case ScalarTypeDescr::TYPE_INT16:
-      case ScalarTypeDescr::TYPE_UINT16:
+      case Scalar::Int16:
+      case Scalar::Uint16:
         return sizeof(uint16_t);
-      case ScalarTypeDescr::TYPE_INT32:
-      case ScalarTypeDescr::TYPE_UINT32:
-      case ScalarTypeDescr::TYPE_FLOAT32:
+      case Scalar::Int32:
+      case Scalar::Uint32:
+      case Scalar::Float32:
         return sizeof(uint32_t);
-      case ScalarTypeDescr::TYPE_FLOAT64:
+      case Scalar::Float64:
         return sizeof(uint64_t);
       default:
         MOZ_ASSUME_UNREACHABLE("unknown TypedArrayObject type");
@@ -1296,7 +1336,7 @@ bytesPerTypedArrayElement(uint32_t arrayType)
 bool
 JSStructuredCloneReader::readV1ArrayBuffer(uint32_t arrayType, uint32_t nelems, Value *vp)
 {
-    JS_ASSERT(arrayType <= ScalarTypeDescr::TYPE_UINT8_CLAMPED);
+    JS_ASSERT(arrayType <= Scalar::Uint8Clamped);
 
     uint32_t nbytes = nelems * bytesPerTypedArrayElement(arrayType);
     JSObject *obj = ArrayBufferObject::create(context(), nbytes);
@@ -1307,18 +1347,18 @@ JSStructuredCloneReader::readV1ArrayBuffer(uint32_t arrayType, uint32_t nelems, 
     JS_ASSERT(buffer.byteLength() == nbytes);
 
     switch (arrayType) {
-      case ScalarTypeDescr::TYPE_INT8:
-      case ScalarTypeDescr::TYPE_UINT8:
-      case ScalarTypeDescr::TYPE_UINT8_CLAMPED:
+      case Scalar::Int8:
+      case Scalar::Uint8:
+      case Scalar::Uint8Clamped:
         return in.readArray((uint8_t*) buffer.dataPointer(), nelems);
-      case ScalarTypeDescr::TYPE_INT16:
-      case ScalarTypeDescr::TYPE_UINT16:
+      case Scalar::Int16:
+      case Scalar::Uint16:
         return in.readArray((uint16_t*) buffer.dataPointer(), nelems);
-      case ScalarTypeDescr::TYPE_INT32:
-      case ScalarTypeDescr::TYPE_UINT32:
-      case ScalarTypeDescr::TYPE_FLOAT32:
+      case Scalar::Int32:
+      case Scalar::Uint32:
+      case Scalar::Float32:
         return in.readArray((uint32_t*) buffer.dataPointer(), nelems);
-      case ScalarTypeDescr::TYPE_FLOAT64:
+      case Scalar::Float64:
         return in.readArray((uint64_t*) buffer.dataPointer(), nelems);
       default:
         MOZ_ASSUME_UNREACHABLE("unknown TypedArrayObject type");
@@ -1387,23 +1427,23 @@ JSStructuredCloneReader::startRead(Value *vp)
 
       case SCTAG_REGEXP_OBJECT: {
         RegExpFlag flags = RegExpFlag(data);
-        uint32_t tag2, nchars;
-        if (!in.readPair(&tag2, &nchars))
+        uint32_t tag2, stringData;
+        if (!in.readPair(&tag2, &stringData))
             return false;
         if (tag2 != SCTAG_STRING) {
             JS_ReportErrorNumber(context(), js_GetErrorMessage, nullptr,
                                  JSMSG_SC_BAD_SERIALIZED_DATA, "regexp");
             return false;
         }
-        JSString *str = readString(nchars);
+        JSString *str = readString(stringData);
         if (!str)
             return false;
-        JSFlatString *flat = str->ensureFlat(context());
-        if (!flat)
+
+        RootedAtom atom(context(), AtomizeString(context(), str));
+        if (!atom)
             return false;
 
-        RegExpObject *reobj = RegExpObject::createNoStatics(context(), flat->chars(),
-                                                            flat->length(), flags, nullptr,
+        RegExpObject *reobj = RegExpObject::createNoStatics(context(), atom, flags, nullptr,
                                                             context()->tempLifoAlloc());
         if (!reobj)
             return false;
@@ -1452,7 +1492,6 @@ JSStructuredCloneReader::startRead(Value *vp)
         if (!in.read(&arrayType))
             return false;
         return readTypedArray(arrayType, data, vp);
-        break;
 
       default: {
         if (tag <= SCTAG_FLOAT_MAX) {

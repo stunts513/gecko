@@ -39,6 +39,7 @@ enum Phase {
     PHASE_SWEEP_MARK_GRAY_WEAK,
     PHASE_FINALIZE_START,
     PHASE_SWEEP_ATOMS,
+    PHASE_SWEEP_SYMBOL_REGISTRY,
     PHASE_SWEEP_COMPARTMENTS,
     PHASE_SWEEP_DISCARD_CODE,
     PHASE_SWEEP_TABLES,
@@ -74,14 +75,31 @@ enum Stat {
 
 class StatisticsSerializer;
 
-struct Statistics {
+struct ZoneGCStats
+{
+    /* Number of zones collected in this GC. */
+    int collectedCount;
+
+    /* Total number of zones in the Runtime at the start of this GC. */
+    int zoneCount;
+
+    /* Total number of compartments in the Runtime at the start of this GC. */
+    int compartmentCount;
+
+    bool isCollectingAllZones() const { return collectedCount == zoneCount; }
+
+    ZoneGCStats() : collectedCount(0), zoneCount(0), compartmentCount(0) {}
+};
+
+struct Statistics
+{
     explicit Statistics(JSRuntime *rt);
     ~Statistics();
 
     void beginPhase(Phase phase);
     void endPhase(Phase phase);
 
-    void beginSlice(int collectedCount, int zoneCount, int compartmentCount, JS::gcreason::Reason reason);
+    void beginSlice(const ZoneGCStats &zoneStats, JS::gcreason::Reason reason);
     void endSlice();
 
     void reset(const char *reason) { slices.back().resetReason = reason; }
@@ -98,6 +116,8 @@ struct Statistics {
     jschar *formatMessage();
     jschar *formatJSON(uint64_t timestamp);
 
+    JS::GCSliceCallback setSliceCallback(JS::GCSliceCallback callback);
+
   private:
     JSRuntime *runtime;
 
@@ -112,9 +132,8 @@ struct Statistics {
      */
     int gcDepth;
 
-    int collectedCount;
-    int zoneCount;
-    int compartmentCount;
+    ZoneGCStats zoneStats;
+
     const char *nonincrementalReason;
 
     struct SliceData {
@@ -160,6 +179,8 @@ struct Statistics {
     /* Sweep times for SCCs of compartments. */
     Vector<int64_t, 0, SystemAllocPolicy> sccTimes;
 
+    JS::GCSliceCallback sliceCallback;
+
     void beginGC();
     void endGC();
 
@@ -173,13 +194,12 @@ struct Statistics {
 
 struct AutoGCSlice
 {
-    AutoGCSlice(Statistics &stats, int collectedCount, int zoneCount, int compartmentCount,
-                JS::gcreason::Reason reason
+    AutoGCSlice(Statistics &stats, const ZoneGCStats &zoneStats, JS::gcreason::Reason reason
                 MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
       : stats(stats)
     {
         MOZ_GUARD_OBJECT_NOTIFIER_INIT;
-        stats.beginSlice(collectedCount, zoneCount, compartmentCount, reason);
+        stats.beginSlice(zoneStats, reason);
     }
     ~AutoGCSlice() { stats.endSlice(); }
 
@@ -207,7 +227,7 @@ struct AutoPhase
 
 struct MaybeAutoPhase
 {
-    MaybeAutoPhase(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM)
+    explicit MaybeAutoPhase(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM)
       : stats(nullptr)
     {
         MOZ_GUARD_OBJECT_NOTIFIER_INIT;

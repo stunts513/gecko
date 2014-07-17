@@ -25,6 +25,7 @@
 #include "mozilla/FileUtils.h"
 #include "mozilla/Hal.h"
 #include "mozilla/StaticPtr.h"
+#include "MozMtpServer.h"
 #include "nsAutoPtr.h"
 #include "nsMemory.h"
 #include "nsString.h"
@@ -35,6 +36,7 @@
 #include "VolumeManager.h"
 
 using namespace mozilla::hal;
+USING_MTP_NAMESPACE
 
 /**************************************************************************
 *
@@ -69,6 +71,7 @@ using namespace mozilla::hal;
 
 #define ICS_SYS_USB_FUNCTIONS "/sys/devices/virtual/android_usb/android0/functions"
 #define ICS_SYS_UMS_DIRECTORY "/sys/devices/virtual/android_usb/android0/f_mass_storage"
+#define ICS_SYS_MTP_DIRECTORY "/sys/devices/virtual/android_usb/android0/f_mtp"
 #define ICS_SYS_USB_STATE     "/sys/devices/virtual/android_usb/android0/state"
 
 #define USE_DEBUG 0
@@ -177,17 +180,10 @@ public:
     VolumeManager::RegisterStateObserver(&mVolumeManagerStateObserver);
     Volume::RegisterObserver(&mVolumeEventObserver);
 
-    VolumeManager::VolumeArray::size_type numVolumes = VolumeManager::NumVolumes();
-    VolumeManager::VolumeArray::index_type i;
-    for (i = 0; i < numVolumes; i++) {
-      RefPtr<Volume> vol = VolumeManager::GetVolume(i);
-      if (vol) {
-        vol->RegisterObserver(&mVolumeEventObserver);
-        // We need to pick up the intial value of the
-        // ums.volume.NAME.enabled setting.
-        AutoMounterSetting::CheckVolumeSettings(vol->Name());
-      }
-    }
+    // It's possible that the VolumeManager is already in the READY state,
+    // so we call CheckVolumeSettings here to cover that case. Otherwise,
+    // we'll pick it up when the VolumeManage state changes to VOLUMES_READY.
+    CheckVolumeSettings();
 
     DBG("Calling UpdateState from constructor");
     UpdateState();
@@ -206,6 +202,38 @@ public:
     Volume::UnregisterObserver(&mVolumeEventObserver);
     VolumeManager::UnregisterStateObserver(&mVolumeManagerStateObserver);
   }
+
+  void CheckVolumeSettings()
+  {
+    if (VolumeManager::State() != VolumeManager::VOLUMES_READY) {
+      DBG("CheckVolumeSettings: VolumeManager is NOT READY yet");
+      return;
+    }
+    DBG("CheckVolumeSettings: VolumeManager is READY");
+
+    // The VolumeManager knows about all of the volumes from vold. We now
+    // know the names of all of the volumes, so we can find out what the
+    // initial sharing settings are set to.
+
+    VolumeManager::VolumeArray::size_type numVolumes = VolumeManager::NumVolumes();
+    VolumeManager::VolumeArray::index_type i;
+    for (i = 0; i < numVolumes; i++) {
+      RefPtr<Volume> vol = VolumeManager::GetVolume(i);
+      if (vol) {
+        vol->RegisterObserver(&mVolumeEventObserver);
+        // We need to pick up the intial value of the
+        // ums.volume.NAME.enabled setting.
+        AutoMounterSetting::CheckVolumeSettings(vol->Name());
+
+        // Note: eventually CheckVolumeSettings will call
+        //       AutoMounter::SetSharingMode, which will in turn call
+        //       UpdateState if needed.
+      }
+    }
+  }
+
+  void StartMtpServer();
+  void StopMtpServer();
 
   void UpdateState();
 
@@ -262,7 +290,7 @@ public:
     vol->SetUnmountRequested(false);
     vol->SetMountRequested(false);
     vol->SetSharingEnabled(aAllowSharing);
-    DBG("Calling UpdateState due to volume %s shareing set to %d",
+    DBG("Calling UpdateState due to volume %s sharing set to %d",
         vol->NameStr(), (int)aAllowSharing);
     UpdateState();
   }
@@ -325,6 +353,7 @@ private:
 };
 
 static StaticRefPtr<AutoMounter> sAutoMounter;
+static StaticRefPtr<MozMtpServer> sMozMtpServer;
 
 /***************************************************************************/
 
@@ -336,6 +365,13 @@ AutoVolumeManagerStateObserver::Notify(const VolumeManager::StateChangedEvent &)
   if (!sAutoMounter) {
     return;
   }
+
+  // In the event that the VolumeManager just entered the VOLUMES_READY state,
+  // we call CheckVolumeSettings here (it's possible that this method never
+  // gets called if the VolumeManager was already in the VOLUMES_READY state
+  // by the time the AutoMounter was constructed).
+  sAutoMounter->CheckVolumeSettings();
+
   DBG("Calling UpdateState due to VolumeManagerStateObserver");
   sAutoMounter->UpdateState();
 }
@@ -367,6 +403,25 @@ AutoMounterResponseCallback::ResponseReceived(const VolumeCommand* aCommand)
     DBG("Calling UpdateState due to VolumeResponseCallback::OnError");
     sAutoMounter->UpdateState();
   }
+}
+
+void
+AutoMounter::StartMtpServer()
+{
+  if (sMozMtpServer) {
+    // Mtp Server is already running - nothing to do
+    return;
+  }
+  LOG("Starting MtpServer");
+  sMozMtpServer = new MozMtpServer();
+  sMozMtpServer->Run();
+}
+
+void
+AutoMounter::StopMtpServer()
+{
+  LOG("Stopping MtpServer");
+  sMozMtpServer = nullptr;
 }
 
 /***************************************************************************/
@@ -412,22 +467,23 @@ AutoMounter::UpdateState()
 
   bool  umsAvail = false;
   bool  umsEnabled = false;
+  bool  mtpAvail = false;
+  bool  mtpEnabled = false;
 
   if (access(ICS_SYS_USB_FUNCTIONS, F_OK) == 0) {
+    char functionsStr[60];
+    if (!ReadSysFile(ICS_SYS_USB_FUNCTIONS, functionsStr, sizeof(functionsStr))) {
+      ERR("Error reading file '%s': %s", ICS_SYS_USB_FUNCTIONS, strerror(errno));
+      functionsStr[0] = '\0';
+    }
     umsAvail = (access(ICS_SYS_UMS_DIRECTORY, F_OK) == 0);
     if (umsAvail) {
-      char functionsStr[60];
-      if (ReadSysFile(ICS_SYS_USB_FUNCTIONS, functionsStr, sizeof(functionsStr))) {
-        umsEnabled = strstr(functionsStr, "mass_storage") != nullptr;
-      } else {
-        ERR("Error reading file '%s': %s", ICS_SYS_USB_FUNCTIONS, strerror(errno));
-        umsEnabled = false;
-      }
-    } else {
-      umsEnabled = false;
+      umsEnabled = strstr(functionsStr, "mass_storage") != nullptr;
     }
-  } else {
-    umsAvail = ReadSysFile(GB_SYS_UMS_ENABLE, &umsEnabled);
+    mtpAvail = (access(ICS_SYS_MTP_DIRECTORY, F_OK) == 0);
+    if (mtpAvail) {
+      mtpEnabled = strstr(functionsStr, "mtp") != nullptr;
+    }
   }
 
   bool usbCablePluggedIn = IsUsbCablePluggedIn();
@@ -440,9 +496,19 @@ AutoMounter::UpdateState()
     }
   }
 
-  bool tryToShare = (umsAvail && umsEnabled && enabled && usbCablePluggedIn);
-  LOG("UpdateState: umsAvail:%d umsEnabled:%d mode:%d usbCablePluggedIn:%d tryToShare:%d",
-      umsAvail, umsEnabled, mMode, usbCablePluggedIn, tryToShare);
+  bool tryToShare = (((umsAvail && umsEnabled) || (mtpAvail && mtpEnabled))
+                  && enabled && usbCablePluggedIn);
+  LOG("UpdateState: ums:%d%d mtp:%d%d mode:%d usbCablePluggedIn:%d tryToShare:%d",
+      umsAvail, umsEnabled, mtpAvail, mtpEnabled, mMode, usbCablePluggedIn, tryToShare);
+
+  if (mtpAvail && mtpEnabled) {
+    if (enabled && usbCablePluggedIn) {
+      StartMtpServer();
+    } else {
+      StopMtpServer();
+    }
+    return;
+  }
 
   bool filesOpen = false;
   static unsigned filesOpenDelayCount = 0;
@@ -873,6 +939,9 @@ AutoMounterUnmountVolume(const nsCString& aVolumeName)
 void
 ShutdownAutoMounter()
 {
+  if (sAutoMounter) {
+    sAutoMounter->StopMtpServer();
+  }
   sAutoMounterSetting = nullptr;
   sUsbCableObserver = nullptr;
 

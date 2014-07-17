@@ -45,7 +45,7 @@ SourceSurfaceD2D::GetDataSurface()
 {
   RefPtr<DataSourceSurfaceD2D> result = new DataSourceSurfaceD2D(this);
   if (result->IsValid()) {
-    return result;
+    return result.forget();
   }
   return nullptr;
 }
@@ -69,10 +69,17 @@ SourceSurfaceD2D::InitFromData(unsigned char *aData,
   }
 
   D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(D2DPixelFormat(aFormat));
-  hr = aRT->CreateBitmap(D2DIntSize(aSize), aData, aStride, props, byRef(mBitmap));
+  hr = aRT->CreateBitmap(D2DIntSize(aSize), props, byRef(mBitmap));
 
   if (FAILED(hr)) {
     gfxWarning() << "Failed to create D2D Bitmap for data. Code: " << hr;
+    return false;
+  }
+
+  hr = mBitmap->CopyFromMemory(nullptr, aData, aStride);
+
+  if (FAILED(hr)) {
+    gfxWarning() << "Failed to copy data to D2D bitmap. Code: " << hr;
     return false;
   }
 
@@ -169,10 +176,17 @@ DataSourceSurfaceD2D::DataSourceSurfaceD2D(SourceSurfaceD2D* aSourceSurface)
 
   renderTarget->BeginDraw();
   renderTarget->Clear(D2D1::ColorF(0, 0.0f));
-  renderTarget->DrawBitmap(aSourceSurface->mBitmap,
-                           D2D1::RectF(0, 0,
-                                       Float(mSize.width),
-                                       Float(mSize.height)));
+  if (aSourceSurface->GetFormat() != SurfaceFormat::A8) {
+    renderTarget->DrawBitmap(aSourceSurface->mBitmap,
+                             D2D1::RectF(0, 0,
+                             Float(mSize.width),
+                             Float(mSize.height)));
+  } else {
+    RefPtr<ID2D1SolidColorBrush> brush;
+    renderTarget->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::White), byRef(brush));
+    renderTarget->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);
+    renderTarget->FillOpacityMask(aSourceSurface->mBitmap, brush, D2D1_OPACITY_MASK_CONTENT_GRAPHICS);
+  }
   hr = renderTarget->EndDraw();
   if (FAILED(hr)) {
     gfxWarning() << "Failed to draw bitmap. Code: " << hr;

@@ -37,8 +37,8 @@ namespace mozilla {
 class DataChannel;
 class PeerIdentity;
 namespace dom {
-class RTCInboundRTPStreamStats;
-class RTCOutboundRTPStreamStats;
+struct RTCInboundRTPStreamStats;
+struct RTCOutboundRTPStreamStats;
 }
 }
 
@@ -204,16 +204,15 @@ protected:
 // TODO(ekr@rtfm.com): Refactor {Local,Remote}SourceStreamInfo
 // bug 837539.
 class LocalSourceStreamInfo : public SourceStreamInfo {
+  ~LocalSourceStreamInfo() {
+    mMediaStream = nullptr;
+  }
 public:
   typedef mozilla::DOMMediaStream DOMMediaStream;
 
   LocalSourceStreamInfo(DOMMediaStream *aMediaStream,
                         PeerConnectionMedia *aParent)
       : SourceStreamInfo(aMediaStream, aParent) {}
-
-  ~LocalSourceStreamInfo() {
-    mMediaStream = nullptr;
-  }
 
   DOMMediaStream* GetMediaStream() {
     return mMediaStream;
@@ -239,6 +238,7 @@ private:
 };
 
 class RemoteSourceStreamInfo : public SourceStreamInfo {
+  ~RemoteSourceStreamInfo() {}
  public:
   typedef mozilla::DOMMediaStream DOMMediaStream;
 
@@ -271,9 +271,10 @@ public:
 };
 
 class PeerConnectionMedia : public sigslot::has_slots<> {
+  ~PeerConnectionMedia() {}
+
  public:
   PeerConnectionMedia(PeerConnectionImpl *parent);
-  ~PeerConnectionMedia() {}
 
   nsresult Init(const std::vector<mozilla::NrIceStunServer>& stun_servers,
                 const std::vector<mozilla::NrIceTurnServer>& turn_servers);
@@ -329,9 +330,8 @@ class PeerConnectionMedia : public sigslot::has_slots<> {
   // the stream, that would potentially affect others), so that it sends
   // black/silence.  Once the peer is identified, re-enable those streams.
   void UpdateSinkIdentity_m(nsIPrincipal* aPrincipal, const PeerIdentity* aSinkIdentity);
-  // this determines if any stream is isolated, given the current
-  // document (or script) principal
-  bool AnyLocalStreamIsolated(nsIPrincipal *scriptPrincipal) const;
+  // this determines if any stream is peerIdentity constrained
+  bool AnyLocalStreamHasPeerIdentity() const;
   // When we finally learn who is on the other end, we need to change the ownership
   // on streams
   void UpdateRemoteStreamPrincipals_m(nsIPrincipal* aPrincipal);

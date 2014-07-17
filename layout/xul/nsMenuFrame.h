@@ -59,7 +59,6 @@ class nsMenuTimerMediator MOZ_FINAL : public nsITimerCallback
 {
 public:
   nsMenuTimerMediator(nsMenuFrame* aFrame);
-  ~nsMenuTimerMediator();
 
   NS_DECL_ISUPPORTS
   NS_DECL_NSITIMERCALLBACK
@@ -67,6 +66,7 @@ public:
   void ClearFrame();
 
 private:
+  ~nsMenuTimerMediator();
 
   // Pointer to the wrapped frame.
   nsMenuFrame* mFrame;
@@ -98,8 +98,6 @@ public:
   // actual menu item at all.
   virtual const nsFrameList& GetChildList(ChildListID aList) const MOZ_OVERRIDE;
   virtual void GetChildLists(nsTArray<ChildList>* aLists) const MOZ_OVERRIDE;
-  virtual nsresult SetInitialChildList(ChildListID  aListID,
-                                       nsFrameList& aChildList) MOZ_OVERRIDE;
   virtual void DestroyFrom(nsIFrame* aDestructRoot) MOZ_OVERRIDE;
 
   // Overridden to prevent events from going to children of the menu.
@@ -112,15 +110,15 @@ public:
                                mozilla::WidgetGUIEvent* aEvent,
                                nsEventStatus* aEventStatus) MOZ_OVERRIDE;
 
-  virtual nsresult  AppendFrames(ChildListID     aListID,
-                                 nsFrameList&    aFrameList) MOZ_OVERRIDE;
-
-  virtual nsresult  InsertFrames(ChildListID     aListID,
-                                 nsIFrame*       aPrevFrame,
-                                 nsFrameList&    aFrameList) MOZ_OVERRIDE;
-
-  virtual nsresult  RemoveFrame(ChildListID     aListID,
-                                nsIFrame*       aOldFrame) MOZ_OVERRIDE;
+  virtual void SetInitialChildList(ChildListID  aListID,
+                                   nsFrameList& aChildList) MOZ_OVERRIDE;
+  virtual void AppendFrames(ChildListID     aListID,
+                            nsFrameList&    aFrameList) MOZ_OVERRIDE;
+  virtual void InsertFrames(ChildListID     aListID,
+                            nsIFrame*       aPrevFrame,
+                            nsFrameList&    aFrameList) MOZ_OVERRIDE;
+  virtual void RemoveFrame(ChildListID     aListID,
+                           nsIFrame*       aOldFrame) MOZ_OVERRIDE;
 
   virtual nsIAtom* GetType() const MOZ_OVERRIDE { return nsGkAtoms::menuFrame; }
 
@@ -268,7 +266,7 @@ protected:
 #ifdef DEBUG_LAYOUT
   nsresult SetDebug(nsBoxLayoutState& aState, nsIFrame* aList, bool aDebug);
 #endif
-  NS_HIDDEN_(nsresult) Notify(nsITimer* aTimer);
+  nsresult Notify(nsITimer* aTimer);
 
   bool mIsMenu; // Whether or not we can even have children or not.
   bool mChecked;              // are we checked?

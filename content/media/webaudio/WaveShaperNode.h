@@ -20,16 +20,18 @@ class WaveShaperNode : public AudioNode
 {
 public:
   explicit WaveShaperNode(AudioContext *aContext);
-  virtual ~WaveShaperNode();
 
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS_INHERITED(WaveShaperNode, AudioNode)
 
   virtual JSObject* WrapObject(JSContext *aCx) MOZ_OVERRIDE;
 
-  JSObject* GetCurve(JSContext* aCx) const
+  void GetCurve(JSContext* aCx, JS::MutableHandle<JSObject*> aRetval) const
   {
-    return mCurve;
+    if (mCurve) {
+      JS::ExposeObjectToActiveJS(mCurve);
+    }
+    aRetval.set(mCurve);
   }
   void SetCurve(const Nullable<Float32Array>& aData);
 
@@ -55,6 +57,9 @@ public:
   {
     return aMallocSizeOf(this) + SizeOfExcludingThis(aMallocSizeOf);
   }
+
+protected:
+  virtual ~WaveShaperNode();
 
 private:
   void ClearCurve();

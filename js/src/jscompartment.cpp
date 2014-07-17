@@ -44,6 +44,7 @@ JSCompartment::JSCompartment(Zone *zone, const JS::CompartmentOptions &options =
     isSystem(false),
     isSelfHosting(false),
     marked(true),
+    addonId(options.addonIdOrNull()),
 #ifdef DEBUG
     firedOnNewGlobalObject(false),
 #endif
@@ -263,6 +264,53 @@ JSCompartment::putWrapper(JSContext *cx, const CrossCompartmentKey &wrapped, con
     return success;
 }
 
+static JSString *
+CopyStringPure(JSContext *cx, JSString *str)
+{
+    /*
+     * Directly allocate the copy in the destination compartment, rather than
+     * first flattening it (and possibly allocating in source compartment),
+     * because we don't know whether the flattening will pay off later.
+     */
+
+    size_t len = str->length();
+    JSString *copy;
+    if (str->isLinear()) {
+        /* Only use AutoStableStringChars if the NoGC allocation fails. */
+        if (str->hasLatin1Chars()) {
+            JS::AutoCheckCannotGC nogc;
+            copy = NewStringCopyN<NoGC>(cx, str->asLinear().latin1Chars(nogc), len);
+        } else {
+            JS::AutoCheckCannotGC nogc;
+            copy = NewStringCopyNDontDeflate<NoGC>(cx, str->asLinear().twoByteChars(nogc), len);
+        }
+        if (copy)
+            return copy;
+
+        AutoStableStringChars chars(cx);
+        if (!chars.init(cx, str))
+            return nullptr;
+
+        return chars.isLatin1()
+               ? NewStringCopyN<CanGC>(cx, chars.latin1Range().start().get(), len)
+               : NewStringCopyNDontDeflate<CanGC>(cx, chars.twoByteRange().start().get(), len);
+    }
+
+    if (str->hasLatin1Chars()) {
+        ScopedJSFreePtr<Latin1Char> copiedChars;
+        if (!str->asRope().copyLatin1CharsZ(cx, copiedChars))
+            return nullptr;
+
+        return NewString<CanGC>(cx, copiedChars.forget(), len);
+    }
+
+    ScopedJSFreePtr<jschar> copiedChars;
+    if (!str->asRope().copyTwoByteCharsZ(cx, copiedChars))
+        return nullptr;
+
+    return NewStringDontDeflate<CanGC>(cx, copiedChars.forget(), len);
+}
+
 bool
 JSCompartment::wrap(JSContext *cx, JSString **strp)
 {
@@ -271,12 +319,13 @@ JSCompartment::wrap(JSContext *cx, JSString **strp)
 
     /* If the string is already in this compartment, we are done. */
     JSString *str = *strp;
-    if (str->zone() == zone())
+    if (str->zoneFromAnyThread() == zone())
         return true;
 
     /* If the string is an atom, we don't have to copy. */
     if (str->isAtom()) {
-        JS_ASSERT(cx->runtime()->isAtomsZone(str->zone()));
+        JS_ASSERT(str->isPermanentAtom() ||
+                  cx->runtime()->isAtomsZone(str->zone()));
         return true;
     }
 
@@ -287,22 +336,8 @@ JSCompartment::wrap(JSContext *cx, JSString **strp)
         return true;
     }
 
-    /*
-     * No dice. Make a copy, and cache it. Directly allocate the copy in the
-     * destination compartment, rather than first flattening it (and possibly
-     * allocating in source compartment), because we don't know whether the
-     * flattening will pay off later.
-     */
-    JSString *copy;
-    if (str->hasPureChars()) {
-        copy = js_NewStringCopyN<CanGC>(cx, str->pureChars(), str->length());
-    } else {
-        ScopedJSFreePtr<jschar> copiedChars;
-        if (!str->copyNonPureCharsZ(cx, copiedChars))
-            return false;
-        copy = js_NewString<CanGC>(cx, copiedChars.forget(), str->length());
-    }
-
+    /* No dice. Make a copy, and cache it. */
+    JSString *copy = CopyStringPure(cx, str);
     if (!copy)
         return false;
     if (!putWrapper(cx, CrossCompartmentKey(key), StringValue(copy)))
@@ -401,7 +436,6 @@ JSCompartment::wrap(JSContext *cx, MutableHandleObject obj, HandleObject existin
         return true;
     }
 
-    RootedObject proto(cx, TaggedProto::LazyProto);
     RootedObject existing(cx, existingArg);
     if (existing) {
         // Is it possible to reuse |existing|?
@@ -415,7 +449,7 @@ JSCompartment::wrap(JSContext *cx, MutableHandleObject obj, HandleObject existin
         }
     }
 
-    obj.set(cb->wrap(cx, existing, obj, proto, global, flags));
+    obj.set(cb->wrap(cx, existing, obj, global, flags));
     if (!obj)
         return false;
 
@@ -424,23 +458,6 @@ JSCompartment::wrap(JSContext *cx, MutableHandleObject obj, HandleObject existin
     JS_ASSERT(Wrapper::wrappedObject(obj) == &key.get().toObject());
 
     return putWrapper(cx, CrossCompartmentKey(key), ObjectValue(*obj));
-}
-
-bool
-JSCompartment::wrapId(JSContext *cx, jsid *idp)
-{
-    MOZ_ASSERT(*idp != JSID_VOID, "JSID_VOID is an out-of-band sentinel value");
-    if (JSID_IS_INT(*idp))
-        return true;
-    RootedValue value(cx, IdToValue(*idp));
-    if (!wrap(cx, &value))
-        return false;
-    RootedId id(cx);
-    if (!ValueToId<CanGC>(cx, value, &id))
-        return false;
-
-    *idp = id;
-    return true;
 }
 
 bool
@@ -482,13 +499,30 @@ JSCompartment::wrap(JSContext *cx, MutableHandle<PropertyDescriptor> desc)
 }
 
 bool
-JSCompartment::wrap(JSContext *cx, AutoIdVector &props)
+JSCompartment::wrap(JSContext *cx, MutableHandle<PropDesc> desc)
 {
-    jsid *vector = props.begin();
-    int length = props.length();
-    for (size_t n = 0; n < size_t(length); ++n) {
-        if (!wrapId(cx, &vector[n]))
+    if (desc.isUndefined())
+        return true;
+
+    JSCompartment *comp = cx->compartment();
+
+    if (desc.hasValue()) {
+        RootedValue value(cx, desc.value());
+        if (!comp->wrap(cx, &value))
             return false;
+        desc.setValue(value);
+    }
+    if (desc.hasGet()) {
+        RootedValue get(cx, desc.getterValue());
+        if (!comp->wrap(cx, &get))
+            return false;
+        desc.setGetter(get);
+    }
+    if (desc.hasSet()) {
+        RootedValue set(cx, desc.setterValue());
+        if (!comp->wrap(cx, &set))
+            return false;
+        desc.setSetter(set);
     }
     return true;
 }
@@ -522,8 +556,7 @@ JSCompartment::markCrossCompartmentWrappers(JSTracer *trc)
 void
 JSCompartment::trace(JSTracer *trc)
 {
-    // At the moment, this is merely ceremonial, but any live-compartment-only tracing should go
-    // here.
+    savedStacks_.trace(trc);
 }
 
 void
@@ -577,7 +610,7 @@ JSCompartment::sweep(FreeOp *fop, bool releaseTypes)
 
 #ifdef JS_ION
         if (jitCompartment_)
-            jitCompartment_->sweep(fop);
+            jitCompartment_->sweep(fop, this);
 #endif
 
         /*
@@ -890,7 +923,7 @@ JSCompartment::removeDebuggeeUnderGC(FreeOp *fop,
 }
 
 void
-JSCompartment::clearBreakpointsIn(FreeOp *fop, js::Debugger *dbg, JSObject *handler)
+JSCompartment::clearBreakpointsIn(FreeOp *fop, js::Debugger *dbg, HandleObject handler)
 {
     for (gc::ZoneCellIter i(zone(), gc::FINALIZE_SCRIPT); !i.done(); i.next()) {
         JSScript *script = i.get<JSScript>();

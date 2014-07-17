@@ -44,7 +44,7 @@ let gSyncPane = {
   needsUpdate: function () {
     this.page = PAGE_NEEDS_UPDATE;
     let label = document.getElementById("loginError");
-    label.value = Weave.Utils.getErrorString(Weave.Status.login);
+    label.textContent = Weave.Utils.getErrorString(Weave.Status.login);
     label.className = "error";
   },
 
@@ -154,17 +154,6 @@ let gSyncPane = {
         for (let checkbox of engines.querySelectorAll("checkbox")) {
           checkbox.disabled = enginesListDisabled;
         }
-
-        let checkbox = document.getElementById("fxa-pweng-chk");
-        let help = document.getElementById("fxa-pweng-help");
-        let allowPasswordsEngine = service.allowPasswordsEngine;
-
-        if (!allowPasswordsEngine) {
-          checkbox.checked = false;
-        }
-
-        checkbox.disabled = !allowPasswordsEngine || enginesListDisabled;
-        help.hidden = allowPasswordsEngine || enginesListDisabled;
       });
     // If fxAccountEnabled is false and we are in a "not configured" state,
     // then fxAccounts is probably fully disabled rather than just unconfigured,
@@ -180,7 +169,7 @@ let gSyncPane = {
       this.needsUpdate();
     } else {
       this.page = PAGE_HAS_ACCOUNT;
-      document.getElementById("accountName").value = Weave.Service.identity.account;
+      document.getElementById("accountName").textContent = Weave.Service.identity.account;
       document.getElementById("syncComputerName").value = Weave.Service.clientsEngine.localName;
       document.getElementById("tosPP").hidden = this._usingCustomServer;
     }
@@ -289,13 +278,19 @@ let gSyncPane = {
                                               [data.email], 1);
         let description = sb.GetStringFromName("firefoxAccountVerificationSentDescription");
 
-        Services.prompt.alert(window, title, heading + "\n\n" + description);
+        let factory = Cc["@mozilla.org/prompter;1"]
+                        .getService(Ci.nsIPromptFactory);
+        let prompt = factory.getPrompt(window, Ci.nsIPrompt);
+        let bag = prompt.QueryInterface(Ci.nsIWritablePropertyBag2);
+        bag.setPropertyAsBool("allowTabModal", true);
+
+        prompt.alert(title, heading + "\n\n" + description);
       });
     });
   },
 
   openOldSyncSupportPage: function() {
-    let url = Services.urlFormatter.formatURLPref('app.support.baseURL') + "old-sync"
+    let url = Services.urlFormatter.formatURLPref("app.support.baseURL") + "old-sync";
     this.openContentInBrowser(url);
   },
 
@@ -315,13 +310,21 @@ let gSyncPane = {
       let buttonFlags = (ps.BUTTON_POS_0 * ps.BUTTON_TITLE_IS_STRING) +
                         (ps.BUTTON_POS_1 * ps.BUTTON_TITLE_CANCEL) +
                         ps.BUTTON_POS_1_DEFAULT;
-      let pressed = Services.prompt.confirmEx(window, title, body, buttonFlags,
-                                              continueLabel, null, null, null, {});
+
+      let factory = Cc["@mozilla.org/prompter;1"]
+                      .getService(Ci.nsIPromptFactory);
+      let prompt = factory.getPrompt(window, Ci.nsIPrompt);
+      let bag = prompt.QueryInterface(Ci.nsIWritablePropertyBag2);
+      bag.setPropertyAsBool("allowTabModal", true);
+
+      let pressed = prompt.confirmEx(title, body, buttonFlags,
+                                     continueLabel, null, null, null, {});
+
       if (pressed != 0) { // 0 is the "continue" button
         return;
       }
     }
-    Components.utils.import('resource://gre/modules/FxAccounts.jsm');
+    Cu.import("resource://gre/modules/FxAccounts.jsm");
     fxAccounts.signOut().then(() => {
       this.updateWeavePrefs();
     });

@@ -6,6 +6,7 @@ package org.mozilla.gecko.preferences;
 
 import org.mozilla.gecko.Telemetry;
 import org.mozilla.gecko.TelemetryContract;
+import org.mozilla.gecko.TelemetryContract.Method;
 import org.mozilla.gecko.home.HomeConfig;
 import org.mozilla.gecko.home.HomeConfig.PanelConfig;
 import org.mozilla.gecko.home.HomeConfig.State;
@@ -97,11 +98,13 @@ public class PanelsPreferenceCategory extends CustomListCategory {
     private void displayHomeConfig(HomeConfig.State configState, String animatePanelId) {
         int index = 0;
         for (PanelConfig panelConfig : configState) {
+            final boolean isRemovable = panelConfig.isDynamic();
+
             // Create and add the pref.
             final String panelId = panelConfig.getId();
             final boolean animate = TextUtils.equals(animatePanelId, panelId);
 
-            final PanelsPreference pref = new PanelsPreference(getContext(), PanelsPreferenceCategory.this, index, animate);
+            final PanelsPreference pref = new PanelsPreference(getContext(), PanelsPreferenceCategory.this, isRemovable, index, animate);
             pref.setTitle(panelConfig.getTitle());
             pref.setKey(panelConfig.getId());
             // XXX: Pull icon from PanelInfo.
@@ -162,7 +165,7 @@ public class PanelsPreferenceCategory extends CustomListCategory {
         mConfigEditor.setDefault(id);
         mConfigEditor.apply();
 
-        Telemetry.sendUIEvent(TelemetryContract.Event.PANEL_SET_DEFAULT, null, id);
+        Telemetry.sendUIEvent(TelemetryContract.Event.PANEL_SET_DEFAULT, Method.NONE, id);
     }
 
     @Override

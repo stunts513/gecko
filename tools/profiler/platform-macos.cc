@@ -29,6 +29,7 @@
 #include <errno.h>
 #include <math.h>
 
+#include "ThreadResponsiveness.h"
 #include "nsThreadUtils.h"
 
 #include "platform.h"
@@ -55,9 +56,10 @@ struct SamplerRegistry {
 
 Sampler *SamplerRegistry::sampler = NULL;
 
-// 0 is never a valid thread id on MacOSX since a ptread_t is
-// a pointer.
+#ifdef DEBUG
+// 0 is never a valid thread id on MacOSX since a pthread_t is a pointer.
 static const pthread_t kNoThread = (pthread_t) 0;
+#endif
 
 void OS::Startup() {
 }
@@ -221,6 +223,8 @@ class SamplerThread : public Thread {
             continue;
           }
 
+          info->Profile()->GetThreadResponsiveness()->Update();
+
           ThreadProfile* thread_profile = info->Profile();
 
           SampleContext(SamplerRegistry::sampler, thread_profile,
@@ -246,6 +250,9 @@ class SamplerThread : public Thread {
     } else {
       sample->rssMemory = 0;
     }
+
+    // Unique Set Size is not supported on Mac.
+    sample->ussMemory = 0;
 
     if (KERN_SUCCESS != thread_suspend(profiled_thread)) return;
 

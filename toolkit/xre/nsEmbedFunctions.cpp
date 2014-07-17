@@ -48,6 +48,7 @@
 #include "chrome/common/mach_ipc_mac.h"
 #endif
 #include "nsX11ErrorHandler.h"
+#include "nsGDKErrorHandler.h"
 #include "base/at_exit.h"
 #include "base/command_line.h"
 #include "base/message_loop.h"
@@ -303,7 +304,9 @@ XRE_InitChildProcess(int aArgc,
 
   char aLocal;
   profiler_init(&aLocal);
-  PROFILER_LABEL("Startup", "XRE_InitChildProcess");
+
+  PROFILER_LABEL("Startup", "XRE_InitChildProcess",
+    js::ProfileEntry::Category::OTHER);
 
   sChildProcessType = aProcess;
 
@@ -751,7 +754,7 @@ XRE_SendTestShellCommand(JSContext* aCx,
     TestShellParent* tsp = GetOrCreateTestShellParent();
     NS_ENSURE_TRUE(tsp, false);
 
-    nsDependentJSString command;
+    nsAutoJSString command;
     NS_ENSURE_TRUE(command.init(aCx, cmd), false);
 
     if (!aCallback) {
@@ -787,7 +790,11 @@ XRE_ShutdownTestShell()
 void
 XRE_InstallX11ErrorHandler()
 {
+#if (MOZ_WIDGET_GTK == 3)
+  InstallGdkErrorHandler();
+#else
   InstallX11ErrorHandler();
+#endif
 }
 #endif
 

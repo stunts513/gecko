@@ -86,6 +86,9 @@
 #include "nsPrintfCString.h"
 #include "ActiveLayerTracker.h"
 
+#include "nsITheme.h"
+#include "nsThemeConstants.h"
+
 using namespace mozilla;
 using namespace mozilla::css;
 using namespace mozilla::dom;
@@ -949,99 +952,59 @@ nsIFrame::GetUsedPadding() const
   return padding;
 }
 
-int
+nsIFrame::Sides
 nsIFrame::GetSkipSides(const nsHTMLReflowState* aReflowState) const
 {
   if (MOZ_UNLIKELY(StyleBorder()->mBoxDecorationBreak ==
                      NS_STYLE_BOX_DECORATION_BREAK_CLONE)) {
-    return 0;
+    return Sides();
   }
 
   // Convert the logical skip sides to physical sides using the frame's
   // writing mode
   WritingMode writingMode = GetWritingMode();
-  int logicalSkip = GetLogicalSkipSides(aReflowState);
-  int skip = 0;
+  LogicalSides logicalSkip = GetLogicalSkipSides(aReflowState);
+  Sides skip;
 
-  if (logicalSkip & LOGICAL_SIDE_B_START) {
+  if (logicalSkip.BStart()) {
     if (writingMode.IsVertical()) {
-      skip |= 1 << (writingMode.IsVerticalLR() ? NS_SIDE_LEFT : NS_SIDE_RIGHT);
+      skip |= writingMode.IsVerticalLR() ? eSideBitsLeft : eSideBitsRight;
     } else {
-      skip |= 1 << NS_SIDE_TOP;
+      skip |= eSideBitsTop;
     }
   }
 
-  if (logicalSkip & LOGICAL_SIDE_B_END) {
+  if (logicalSkip.BEnd()) {
     if (writingMode.IsVertical()) {
-      skip |= 1 << (writingMode.IsVerticalLR() ? NS_SIDE_RIGHT : NS_SIDE_LEFT);
+      skip |= writingMode.IsVerticalLR() ? eSideBitsRight : eSideBitsLeft;
     } else {
-      skip |= 1 << NS_SIDE_BOTTOM;
+      skip |= eSideBitsBottom;
     }
   }
 
-  if (logicalSkip & LOGICAL_SIDE_I_START) {
+  if (logicalSkip.IStart()) {
     if (writingMode.IsVertical()) {
-      skip |= 1 << NS_SIDE_TOP;
+      skip |= eSideBitsTop;
     } else {
-      skip |= 1 << (writingMode.IsBidiLTR() ? NS_SIDE_LEFT : NS_SIDE_RIGHT);
+      skip |= writingMode.IsBidiLTR() ? eSideBitsLeft : eSideBitsRight;
     }
   }
 
-  if (logicalSkip & LOGICAL_SIDE_I_END) {
+  if (logicalSkip.IEnd()) {
     if (writingMode.IsVertical()) {
-      skip |= 1 << NS_SIDE_BOTTOM;
+      skip |= eSideBitsBottom;
     } else {
-      skip |= 1 << (writingMode.IsBidiLTR() ? NS_SIDE_RIGHT : NS_SIDE_LEFT);
+      skip |= writingMode.IsBidiLTR() ? eSideBitsRight : eSideBitsLeft;
     }
   }
-
   return skip;
-}
-
-
-void
-nsIFrame::ApplySkipSides(nsMargin& aMargin,
-                         const nsHTMLReflowState* aReflowState) const
-{
-  int skipSides = GetSkipSides(aReflowState);
-  if (skipSides & (1 << NS_SIDE_TOP)) {
-    aMargin.top = 0;
-  }
-  if (skipSides & (1 << NS_SIDE_RIGHT)) {
-    aMargin.right = 0;
-  }
-  if (skipSides & (1 << NS_SIDE_BOTTOM)) {
-    aMargin.bottom = 0;
-  }
-  if (skipSides & (1 << NS_SIDE_LEFT)) {
-    aMargin.left = 0;
-  }
-}
-
-void
-nsIFrame::ApplyLogicalSkipSides(LogicalMargin& aMargin,
-                                const nsHTMLReflowState* aReflowState) const
-{
-  int skipSides = GetLogicalSkipSides(aReflowState);
-  if (skipSides & (LOGICAL_SIDE_B_START)) {
-    aMargin.BStart(GetWritingMode()) = 0;
-  }
-  if (skipSides & (LOGICAL_SIDE_I_END)) {
-    aMargin.IEnd(GetWritingMode()) = 0;
-  }
-  if (skipSides & (LOGICAL_SIDE_B_END)) {
-    aMargin.BEnd(GetWritingMode()) = 0;
-  }
-  if (skipSides & (LOGICAL_SIDE_I_START)) {
-    aMargin.IStart(GetWritingMode()) = 0;
-  }
 }
 
 nsRect
 nsIFrame::GetPaddingRectRelativeToSelf() const
 {
   nsMargin border(GetUsedBorder());
-  ApplySkipSides(border);
+  border.ApplySkipSides(GetSkipSides());
   nsRect r(0, 0, mRect.width, mRect.height);
   r.Deflate(border);
   return r;
@@ -1071,7 +1034,7 @@ nsRect
 nsIFrame::GetMarginRectRelativeToSelf() const
 {
   nsMargin m = GetUsedMargin();
-  ApplySkipSides(m);
+  m.ApplySkipSides(GetSkipSides());
   nsRect r(0, 0, mRect.width, mRect.height);
   r.Inflate(m);
   return r;
@@ -1163,7 +1126,7 @@ nsRect
 nsIFrame::GetContentRectRelativeToSelf() const
 {
   nsMargin bp(GetUsedBorderAndPadding());
-  ApplySkipSides(bp);
+  bp.ApplySkipSides(GetSkipSides());
   nsRect r(0, 0, mRect.width, mRect.height);
   r.Deflate(bp);
   return r;
@@ -1179,7 +1142,7 @@ bool
 nsIFrame::ComputeBorderRadii(const nsStyleCorners& aBorderRadius,
                              const nsSize& aFrameSize,
                              const nsSize& aBorderArea,
-                             int aSkipSides,
+                             Sides aSkipSides,
                              nscoord aRadii[8])
 {
   // Percentages are relative to whichever side they're on.
@@ -1200,28 +1163,28 @@ nsIFrame::ComputeBorderRadii(const nsStyleCorners& aBorderRadius,
     }
   }
 
-  if (aSkipSides & (1 << NS_SIDE_TOP)) {
+  if (aSkipSides.Top()) {
     aRadii[NS_CORNER_TOP_LEFT_X] = 0;
     aRadii[NS_CORNER_TOP_LEFT_Y] = 0;
     aRadii[NS_CORNER_TOP_RIGHT_X] = 0;
     aRadii[NS_CORNER_TOP_RIGHT_Y] = 0;
   }
 
-  if (aSkipSides & (1 << NS_SIDE_RIGHT)) {
+  if (aSkipSides.Right()) {
     aRadii[NS_CORNER_TOP_RIGHT_X] = 0;
     aRadii[NS_CORNER_TOP_RIGHT_Y] = 0;
     aRadii[NS_CORNER_BOTTOM_RIGHT_X] = 0;
     aRadii[NS_CORNER_BOTTOM_RIGHT_Y] = 0;
   }
 
-  if (aSkipSides & (1 << NS_SIDE_BOTTOM)) {
+  if (aSkipSides.Bottom()) {
     aRadii[NS_CORNER_BOTTOM_RIGHT_X] = 0;
     aRadii[NS_CORNER_BOTTOM_RIGHT_Y] = 0;
     aRadii[NS_CORNER_BOTTOM_LEFT_X] = 0;
     aRadii[NS_CORNER_BOTTOM_LEFT_Y] = 0;
   }
 
-  if (aSkipSides & (1 << NS_SIDE_LEFT)) {
+  if (aSkipSides.Left()) {
     aRadii[NS_CORNER_BOTTOM_LEFT_X] = 0;
     aRadii[NS_CORNER_BOTTOM_LEFT_Y] = 0;
     aRadii[NS_CORNER_TOP_LEFT_X] = 0;
@@ -1282,7 +1245,7 @@ nsIFrame::OutsetBorderRadii(nscoord aRadii[8], const nsMargin &aOffsets)
 
 /* virtual */ bool
 nsIFrame::GetBorderRadii(const nsSize& aFrameSize, const nsSize& aBorderArea,
-                         int aSkipSides, nscoord aRadii[8]) const
+                         Sides aSkipSides, nscoord aRadii[8]) const
 {
   if (IsThemed()) {
     // When we're themed, the native theme code draws the border and
@@ -1350,13 +1313,14 @@ nsFrame::SetAdditionalStyleContext(int32_t aIndex,
 }
 
 nscoord
-nsFrame::GetBaseline() const
+nsFrame::GetLogicalBaseline(WritingMode aWritingMode) const
 {
   NS_ASSERTION(!NS_SUBTREE_DIRTY(this),
                "frame must not be dirty");
   // Default to the bottom margin edge, per CSS2.1's definition of the
   // 'baseline' value of 'vertical-align'.
-  return mRect.height + GetUsedMargin().bottom;
+  return BSize(aWritingMode) +
+         GetLogicalUsedMargin(aWritingMode).BEnd(aWritingMode);
 }
 
 const nsFrameList&
@@ -1656,6 +1620,17 @@ nsIFrame::GetClipPropClipRect(const nsStyleDisplay* aDisp, nsRect* aRect,
   }
 
   *aRect = aDisp->mClip;
+  if (MOZ_LIKELY(StyleBorder()->mBoxDecorationBreak ==
+                   NS_STYLE_BOX_DECORATION_BREAK_SLICE)) {
+    // The clip applies to the joined boxes so it's relative the first
+    // continuation.
+    nscoord y = 0;
+    for (nsIFrame* f = GetPrevContinuation(); f; f = f->GetPrevContinuation()) {
+      y += f->GetRect().height;
+    }
+    aRect->MoveBy(nsPoint(0, -y));
+  }
+
   if (NS_STYLE_CLIP_RIGHT_AUTO & aDisp->mClipFlags) {
     aRect->width = aSize.width - aRect->x;
   }
@@ -2718,8 +2693,10 @@ nsFrame::HandlePress(nsPresContext* aPresContext,
   if (!mouseEvent->IsAlt()) {
     for (nsIContent* content = mContent; content;
          content = content->GetParent()) {
+      // Prevent selection of draggable content with the exception of links
       if (nsContentUtils::ContentIsDraggable(content) &&
-          !content->IsEditable()) {
+          !content->IsEditable() &&
+          !nsContentUtils::IsDraggableLink(content)) {
         // coordinate stuff is the fix for bug #55921
         if ((mRect - GetPosition()).Contains(
               nsLayoutUtils::GetEventCoordinatesRelativeTo(mouseEvent, this))) {
@@ -4167,7 +4144,7 @@ nsFrame::ComputeSize(nsRenderingContext *aRenderingContext,
     bool canOverride = true;
     nsPresContext *presContext = PresContext();
     presContext->GetTheme()->
-      GetMinimumWidgetSize(aRenderingContext, this, disp->mAppearance,
+      GetMinimumWidgetSize(presContext, this, disp->mAppearance,
                            &widget, &canOverride);
 
     nsSize size;
@@ -4986,10 +4963,10 @@ nsIFrame::TryUpdateTransformOnly(Layer** aLayerResult)
  static const gfx::Float kError = 0.0001f;
   if (!transform3d.Is2D(&transform) ||
       !layer->GetBaseTransform().Is2D(&previousTransform) ||
-      !gfx::FuzzyEqual(transform.xx, previousTransform._11, kError) ||
-      !gfx::FuzzyEqual(transform.yy, previousTransform._22, kError) ||
-      !gfx::FuzzyEqual(transform.xy, previousTransform._21, kError) ||
-      !gfx::FuzzyEqual(transform.yx, previousTransform._12, kError)) {
+      !gfx::FuzzyEqual(transform._11, previousTransform._11, kError) ||
+      !gfx::FuzzyEqual(transform._22, previousTransform._22, kError) ||
+      !gfx::FuzzyEqual(transform._21, previousTransform._21, kError) ||
+      !gfx::FuzzyEqual(transform._12, previousTransform._12, kError)) {
     return false;
   }
   gfx::Matrix4x4 matrix;
@@ -5341,7 +5318,7 @@ nsFrame::IsFrameTreeTooDeep(const nsHTMLReflowState& aReflowState,
     ClearOverflowRects();
     aMetrics.Width() = 0;
     aMetrics.Height() = 0;
-    aMetrics.SetTopAscent(0);
+    aMetrics.SetBlockStartAscent(0);
     aMetrics.mCarriedOutBottomMargin.Zero();
     aMetrics.mOverflowAreas.Clear();
 
@@ -7115,14 +7092,15 @@ ComputeAndIncludeOutlineArea(nsIFrame* aFrame, nsOverflowAreas& aOverflowAreas,
                              const nsSize& aNewSize)
 {
   const nsStyleOutline* outline = aFrame->StyleOutline();
-  if (outline->GetOutlineStyle() == NS_STYLE_BORDER_STYLE_NONE) {
+  const uint8_t outlineStyle = outline->GetOutlineStyle();
+  if (outlineStyle == NS_STYLE_BORDER_STYLE_NONE) {
     return;
   }
 
   nscoord width;
   DebugOnly<bool> result = outline->GetOutlineWidth(width);
   NS_ASSERTION(result, "GetOutlineWidth had no cached outline width");
-  if (width <= 0) {
+  if (width <= 0 && outlineStyle != NS_STYLE_BORDER_STYLE_AUTO) {
     return;
   }
 
@@ -7176,19 +7154,33 @@ ComputeAndIncludeOutlineArea(nsIFrame* aFrame, nsOverflowAreas& aOverflowAreas,
     }
   }
 
+  // Keep this code in sync with GetOutlineInnerRect in nsCSSRendering.cpp.
   aFrame->Properties().Set(nsIFrame::OutlineInnerRectProperty(),
                            new nsRect(innerRect));
-
-  nscoord offset = outline->mOutlineOffset;
-  nscoord inflateBy = std::max(width + offset, 0);
-
-  // Keep this code (and the storing of properties just above) in
-  // sync with GetOutlineInnerRect in nsCSSRendering.cpp.
+  const nscoord offset = outline->mOutlineOffset;
   nsRect outerRect(innerRect);
-  outerRect.Inflate(inflateBy, inflateBy);
+  bool useOutlineAuto = false;
+  if (nsLayoutUtils::IsOutlineStyleAutoEnabled()) {
+    useOutlineAuto = outlineStyle == NS_STYLE_BORDER_STYLE_AUTO;
+    if (MOZ_UNLIKELY(useOutlineAuto)) {
+      nsPresContext* presContext = aFrame->PresContext();
+      nsITheme* theme = presContext->GetTheme();
+      if (theme && theme->ThemeSupportsWidget(presContext, aFrame,
+                                              NS_THEME_FOCUS_OUTLINE)) {
+        outerRect.Inflate(offset);
+        theme->GetWidgetOverflow(presContext->DeviceContext(), aFrame,
+                                 NS_THEME_FOCUS_OUTLINE, &outerRect);
+      } else {
+        useOutlineAuto = false;
+      }
+    }
+  }
+  if (MOZ_LIKELY(!useOutlineAuto)) {
+    outerRect.Inflate(width + offset);
+  }
 
   nsRect& vo = aOverflowAreas.VisualOverflow();
-  vo.UnionRectEdges(vo, outerRect);
+  vo.UnionRectEdges(vo, innerRect.Union(outerRect));
 }
 
 bool
@@ -7927,11 +7919,13 @@ nsFrame::RefreshSizeCache(nsBoxLayoutState& aState)
 
     metrics->mBlockPrefSize.height = metrics->mBlockMinSize.height;
 
-    if (desiredSize.TopAscent() == nsHTMLReflowMetrics::ASK_FOR_BASELINE) {
-      if (!nsLayoutUtils::GetFirstLineBaseline(this, &metrics->mBlockAscent))
-        metrics->mBlockAscent = GetBaseline();
+    if (desiredSize.BlockStartAscent() ==
+        nsHTMLReflowMetrics::ASK_FOR_BASELINE) {
+      if (!nsLayoutUtils::GetFirstLineBaseline(wm, this,
+                                               &metrics->mBlockAscent))
+        metrics->mBlockAscent = GetLogicalBaseline(wm);
     } else {
-      metrics->mBlockAscent = desiredSize.TopAscent();
+      metrics->mBlockAscent = desiredSize.BlockStartAscent();
     }
 
 #ifdef DEBUG_adaptor
@@ -8206,7 +8200,7 @@ nsFrame::BoxReflow(nsBoxLayoutState&        aState,
          needsReflow = true;
       }
   }
-                             
+
   // ok now reflow the child into the spacers calculated space
   if (needsReflow) {
 
@@ -8357,15 +8351,17 @@ nsFrame::BoxReflow(nsBoxLayoutState&        aState,
     if (IsCollapsed()) {
       metrics->mAscent = 0;
     } else {
-      if (aDesiredSize.TopAscent() == nsHTMLReflowMetrics::ASK_FOR_BASELINE) {
-        if (!nsLayoutUtils::GetFirstLineBaseline(this, &metrics->mAscent))
-          metrics->mAscent = GetBaseline();
+      if (aDesiredSize.BlockStartAscent() ==
+          nsHTMLReflowMetrics::ASK_FOR_BASELINE) {
+        WritingMode wm = aDesiredSize.GetWritingMode();
+        if (!nsLayoutUtils::GetFirstLineBaseline(wm, this, &metrics->mAscent))
+          metrics->mAscent = GetLogicalBaseline(wm);
       } else
-        metrics->mAscent = aDesiredSize.TopAscent();
+        metrics->mAscent = aDesiredSize.BlockStartAscent();
     }
 
   } else {
-    aDesiredSize.SetTopAscent(metrics->mBlockAscent);
+    aDesiredSize.SetBlockStartAscent(metrics->mBlockAscent);
   }
 
 #ifdef DEBUG_REFLOW

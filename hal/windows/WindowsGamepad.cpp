@@ -281,11 +281,6 @@ public:
     }
   }
 
-  virtual ~Observer()
-  {
-    Stop();
-  }
-
   void SetDeviceChangeTimer()
   {
     // Set stable timer, since we will get multiple devices-changed
@@ -297,6 +292,11 @@ public:
   }
 
 private:
+  virtual ~Observer()
+  {
+    Stop();
+  }
+
   // Gamepad service owns us, we just hold a reference back to it.
   WindowsGamepadService& mSvc;
   nsCOMPtr<nsITimer> mTimer;
@@ -479,7 +479,7 @@ WindowsGamepadService::ScanForXInputDevices()
     gamepad.numButtons = kStandardGamepadButtons;
     gamepad.numAxes = kStandardGamepadAxes;
     gamepad.id = gamepadsvc->AddGamepad("xinput",
-                                        StandardMapping,
+                                        GamepadMappingType::Standard,
                                         kStandardGamepadButtons,
                                         kStandardGamepadAxes);
     mGamepads.AppendElement(gamepad);
@@ -762,7 +762,7 @@ WindowsGamepadService::GetRawGamepad(HANDLE handle)
   }
 
   gamepad.id = gamepadsvc->AddGamepad(gamepad_id,
-                                      NoMapping,
+                                      GamepadMappingType::_empty,
                                       gamepad.numButtons,
                                       gamepad.numAxes);
   mGamepads.AppendElement(gamepad);

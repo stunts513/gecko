@@ -9,6 +9,7 @@
 
 #include "jsobj.h"
 
+#include "builtin/TypedObject.h"
 #include "vm/ArrayObject.h"
 #include "vm/DateObject.h"
 #include "vm/NumberObject.h"
@@ -21,6 +22,7 @@
 #include "jsgcinlines.h"
 #include "jsinferinlines.h"
 
+#include "gc/ForkJoinNursery-inl.h"
 #include "vm/ObjectImpl-inl.h"
 
 /* static */ inline bool
@@ -41,13 +43,12 @@ JSObject::changePropertyAttributes(JSContext *cx, js::HandleObject obj,
 }
 
 /* static */ inline bool
-JSObject::deleteProperty(JSContext *cx, js::HandleObject obj, js::HandlePropertyName name,
+JSObject::deleteGeneric(JSContext *cx, js::HandleObject obj, js::HandleId id,
                          bool *succeeded)
 {
-    JS::RootedId id(cx, js::NameToId(name));
     js::types::MarkTypePropertyNonData(cx, obj, id);
-    js::DeletePropertyOp op = obj->getOps()->deleteProperty;
-    return (op ? op : js::baseops::DeleteProperty)(cx, obj, name, succeeded);
+    js::DeleteGenericOp op = obj->getOps()->deleteGeneric;
+    return (op ? op : js::baseops::DeleteGeneric)(cx, obj, id, succeeded);
 }
 
 /* static */ inline bool
@@ -56,9 +57,7 @@ JSObject::deleteElement(JSContext *cx, js::HandleObject obj, uint32_t index, boo
     JS::RootedId id(cx);
     if (!js::IndexToId(cx, index, &id))
         return false;
-    js::types::MarkTypePropertyNonData(cx, obj, id);
-    js::DeleteElementOp op = obj->getOps()->deleteElement;
-    return (op ? op : js::baseops::DeleteElement)(cx, obj, index, succeeded);
+    return deleteGeneric(cx, obj, id, succeeded);
 }
 
 /* static */ inline bool
@@ -352,6 +351,28 @@ JSObject::getDenseOrTypedArrayElement(uint32_t idx)
     return getDenseElement(idx);
 }
 
+inline void
+JSObject::initDenseElementsUnbarriered(uint32_t dstStart, const js::Value *src, uint32_t count) {
+    /*
+     * For use by parallel threads, which since they cannot see nursery
+     * things do not require a barrier.
+     */
+    JS_ASSERT(dstStart + count <= getDenseCapacity());
+#if defined(DEBUG) && defined(JSGC_GENERATIONAL)
+    /*
+     * This asserts a global invariant: parallel code does not
+     * observe objects inside the generational GC's nursery.
+     */
+    JS_ASSERT(!js::gc::IsInsideGGCNursery(this));
+    for (uint32_t index = 0; index < count; ++index) {
+        const JS::Value& value = src[index];
+        if (value.isMarkable())
+            JS_ASSERT(!js::gc::IsInsideGGCNursery(static_cast<js::gc::Cell *>(value.toGCThing())));
+    }
+#endif
+    memcpy(&elements[dstStart], src, count * sizeof(js::HeapSlot));
+}
+
 /* static */ inline bool
 JSObject::setSingletonType(js::ExclusiveContext *cx, js::HandleObject obj)
 {
@@ -515,6 +536,8 @@ JSObject::create(js::ExclusiveContext *cx, js::gc::AllocKind kind, js::gc::Initi
     if (span)
         obj->initializeSlotRange(0, span);
 
+    js::gc::TraceCreateObject(obj);
+
     return obj;
 }
 
@@ -549,6 +572,8 @@ JSObject::createArray(js::ExclusiveContext *cx, js::gc::AllocKind kind, js::gc::
     size_t span = shape->slotSpan();
     if (span)
         obj->initializeSlotRange(0, span);
+
+    js::gc::TraceCreateObject(obj);
 
     return &obj->as<js::ArrayObject>();
 }
@@ -644,8 +669,7 @@ namespace js {
 
 PropDesc::PropDesc(const Value &getter, const Value &setter,
                    Enumerability enumerable, Configurability configurable)
-  : pd_(UndefinedValue()),
-    value_(UndefinedValue()),
+  : value_(UndefinedValue()),
     get_(getter), set_(setter),
     attrs(JSPROP_GETTER | JSPROP_SETTER | JSPROP_SHARED |
           (enumerable ? JSPROP_ENUMERATE : 0) |
@@ -654,8 +678,8 @@ PropDesc::PropDesc(const Value &getter, const Value &setter,
     hasValue_(false), hasWritable_(false), hasEnumerable_(true), hasConfigurable_(true),
     isUndefined_(false)
 {
-    MOZ_ASSERT(getter.isUndefined() || js_IsCallable(getter));
-    MOZ_ASSERT(setter.isUndefined() || js_IsCallable(setter));
+    MOZ_ASSERT(getter.isUndefined() || IsCallable(getter));
+    MOZ_ASSERT(setter.isUndefined() || IsCallable(setter));
 }
 
 static MOZ_ALWAYS_INLINE bool
@@ -772,32 +796,17 @@ IsInternalFunctionObject(JSObject *funobj)
     return fun->isLambda() && !funobj->getParent();
 }
 
-class AutoPropDescArrayRooter : private AutoGCRooter
+class AutoPropDescVector : public AutoVectorRooter<PropDesc>
 {
   public:
-    explicit AutoPropDescArrayRooter(JSContext *cx)
-      : AutoGCRooter(cx, DESCRIPTORS), descriptors(cx)
-    { }
-
-    PropDesc *append() {
-        if (!descriptors.append(PropDesc()))
-            return nullptr;
-        return &descriptors.back();
+    explicit AutoPropDescVector(JSContext *cx
+                    MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
+        : AutoVectorRooter<PropDesc>(cx, DESCVECTOR)
+    {
+        MOZ_GUARD_OBJECT_NOTIFIER_INIT;
     }
 
-    bool reserve(size_t n) {
-        return descriptors.reserve(n);
-    }
-
-    PropDesc& operator[](size_t i) {
-        JS_ASSERT(i < descriptors.length());
-        return descriptors[i];
-    }
-
-    friend void AutoGCRooter::trace(JSTracer *trc);
-
-  private:
-    PropDescArray descriptors;
+    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
 /*
@@ -821,17 +830,6 @@ NewObjectWithGivenProto(ExclusiveContext *cx, const js::Class *clasp, JSObject *
                         NewObjectKind newKind = GenericObject)
 {
     return NewObjectWithGivenProto(cx, clasp, TaggedProto(proto), parent, newKind);
-}
-
-inline JSProtoKey
-GetClassProtoKey(const js::Class *clasp)
-{
-    JSProtoKey key = JSCLASS_CACHED_PROTO_KEY(clasp);
-    if (key != JSProto_Null)
-        return key;
-    if (clasp->flags & JSCLASS_IS_ANONYMOUS)
-        return JSProto_Object;
-    return JSProto_Null;
 }
 
 inline bool
@@ -1022,7 +1020,7 @@ ObjectClassIs(HandleObject obj, ESClassValue classValue, JSContext *cx)
         return obj->is<ArrayBufferObject>() || obj->is<SharedArrayBufferObject>();
       case ESClass_Date: return obj->is<DateObject>();
     }
-    MOZ_ASSUME_UNREACHABLE("bad classValue");
+    MOZ_CRASH("bad classValue");
 }
 
 inline bool

@@ -9,11 +9,12 @@
 #include "nsIDOMFile.h"
 #include "DOMMediaStream.h"
 #include "MediaStreamGraph.h"
+#include "mozilla/dom/MediaStreamTrackBinding.h"
 
 namespace mozilla {
 
-class VideoTrackConstraintsN;
-class AudioTrackConstraintsN;
+struct VideoTrackConstraintsN;
+struct AudioTrackConstraintsN;
 
 /**
  * Abstract interface for managing audio and video devices. Each platform
@@ -24,7 +25,7 @@ class AudioTrackConstraintsN;
  */
 class MediaEngineVideoSource;
 class MediaEngineAudioSource;
-struct MediaEnginePrefs;
+class MediaEnginePrefs;
 
 enum MediaEngineState {
   kAllocated,
@@ -54,11 +55,13 @@ public:
 
   /* Populate an array of video sources in the nsTArray. Also include devices
    * that are currently unavailable. */
-  virtual void EnumerateVideoDevices(nsTArray<nsRefPtr<MediaEngineVideoSource> >*) = 0;
+  virtual void EnumerateVideoDevices(dom::MediaSourceEnum,
+                                     nsTArray<nsRefPtr<MediaEngineVideoSource> >*) = 0;
 
   /* Populate an array of audio sources in the nsTArray. Also include devices
    * that are currently unavailable. */
-  virtual void EnumerateAudioDevices(nsTArray<nsRefPtr<MediaEngineAudioSource> >*) = 0;
+  virtual void EnumerateAudioDevices(dom::MediaSourceEnum,
+                                     nsTArray<nsRefPtr<MediaEngineAudioSource> >*) = 0;
 
 protected:
   virtual ~MediaEngine() {}
@@ -85,6 +88,9 @@ public:
    * the provided TrackID. You may start appending data to the track
    * immediately after. */
   virtual nsresult Start(SourceMediaStream*, TrackID) = 0;
+
+  /* tell the source if there are any direct listeners attached */
+  virtual void SetDirectListeners(bool) = 0;
 
   /* Take a snapshot from this source. In the case of video this is a single
    * image, and for audio, it is a snippet lasting aDuration milliseconds. The
@@ -179,6 +185,9 @@ class MediaEngineVideoSource : public MediaEngineSource
 public:
   virtual ~MediaEngineVideoSource() {}
 
+  virtual const dom::MediaSourceEnum GetMediaSource() {
+      return dom::MediaSourceEnum::Camera;
+  }
   /* This call reserves but does not start the device. */
   virtual nsresult Allocate(const VideoTrackConstraintsN &aConstraints,
                             const MediaEnginePrefs &aPrefs) = 0;

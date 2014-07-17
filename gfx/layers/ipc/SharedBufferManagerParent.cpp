@@ -18,6 +18,7 @@
 #ifdef MOZ_WIDGET_GONK
 #include "ui/PixelFormat.h"
 #endif
+#include "nsPrintfCString.h"
 #include "nsThreadUtils.h"
 
 using namespace mozilla::ipc;
@@ -29,49 +30,76 @@ using std::map;
 namespace mozilla {
 namespace layers {
 
+map<base::ProcessId, SharedBufferManagerParent* > SharedBufferManagerParent::sManagers;
+StaticAutoPtr<Monitor> SharedBufferManagerParent::sManagerMonitor;
+uint64_t SharedBufferManagerParent::sBufferKey(0);
+
+#ifdef MOZ_WIDGET_GONK
 class GrallocReporter MOZ_FINAL : public nsIMemoryReporter
 {
 public:
   NS_DECL_ISUPPORTS
 
-  GrallocReporter()
-  {
-#ifdef DEBUG
-    // There must be only one instance of this class, due to |sAmount|
-    // being static.  Assert this.
-    static bool hasRun = false;
-    MOZ_ASSERT(!hasRun);
-    hasRun = true;
-#endif
-  }
-
   NS_IMETHOD CollectReports(nsIHandleReportCallback* aHandleReport,
-                            nsISupports* aData)
+                            nsISupports* aData, bool aAnonymize)
   {
-    return MOZ_COLLECT_REPORT(
-      "gralloc", KIND_OTHER, UNITS_BYTES, sAmount,
-"Special RAM that can be shared between processes and directly accessed by "
-"both the CPU and GPU. Gralloc memory is usually a relatively precious "
-"resource, with much less available than generic RAM. When it's exhausted, "
-"graphics performance can suffer. This value can be incorrect because of race "
-"conditions.");
+    if (SharedBufferManagerParent::sManagerMonitor) {
+      SharedBufferManagerParent::sManagerMonitor->Lock();
+    }
+    map<base::ProcessId, SharedBufferManagerParent*>::iterator it;
+    for (it = SharedBufferManagerParent::sManagers.begin(); it != SharedBufferManagerParent::sManagers.end(); it++) {
+      base::ProcessId pid = it->first;
+      SharedBufferManagerParent *mgr = it->second;
+
+      MutexAutoLock lock(mgr->mBuffersMutex);
+      std::map<int64_t, android::sp<android::GraphicBuffer> >::iterator buf_it;
+      for (buf_it = mgr->mBuffers.begin(); buf_it != mgr->mBuffers.end(); buf_it++) {
+        nsresult rv;
+        android::sp<android::GraphicBuffer> gb = buf_it->second;
+        int bpp = android::bytesPerPixel(gb->getPixelFormat());
+        int stride = gb->getStride();
+        int height = gb->getHeight();
+        int amount = bpp > 0
+          ? (stride * height * bpp)
+          // Special case for BSP specific formats (mainly YUV formats, count it as normal YUV buffer).
+          : (stride * height * 3 / 2);
+
+        nsPrintfCString gpath("gralloc/pid(%d)/buffer(width=%d, height=%d, bpp=%d)",
+            pid, gb->getWidth(), height, bpp);
+
+        rv = aHandleReport->Callback(EmptyCString(), gpath, KIND_OTHER, UNITS_BYTES, amount,
+            NS_LITERAL_CSTRING(
+              "Special RAM that can be shared between processes and directly accessed by "
+              "both the CPU and GPU. Gralloc memory is usually a relatively precious "
+              "resource, with much less available than generic RAM. When it's exhausted, "
+              "graphics performance can suffer. This value can be incorrect because of race "
+              "conditions."),
+            aData);
+        if (rv != NS_OK) {
+          if (SharedBufferManagerParent::sManagerMonitor) {
+            SharedBufferManagerParent::sManagerMonitor->Unlock();
+          }
+          return rv;
+        }
+      }
+    }
+    if (SharedBufferManagerParent::sManagerMonitor) {
+      SharedBufferManagerParent::sManagerMonitor->Unlock();
+    }
+    return NS_OK;
   }
 
-  static int64_t sAmount;
 };
 
 NS_IMPL_ISUPPORTS(GrallocReporter, nsIMemoryReporter)
-
-int64_t GrallocReporter::sAmount = 0;
+#endif
 
 void InitGralloc() {
   NS_ASSERTION(NS_IsMainThread(), "Should be on main thread.");
+#ifdef MOZ_WIDGET_GONK
   RegisterStrongMemoryReporter(new GrallocReporter());
+#endif
 }
-
-map<base::ProcessId, SharedBufferManagerParent* > SharedBufferManagerParent::sManagers;
-StaticAutoPtr<Monitor> SharedBufferManagerParent::sManagerMonitor;
-int SharedBufferManagerParent::sBufferKey = 0;
 
 SharedBufferManagerParent::SharedBufferManagerParent(Transport* aTransport, base::ProcessId aOwner, base::Thread* aThread)
   : mTransport(aTransport)
@@ -80,13 +108,19 @@ SharedBufferManagerParent::SharedBufferManagerParent(Transport* aTransport, base
   , mBuffersMutex("BuffersMonitor")
 #endif
 {
-  if (!sManagerMonitor)
+  if (!sManagerMonitor) {
     sManagerMonitor = new Monitor("Manager Monitor");
+  }
 
   MonitorAutoLock lock(*sManagerMonitor.get());
   NS_ASSERTION(NS_IsMainThread(), "Should be on main thread");
-  if (!aThread->IsRunning())
+  if (!aThread->IsRunning()) {
     aThread->Start();
+  }
+
+  if (sManagers.count(aOwner) != 0) {
+    printf_stderr("SharedBufferManagerParent already exists.");
+  }
   mOwner = aOwner;
   sManagers[aOwner] = this;
 }
@@ -106,6 +140,7 @@ void
 SharedBufferManagerParent::ActorDestroy(ActorDestroyReason aWhy)
 {
 #ifdef MOZ_HAVE_SURFACEDESCRIPTORGRALLOC
+  MutexAutoLock lock(mBuffersMutex);
   mBuffers.clear();
 #endif
 }
@@ -124,19 +159,15 @@ PSharedBufferManagerParent* SharedBufferManagerParent::Create(Transport* aTransp
   if (!base::OpenProcessHandle(aOtherProcess, &processHandle)) {
     return nullptr;
   }
-
   base::Thread* thread = nullptr;
-  if (sManagers.count(aOtherProcess) == 1) {
-    thread = sManagers[aOtherProcess]->mThread;
-  }
-  else {
-    char thrname[128];
-    base::snprintf(thrname, 128, "BufMgrParent#%d", aOtherProcess);
-    thread = new base::Thread(thrname);
-  }
+  char thrname[128];
+  base::snprintf(thrname, 128, "BufMgrParent#%d", aOtherProcess);
+  thread = new base::Thread(thrname);
+
   SharedBufferManagerParent* manager = new SharedBufferManagerParent(aTransport, aOtherProcess, thread);
-  if (!thread->IsRunning())
+  if (!thread->IsRunning()) {
     thread->Start();
+  }
   thread->message_loop()->PostTask(FROM_HERE,
                                    NewRunnableFunction(ConnectSharedBufferManagerInParentProcess,
                                                        manager, aTransport, processHandle));
@@ -169,21 +200,19 @@ bool SharedBufferManagerParent::RecvAllocateGrallocBuffer(const IntSize& aSize, 
     return true;
   }
 
+  int64_t bufferKey;
+  {
+    MonitorAutoLock lock(*sManagerMonitor.get());
+    bufferKey = ++sBufferKey; 
+  }
   GrallocBufferRef ref;
   ref.mOwner = mOwner;
-  ref.mKey = ++sBufferKey;
+  ref.mKey = bufferKey;
   *aHandle = MagicGrallocBufferHandle(outgoingBuffer, ref);
-
-  int bpp = 0;
-  bpp = android::bytesPerPixel(outgoingBuffer->getPixelFormat());
-  if (bpp > 0)
-    GrallocReporter::sAmount += outgoingBuffer->getStride() * outgoingBuffer->getHeight() * bpp;
-  else // Specical case for BSP specific formats(mainly YUV formats, count it as normal YUV buffer)
-    GrallocReporter::sAmount += outgoingBuffer->getStride() * outgoingBuffer->getHeight() * 3 / 2;
 
   {
     MutexAutoLock lock(mBuffersMutex);
-    mBuffers[sBufferKey] = outgoingBuffer;
+    mBuffers[bufferKey] = outgoingBuffer;
   }
 #endif
   return true;
@@ -193,24 +222,17 @@ bool SharedBufferManagerParent::RecvDropGrallocBuffer(const mozilla::layers::May
 {
 #ifdef MOZ_HAVE_SURFACEDESCRIPTORGRALLOC
   NS_ASSERTION(handle.type() == MaybeMagicGrallocBufferHandle::TGrallocBufferRef, "We shouldn't interact with the real buffer!");
-  int bufferKey = handle.get_GrallocBufferRef().mKey;
+  int64_t bufferKey = handle.get_GrallocBufferRef().mKey;
   sp<GraphicBuffer> buf = GetGraphicBuffer(bufferKey);
   MOZ_ASSERT(buf.get());
   MutexAutoLock lock(mBuffersMutex);
-  NS_ASSERTION(mBuffers.count(bufferKey) == 1, "How can you drop others buffer");
+  NS_ASSERTION(mBuffers.count(bufferKey) == 1, "No such buffer");
   mBuffers.erase(bufferKey);
 
   if(!buf.get()) {
     printf_stderr("SharedBufferManagerParent::RecvDropGrallocBuffer -- invalid buffer key.");
     return true;
   }
-
-  int bpp = 0;
-  bpp = android::bytesPerPixel(buf->getPixelFormat());
-  if (bpp > 0)
-    GrallocReporter::sAmount -= buf->getStride() * buf->getHeight() * bpp;
-  else // Specical case for BSP specific formats(mainly YUV formats, count it as normal YUV buffer)
-    GrallocReporter::sAmount -= buf->getStride() * buf->getHeight() * 3 / 2;
 
 #endif
   return true;
@@ -223,8 +245,9 @@ void SharedBufferManagerParent::DropGrallocBufferSync(SharedBufferManagerParent*
 
 void SharedBufferManagerParent::DropGrallocBuffer(mozilla::layers::SurfaceDescriptor aDesc)
 {
-  if (aDesc.type() != SurfaceDescriptor::TNewSurfaceDescriptorGralloc)
+  if (aDesc.type() != SurfaceDescriptor::TNewSurfaceDescriptorGralloc) {
     return;
+  }
 
   if (PlatformThread::CurrentId() == mThread->thread_id()) {
     DropGrallocBufferImpl(aDesc);
@@ -239,20 +262,22 @@ void SharedBufferManagerParent::DropGrallocBufferImpl(mozilla::layers::SurfaceDe
 {
 #ifdef MOZ_HAVE_SURFACEDESCRIPTORGRALLOC
   MutexAutoLock lock(mBuffersMutex);
-  int key = -1;
+  int64_t key = -1;
   MaybeMagicGrallocBufferHandle handle;
-  if (aDesc.type() == SurfaceDescriptor::TNewSurfaceDescriptorGralloc)
+  if (aDesc.type() == SurfaceDescriptor::TNewSurfaceDescriptorGralloc) {
     handle = aDesc.get_NewSurfaceDescriptorGralloc().buffer();
-  else
+  } else {
     return;
+  }
 
-  if (handle.type() == MaybeMagicGrallocBufferHandle::TGrallocBufferRef)
+  if (handle.type() == MaybeMagicGrallocBufferHandle::TGrallocBufferRef) {
     key = handle.get_GrallocBufferRef().mKey;
-  else if (handle.type() == MaybeMagicGrallocBufferHandle::TMagicGrallocBufferHandle)
+  } else if (handle.type() == MaybeMagicGrallocBufferHandle::TMagicGrallocBufferHandle) {
     key = handle.get_MagicGrallocBufferHandle().mRef.mKey;
+  }
 
   NS_ASSERTION(key != -1, "Invalid buffer key");
-  NS_ASSERTION(mBuffers.count(key) == 1, "How can you drop others buffer");
+  NS_ASSERTION(mBuffers.count(key) == 1, "No such buffer");
   mBuffers.erase(key);
   SendDropGrallocBuffer(handle);
 #endif
@@ -272,11 +297,16 @@ SharedBufferManagerParent* SharedBufferManagerParent::GetInstance(ProcessId id)
 
 #ifdef MOZ_HAVE_SURFACEDESCRIPTORGRALLOC
 android::sp<android::GraphicBuffer>
-SharedBufferManagerParent::GetGraphicBuffer(int key)
+SharedBufferManagerParent::GetGraphicBuffer(int64_t key)
 {
   MutexAutoLock lock(mBuffersMutex);
-  NS_ASSERTION(mBuffers.count(key) == 1, "No such buffer, or the buffer is belongs to other session");
-  return mBuffers[key];
+  if (mBuffers.count(key) == 1) {
+    return mBuffers[key];
+  } else {
+    // The buffer can be dropped, or invalid
+    printf_stderr("SharedBufferManagerParent::GetGraphicBuffer -- invalid key");
+    return nullptr;
+  }
 }
 
 android::sp<android::GraphicBuffer>

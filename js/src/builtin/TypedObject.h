@@ -126,6 +126,33 @@ static T ConvertScalar(double d)
     }
 }
 
+namespace type {
+
+enum Kind {
+    Scalar = JS_TYPEREPR_SCALAR_KIND,
+    Reference = JS_TYPEREPR_REFERENCE_KIND,
+    X4 = JS_TYPEREPR_X4_KIND,
+    Struct = JS_TYPEREPR_STRUCT_KIND,
+    SizedArray = JS_TYPEREPR_SIZED_ARRAY_KIND,
+    UnsizedArray = JS_TYPEREPR_UNSIZED_ARRAY_KIND,
+};
+
+static inline bool isSized(type::Kind kind) {
+    return kind > JS_TYPEREPR_MAX_UNSIZED_KIND;
+}
+
+}
+
+///////////////////////////////////////////////////////////////////////////
+// Typed Prototypes
+
+class SizedTypeDescr;
+class SimpleTypeDescr;
+class ComplexTypeDescr;
+class X4TypeDescr;
+class StructTypeDescr;
+class SizedTypedProto;
+
 /*
  * The prototype for a typed object. Currently, carries a link to the
  * type descriptor. Eventually will carry most of the type information
@@ -141,6 +168,8 @@ class TypedProto : public JSObject
     TypeDescr &typeDescr() const {
         return getReservedSlot(JS_TYPROTO_SLOT_DESCR).toObject().as<TypeDescr>();
     }
+
+    inline type::Kind kind() const;
 };
 
 class TypeDescr : public JSObject
@@ -154,25 +183,21 @@ class TypeDescr : public JSObject
     // fun and rejoicing.
     static const Class class_;
 
-    enum Kind {
-        Scalar = JS_TYPEREPR_SCALAR_KIND,
-        Reference = JS_TYPEREPR_REFERENCE_KIND,
-        X4 = JS_TYPEREPR_X4_KIND,
-        Struct = JS_TYPEREPR_STRUCT_KIND,
-        SizedArray = JS_TYPEREPR_SIZED_ARRAY_KIND,
-        UnsizedArray = JS_TYPEREPR_UNSIZED_ARRAY_KIND,
-    };
-
-    static bool isSized(Kind kind) {
+  public:
+    static bool isSized(type::Kind kind) {
         return kind > JS_TYPEREPR_MAX_UNSIZED_KIND;
+    }
+
+    TypedProto &typedProto() const {
+        return getReservedSlot(JS_DESCR_SLOT_TYPROTO).toObject().as<TypedProto>();
     }
 
     JSAtom &stringRepr() const {
         return getReservedSlot(JS_DESCR_SLOT_STRING_REPR).toString()->asAtom();
     }
 
-    TypeDescr::Kind kind() const {
-        return (TypeDescr::Kind) getReservedSlot(JS_DESCR_SLOT_KIND).toInt32();
+    type::Kind kind() const {
+        return (type::Kind) getReservedSlot(JS_DESCR_SLOT_KIND).toInt32();
     }
 
     bool opaque() const {
@@ -183,7 +208,7 @@ class TypeDescr : public JSObject
         return !opaque();
     }
 
-    int32_t alignment() {
+    int32_t alignment() const {
         return getReservedSlot(JS_DESCR_SLOT_ALIGNMENT).toInt32();
     }
 };
@@ -193,7 +218,7 @@ typedef Handle<TypeDescr*> HandleTypeDescr;
 class SizedTypeDescr : public TypeDescr
 {
   public:
-    int32_t size() {
+    int32_t size() const {
         return getReservedSlot(JS_DESCR_SLOT_SIZE).toInt32();
     }
 
@@ -214,26 +239,9 @@ class SimpleTypeDescr : public SizedTypeDescr
 class ScalarTypeDescr : public SimpleTypeDescr
 {
   public:
-    // Must match order of JS_FOR_EACH_SCALAR_TYPE_REPR below
-    enum Type {
-        TYPE_INT8 = JS_SCALARTYPEREPR_INT8,
-        TYPE_UINT8 = JS_SCALARTYPEREPR_UINT8,
-        TYPE_INT16 = JS_SCALARTYPEREPR_INT16,
-        TYPE_UINT16 = JS_SCALARTYPEREPR_UINT16,
-        TYPE_INT32 = JS_SCALARTYPEREPR_INT32,
-        TYPE_UINT32 = JS_SCALARTYPEREPR_UINT32,
-        TYPE_FLOAT32 = JS_SCALARTYPEREPR_FLOAT32,
-        TYPE_FLOAT64 = JS_SCALARTYPEREPR_FLOAT64,
+    typedef Scalar::Type Type;
 
-        /*
-         * Special type that's a uint8_t, but assignments are clamped to 0 .. 255.
-         * Treat the raw data type as a uint8_t.
-         */
-        TYPE_UINT8_CLAMPED = JS_SCALARTYPEREPR_UINT8_CLAMPED,
-    };
-    static const int32_t TYPE_MAX = TYPE_UINT8_CLAMPED + 1;
-
-    static const TypeDescr::Kind Kind = TypeDescr::Scalar;
+    static const type::Kind Kind = type::Scalar;
     static const bool Opaque = false;
     static int32_t size(Type t);
     static int32_t alignment(Type t);
@@ -242,8 +250,22 @@ class ScalarTypeDescr : public SimpleTypeDescr
     static const Class class_;
     static const JSFunctionSpec typeObjectMethods[];
 
-    ScalarTypeDescr::Type type() const {
-        return (ScalarTypeDescr::Type) getReservedSlot(JS_DESCR_SLOT_TYPE).toInt32();
+    Type type() const {
+        // Make sure the values baked into TypedObjectConstants.h line up with
+        // the Scalar::Type enum. We don't define Scalar::Type directly in
+        // terms of these constants to avoid making TypedObjectConstants.h a
+        // public header file.
+        JS_STATIC_ASSERT(Scalar::Int8 == JS_SCALARTYPEREPR_INT8);
+        JS_STATIC_ASSERT(Scalar::Uint8 == JS_SCALARTYPEREPR_UINT8);
+        JS_STATIC_ASSERT(Scalar::Int16 == JS_SCALARTYPEREPR_INT16);
+        JS_STATIC_ASSERT(Scalar::Uint16 == JS_SCALARTYPEREPR_UINT16);
+        JS_STATIC_ASSERT(Scalar::Int32 == JS_SCALARTYPEREPR_INT32);
+        JS_STATIC_ASSERT(Scalar::Uint32 == JS_SCALARTYPEREPR_UINT32);
+        JS_STATIC_ASSERT(Scalar::Float32 == JS_SCALARTYPEREPR_FLOAT32);
+        JS_STATIC_ASSERT(Scalar::Float64 == JS_SCALARTYPEREPR_FLOAT64);
+        JS_STATIC_ASSERT(Scalar::Uint8Clamped == JS_SCALARTYPEREPR_UINT8_CLAMPED);
+
+        return (Type) getReservedSlot(JS_DESCR_SLOT_TYPE).toInt32();
     }
 
     static bool call(JSContext *cx, unsigned argc, Value *vp);
@@ -252,20 +274,20 @@ class ScalarTypeDescr : public SimpleTypeDescr
 // Enumerates the cases of ScalarTypeDescr::Type which have
 // unique C representation. In particular, omits Uint8Clamped since it
 // is just a Uint8.
-#define JS_FOR_EACH_UNIQUE_SCALAR_TYPE_REPR_CTYPE(macro_)                     \
-    macro_(ScalarTypeDescr::TYPE_INT8,    int8_t,   int8)            \
-    macro_(ScalarTypeDescr::TYPE_UINT8,   uint8_t,  uint8)           \
-    macro_(ScalarTypeDescr::TYPE_INT16,   int16_t,  int16)           \
-    macro_(ScalarTypeDescr::TYPE_UINT16,  uint16_t, uint16)          \
-    macro_(ScalarTypeDescr::TYPE_INT32,   int32_t,  int32)           \
-    macro_(ScalarTypeDescr::TYPE_UINT32,  uint32_t, uint32)          \
-    macro_(ScalarTypeDescr::TYPE_FLOAT32, float,    float32)         \
-    macro_(ScalarTypeDescr::TYPE_FLOAT64, double,   float64)
+#define JS_FOR_EACH_UNIQUE_SCALAR_TYPE_REPR_CTYPE(macro_)       \
+    macro_(Scalar::Int8,    int8_t,   int8)                     \
+    macro_(Scalar::Uint8,   uint8_t,  uint8)                    \
+    macro_(Scalar::Int16,   int16_t,  int16)                    \
+    macro_(Scalar::Uint16,  uint16_t, uint16)                   \
+    macro_(Scalar::Int32,   int32_t,  int32)                    \
+    macro_(Scalar::Uint32,  uint32_t, uint32)                   \
+    macro_(Scalar::Float32, float,    float32)                  \
+    macro_(Scalar::Float64, double,   float64)
 
 // Must be in same order as the enum ScalarTypeDescr::Type:
-#define JS_FOR_EACH_SCALAR_TYPE_REPR(macro_)                                    \
-    JS_FOR_EACH_UNIQUE_SCALAR_TYPE_REPR_CTYPE(macro_)                           \
-    macro_(ScalarTypeDescr::TYPE_UINT8_CLAMPED, uint8_t, uint8Clamped)
+#define JS_FOR_EACH_SCALAR_TYPE_REPR(macro_)                    \
+    JS_FOR_EACH_UNIQUE_SCALAR_TYPE_REPR_CTYPE(macro_)           \
+    macro_(Scalar::Uint8Clamped, uint8_t, uint8Clamped)
 
 // Type for reference type constructors like `Any`, `String`, and
 // `Object`. All such type constructors share a common js::Class and
@@ -282,7 +304,7 @@ class ReferenceTypeDescr : public SimpleTypeDescr
     static const int32_t TYPE_MAX = TYPE_STRING + 1;
     static const char *typeName(Type type);
 
-    static const TypeDescr::Kind Kind = TypeDescr::Reference;
+    static const type::Kind Kind = type::Reference;
     static const bool Opaque = true;
     static const Class class_;
     static int32_t size(Type t);
@@ -328,7 +350,7 @@ class X4TypeDescr : public ComplexTypeDescr
         TYPE_FLOAT32 = JS_X4TYPEREPR_FLOAT32,
     };
 
-    static const TypeDescr::Kind Kind = TypeDescr::X4;
+    static const type::Kind Kind = type::X4;
     static const bool Opaque = false;
     static const Class class_;
     static int32_t size(Type t);
@@ -407,13 +429,13 @@ class UnsizedArrayTypeDescr : public TypeDescr
 {
   public:
     static const Class class_;
-    static const TypeDescr::Kind Kind = TypeDescr::UnsizedArray;
+    static const type::Kind Kind = type::UnsizedArray;
 
     // This is the sized method on unsized array type objects.  It
     // produces a sized variant.
     static bool dimension(JSContext *cx, unsigned int argc, jsval *vp);
 
-    SizedTypeDescr &elementType() {
+    SizedTypeDescr &elementType() const {
         return getReservedSlot(JS_DESCR_SLOT_ARRAY_ELEM_TYPE).toObject().as<SizedTypeDescr>();
     }
 };
@@ -425,13 +447,13 @@ class SizedArrayTypeDescr : public ComplexTypeDescr
 {
   public:
     static const Class class_;
-    static const TypeDescr::Kind Kind = TypeDescr::SizedArray;
+    static const type::Kind Kind = type::SizedArray;
 
-    SizedTypeDescr &elementType() {
+    SizedTypeDescr &elementType() const {
         return getReservedSlot(JS_DESCR_SLOT_ARRAY_ELEM_TYPE).toObject().as<SizedTypeDescr>();
     }
 
-    int32_t length() {
+    int32_t length() const {
         return getReservedSlot(JS_DESCR_SLOT_SIZED_ARRAY_LENGTH).toInt32();
     }
 };
@@ -469,20 +491,20 @@ class StructTypeDescr : public ComplexTypeDescr
     static const Class class_;
 
     // Returns the number of fields defined in this struct.
-    size_t fieldCount();
+    size_t fieldCount() const;
 
     // Set `*out` to the index of the field named `id` and returns true,
     // or return false if no such field exists.
-    bool fieldIndex(jsid id, size_t *out);
+    bool fieldIndex(jsid id, size_t *out) const;
 
     // Return the name of the field at index `index`.
-    JSAtom &fieldName(size_t index);
+    JSAtom &fieldName(size_t index) const;
 
     // Return the type descr of the field at index `index`.
-    SizedTypeDescr &fieldDescr(size_t index);
+    SizedTypeDescr &fieldDescr(size_t index) const;
 
     // Return the offset of the field at index `index`.
-    int32_t fieldOffset(size_t index);
+    size_t fieldOffset(size_t index) const;
 };
 
 typedef Handle<StructTypeDescr*> HandleStructTypeDescr;
@@ -576,10 +598,7 @@ class TypedObject : public ArrayBufferViewObject
     static bool obj_setGenericAttributes(JSContext *cx, HandleObject obj,
                                          HandleId id, unsigned *attrsp);
 
-    static bool obj_deleteProperty(JSContext *cx, HandleObject obj, HandlePropertyName name,
-                                   bool *succeeded);
-    static bool obj_deleteElement(JSContext *cx, HandleObject obj, uint32_t index,
-                                  bool *succeeded);
+    static bool obj_deleteGeneric(JSContext *cx, HandleObject obj, HandleId id, bool *succeeded);
 
     static bool obj_enumerate(JSContext *cx, HandleObject obj, JSIterateOp enum_op,
                               MutableHandleValue statep, MutableHandleId idp);
@@ -648,44 +667,44 @@ class TypedObject : public ArrayBufferViewObject
     void neuter(void *newData);
 
     int32_t offset() const {
-        return getReservedSlot(JS_TYPEDOBJ_SLOT_BYTEOFFSET).toInt32();
+        return getReservedSlot(JS_BUFVIEW_SLOT_BYTEOFFSET).toInt32();
     }
 
     ArrayBufferObject &owner() const {
-        return getReservedSlot(JS_TYPEDOBJ_SLOT_OWNER).toObject().as<ArrayBufferObject>();
+        return getReservedSlot(JS_BUFVIEW_SLOT_OWNER).toObject().as<ArrayBufferObject>();
+    }
+
+    TypedProto &typedProto() const {
+        return getProto()->as<TypedProto>();
     }
 
     TypeDescr &typeDescr() const {
-        return getReservedSlot(JS_TYPEDOBJ_SLOT_TYPE_DESCR).toObject().as<TypeDescr>();
+        return typedProto().typeDescr();
     }
 
     uint8_t *typedMem() const {
         return (uint8_t*) getPrivate();
     }
 
-    int32_t byteLength() const {
-        return getReservedSlot(JS_TYPEDOBJ_SLOT_BYTELENGTH).toInt32();
-    }
-
     int32_t length() const {
-        return getReservedSlot(JS_TYPEDOBJ_SLOT_LENGTH).toInt32();
+        return getReservedSlot(JS_BUFVIEW_SLOT_LENGTH).toInt32();
     }
 
     int32_t size() const {
         switch (typeDescr().kind()) {
-          case TypeDescr::Scalar:
-          case TypeDescr::X4:
-          case TypeDescr::Reference:
-          case TypeDescr::Struct:
-          case TypeDescr::SizedArray:
+          case type::Scalar:
+          case type::X4:
+          case type::Reference:
+          case type::Struct:
+          case type::SizedArray:
             return typeDescr().as<SizedTypeDescr>().size();
 
-          case TypeDescr::UnsizedArray: {
+          case type::UnsizedArray: {
             SizedTypeDescr &elementType = typeDescr().as<UnsizedArrayTypeDescr>().elementType();
             return elementType.size() * length();
           }
         }
-        MOZ_ASSUME_UNREACHABLE("unhandled typerepresentation kind");
+        MOZ_CRASH("unhandled typerepresentation kind");
     }
 
     uint8_t *typedMem(size_t offset) const {
@@ -1033,6 +1052,13 @@ inline void
 js::TypedProto::initTypeDescrSlot(TypeDescr &descr)
 {
     initReservedSlot(JS_TYPROTO_SLOT_DESCR, ObjectValue(descr));
+}
+
+inline js::type::Kind
+js::TypedProto::kind() const {
+    // Defined out of line because it depends on def'n of both
+    // TypedProto and TypeDescr
+    return typeDescr().kind();
 }
 
 #endif /* builtin_TypedObject_h */

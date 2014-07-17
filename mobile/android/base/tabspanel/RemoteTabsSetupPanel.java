@@ -11,31 +11,32 @@ import org.mozilla.gecko.Tabs;
 import org.mozilla.gecko.fxa.FirefoxAccounts;
 import org.mozilla.gecko.fxa.activities.FxAccountCreateAccountActivity;
 import org.mozilla.gecko.tabspanel.TabsPanel.PanelView;
-import org.mozilla.gecko.util.HardwareUtils;
 
 import android.content.Context;
 import android.content.Intent;
-import android.util.AttributeSet;
+import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 
 /**
  * A tabs panel which allows a user to get started setting up a Firefox
  * Accounts account. Currently used as one sub-panel in a sequence
  * contained by the {@link RemoteTabsPanel}.
  */
-class RemoteTabsSetupPanel extends LinearLayout implements PanelView {
+class RemoteTabsSetupPanel extends ScrollView implements PanelView {
+    private final LinearLayout containingLayout;
+
     private TabsPanel tabsPanel;
 
-    public RemoteTabsSetupPanel(Context context, AttributeSet attrs) {
-        super(context, attrs);
-    }
+    public RemoteTabsSetupPanel(Context context) {
+        super(context);
 
-    @Override
-    protected void onFinishInflate() {
-        super.onFinishInflate();
+        LayoutInflater.from(context).inflate(R.layout.remote_tabs_setup_panel, this);
+        containingLayout = (LinearLayout) findViewById(R.id.remote_tabs_setup_containing_layout);
 
-        final View setupGetStartedButton = findViewById(R.id.remote_tabs_setup_get_started);
+        final View setupGetStartedButton =
+                containingLayout.findViewById(R.id.remote_tabs_setup_get_started);
         setupGetStartedButton.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(final View v) {
@@ -48,7 +49,8 @@ class RemoteTabsSetupPanel extends LinearLayout implements PanelView {
             }
         });
 
-        final View setupOlderVersionLink = findViewById(R.id.remote_tabs_setup_old_sync_link);
+        final View setupOlderVersionLink =
+                containingLayout.findViewById(R.id.remote_tabs_setup_old_sync_link);
         setupOlderVersionLink.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(final View v) {
@@ -69,11 +71,6 @@ class RemoteTabsSetupPanel extends LinearLayout implements PanelView {
 
     @Override
     public void show() {
-        // We don't have a tablet implementation of this panel.
-        if (HardwareUtils.isTablet()) {
-            return;
-        }
-
         setVisibility(View.VISIBLE);
     }
 
@@ -84,6 +81,6 @@ class RemoteTabsSetupPanel extends LinearLayout implements PanelView {
 
     @Override
     public boolean shouldExpand() {
-        return getOrientation() == LinearLayout.VERTICAL;
+        return containingLayout.getOrientation() == LinearLayout.VERTICAL;
     }
 }

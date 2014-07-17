@@ -4,7 +4,6 @@
 
 from __future__ import unicode_literals
 
-import sys
 from collections import defaultdict
 from multiprocessing import current_process
 from threading import current_thread, Lock
@@ -52,8 +51,34 @@ Subfields for all messages:
       thread - name for the thread emitting the message
       pid - id of the python process in which the logger is running
       source - name for the source emitting the message
+      component - name of the subcomponent emitting the message
 """
 
+_default_logger_name = None
+
+def get_default_logger(component=None):
+    """Gets the default logger if available, optionally tagged with component
+    name. Will return None if not yet set
+
+    :param component: The component name to tag log messages with
+    """
+    global _default_logger_name
+
+    if not _default_logger_name:
+        return None
+
+    return StructuredLogger(_default_logger_name, component=component)
+
+def set_default_logger(default_logger):
+    """Sets the default logger to logger.
+
+    It can then be retrieved with :py:func:`get_default_logger`
+
+    :param default_logger: The logger to set to default.
+    """
+    global _default_logger_name
+
+    _default_logger_name = default_logger.name
 
 log_levels = dict((k.upper(), v) for v, k in
                   enumerate(["critical", "error", "warning", "info", "debug"]))
@@ -67,8 +92,9 @@ class StructuredLogger(object):
     :param name: The name of the logger.
     """
 
-    def __init__(self, name):
+    def __init__(self, name, component=None):
         self.name = name
+        self.component = component
 
     def add_handler(self, handler):
         """Add a handler to the current logger"""
@@ -101,6 +127,8 @@ class StructuredLogger(object):
                     "thread": current_thread().name,
                     "pid": current_process().pid,
                     "source": self.name}
+        if self.component:
+            all_data['component'] = self.component
         all_data.update(data)
         return all_data
 
@@ -125,7 +153,8 @@ class StructuredLogger(object):
         """
         self._log_data("test_start", {"test": test})
 
-    def test_status(self, test, subtest, status, expected="PASS", message=None):
+    def test_status(self, test, subtest, status, expected="PASS", message=None,
+                    stack=None, extra=None):
         """
         Log a test_status message indicating a subtest result. Tests that
         do not have subtests are not expected to produce test_status messages.
@@ -135,6 +164,8 @@ class StructuredLogger(object):
         :param status: Status string indicating the subtest result
         :param expected: Status string indicating the expected subtest result.
         :param message: String containing a message associated with the result.
+        :param stack: a stack trace encountered during test execution.
+        :param extra: suite-specific data associated with the test result.
         """
         if status.upper() not in ["PASS", "FAIL", "TIMEOUT", "NOTRUN", "ASSERT"]:
             raise ValueError("Unrecognised status %s" % status)
@@ -145,9 +176,14 @@ class StructuredLogger(object):
             data["message"] = message
         if expected != data["status"]:
             data["expected"] = expected
+        if stack is not None:
+            data["stack"] = stack
+        if extra is not None:
+            data["extra"] = extra
         self._log_data("test_status", data)
 
-    def test_end(self, test, status, expected="OK", message=None, extra=None):
+    def test_end(self, test, status, expected="OK", message=None, stack=None,
+                 extra=None):
         """
         Log a test_end message indicating that a test completed. For tests
         with subtests this indicates whether the overall test completed without
@@ -158,6 +194,7 @@ class StructuredLogger(object):
         :param status: Status string indicating the test result
         :param expected: Status string indicating the expected test result.
         :param message: String containing a message associated with the result.
+        :param stack: a stack trace encountered during test execution.
         :param extra: suite-specific data associated with the test result.
         """
         if status.upper() not in ["PASS", "FAIL", "OK", "ERROR", "TIMEOUT",
@@ -167,8 +204,10 @@ class StructuredLogger(object):
                 "status": status.upper()}
         if message is not None:
             data["message"] = message
-        if expected != data["status"]:
+        if expected != data["status"] and status != "SKIP":
             data["expected"] = expected
+        if stack is not None:
+            data["stack"] = stack
         if extra is not None:
             data["extra"] = extra
         self._log_data("test_end", data)

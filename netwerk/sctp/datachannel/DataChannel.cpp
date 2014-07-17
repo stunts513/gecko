@@ -110,6 +110,7 @@ public:
       (void) rv;
     }
 
+private:
   virtual ~DataChannelShutdown()
     {
       nsCOMPtr<nsIObserverService> observerService =
@@ -118,6 +119,7 @@ public:
         observerService->RemoveObserver(this, "profile-change-net-teardown");
     }
 
+public:
   NS_IMETHODIMP Observe(nsISupports* aSubject, const char* aTopic,
                         const char16_t* aData) {
     if (strcmp(aTopic, "profile-change-net-teardown") == 0) {
@@ -625,7 +627,7 @@ DataChannelConnection::CompleteConnect(TransportFlow *flow, TransportLayer::Stat
   // Note: currently this doesn't actually notify the application
   NS_DispatchToMainThread(new DataChannelOnMessageAvailable(
                             DataChannelOnMessageAvailable::ON_CONNECTION,
-                            this, false));
+                            this));
   return;
 }
 
@@ -678,12 +680,12 @@ DataChannelConnection::SctpDtlsInput(TransportFlow *flow,
 }
 
 int
-DataChannelConnection::SendPacket(const unsigned char *data, size_t len, bool release)
+DataChannelConnection::SendPacket(unsigned char data[], size_t len, bool release)
 {
   //LOG(("%p: SCTP/DTLS sent %ld bytes", this, len));
   int res = mTransportFlow->SendPacket(data, len) < 0 ? 1 : 0;
   if (release)
-    delete data;
+    delete [] data;
   return res;
 }
 
@@ -1318,6 +1320,7 @@ DataChannelConnection::HandleDataMessage(uint32_t ppid,
     // Since this is rare and non-performance, keep a single list of queued
     // data messages to deliver once the channel opens.
     LOG(("Queuing data for stream %u, length %u", stream, length));
+    // Copies data
     mQueuedData.AppendElement(new QueuedDataMessage(stream, ppid, data, length));
     return;
   }
@@ -1326,7 +1329,7 @@ DataChannelConnection::HandleDataMessage(uint32_t ppid,
   NS_ENSURE_TRUE_VOID(channel->mState != CLOSED);
 
   {
-    nsAutoCString recvData(buffer, length);
+    nsAutoCString recvData(buffer, length); // copies (<64) or allocates
     bool is_binary = true;
 
     if (ppid == DATA_CHANNEL_PPID_DOMSTRING ||
@@ -1455,7 +1458,7 @@ DataChannelConnection::HandleAssociationChangeEvent(const struct sctp_assoc_chan
 
       NS_DispatchToMainThread(new DataChannelOnMessageAvailable(
                                 DataChannelOnMessageAvailable::ON_CONNECTION,
-                                this, true));
+                                this));
       LOG(("DTLS connect() succeeded!  Entering connected mode"));
 
       // Open any streams pending...
@@ -1536,36 +1539,26 @@ DataChannelConnection::HandleAssociationChangeEvent(const struct sctp_assoc_chan
 void
 DataChannelConnection::HandlePeerAddressChangeEvent(const struct sctp_paddr_change *spc)
 {
-  char addr_buf[INET6_ADDRSTRLEN];
   const char *addr = "";
+#if !defined(__Userspace_os_Windows)
+  char addr_buf[INET6_ADDRSTRLEN];
   struct sockaddr_in *sin;
   struct sockaddr_in6 *sin6;
-#if defined(__Userspace_os_Windows)
-  DWORD addr_len = INET6_ADDRSTRLEN;
 #endif
 
   switch (spc->spc_aaddr.ss_family) {
   case AF_INET:
-    sin = (struct sockaddr_in *)&spc->spc_aaddr;
 #if !defined(__Userspace_os_Windows)
+    sin = (struct sockaddr_in *)&spc->spc_aaddr;
     addr = inet_ntop(AF_INET, &sin->sin_addr, addr_buf, INET6_ADDRSTRLEN);
-#else
-    if (WSAAddressToStringA((LPSOCKADDR)sin, sizeof(sin->sin_addr), nullptr,
-                            addr_buf, &addr_len)) {
-      return;
-    }
 #endif
     break;
   case AF_INET6:
-    sin6 = (struct sockaddr_in6 *)&spc->spc_aaddr;
 #if !defined(__Userspace_os_Windows)
+    sin6 = (struct sockaddr_in6 *)&spc->spc_aaddr;
     addr = inet_ntop(AF_INET6, &sin6->sin6_addr, addr_buf, INET6_ADDRSTRLEN);
-#else
-    if (WSAAddressToStringA((LPSOCKADDR)sin6, sizeof(sin6), nullptr,
-                            addr_buf, &addr_len)) {
-      return;
-    }
 #endif
+    break;
   case AF_CONN:
     addr = "DTLS connection";
     break;
@@ -1933,6 +1926,11 @@ DataChannelConnection::ReceiveCallback(struct socket* sock, void *data, size_t d
       HandleMessage(data, datalen, ntohl(rcv.rcv_ppid), rcv.rcv_sid);
     }
   }
+  // sctp allocates 'data' with malloc(), and expects the receiver to free
+  // it (presumably with free).
+  // XXX future optimization: try to deliver messages without an internal
+  // alloc/copy, and if so delay the free until later.
+  free(data);
   // usrsctp defines the callback as returning an int, but doesn't use it
   return 1;
 }

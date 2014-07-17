@@ -56,7 +56,7 @@ class gfxContext;
 class nsPIDOMWindow;
 class imgIRequest;
 class nsIDocument;
-class gfxPoint;
+struct gfxPoint;
 struct nsStyleFont;
 struct nsStyleImageOrientation;
 struct nsOverflowAreas;
@@ -65,6 +65,7 @@ namespace mozilla {
 class SVGImageContext;
 struct IntrinsicSize;
 struct ContainerLayerParameters;
+class WritingMode;
 namespace dom {
 class DOMRectList;
 class Element;
@@ -74,6 +75,7 @@ class HTMLVideoElement;
 } // namespace dom
 namespace layers {
 class Layer;
+class ClientLayerManager;
 }
 }
 
@@ -102,11 +104,6 @@ struct DisplayPortMarginsPropertyData {
   uint32_t mAlignmentY;
   uint32_t mPriority;
 };
-
-template <class AnimationsOrTransitions>
-extern AnimationsOrTransitions* HasAnimationOrTransition(nsIContent* aContent,
-                                                         nsIAtom* aAnimationProperty,
-                                                         nsCSSProperty aProperty);
 
 } // namespace mozilla
 
@@ -480,6 +477,12 @@ public:
                                            nsRect* aDisplayPort = nullptr);
 
   /**
+   * Store whether aThumbFrame wants its own layer. This sets a property on
+   * the frame.
+   */
+  static void SetScrollbarThumbLayerization(nsIFrame* aThumbFrame, bool aLayerize);
+
+  /**
    * Finds the nearest ancestor frame to aItem that is considered to have (or
    * will have) "animated geometry". For example the scrolled frames of
    * scrollframes which are actively being scrolled fall into this category.
@@ -756,6 +759,21 @@ public:
                                          uint32_t aPointCount, CSSPoint* aPoints);
 
   /**
+   * Same as above function, but transform points in app units and
+   * handle 1 point per call.
+   */
+  static TransformResult TransformPoint(nsIFrame* aFromFrame, nsIFrame* aToFrame,
+                                        nsPoint& aPoint);
+
+  /**
+   * Transforms a rect from aFromFrame to aToFrame. In app units.
+   * Returns the bounds of the actual rect if the transform requires rotation
+   * or anything complex like that.
+   */
+  static TransformResult TransformRect(nsIFrame* aFromFrame, nsIFrame* aToFrame,
+                                       nsRect& aRect);
+
+  /**
    * Return true if a "layer transform" could be computed for aFrame,
    * and optionally return the computed transform.  The returned
    * transform is what would be set on the layer currently if a layers
@@ -984,6 +1002,21 @@ public:
     DOMRectList* mRectList;
 
     RectListBuilder(DOMRectList* aList);
+    virtual void AddRect(const nsRect& aRect);
+  };
+
+  /**
+   * SelectionCaret draws carets base on range. The carets are at begin
+   * and end position of range's client rects. This class help us to
+   * collect first and last rect for drawing carets.
+   */
+  struct FirstAndLastRectCollector : public RectCallback {
+    nsRect mFirstRect;
+    nsRect mLastRect;
+    bool mSeenFirstRect;
+
+    FirstAndLastRectCollector();
+
     virtual void AddRect(const nsRect& aRect);
   };
 
@@ -1323,7 +1356,8 @@ public:
    * Returns true if a baseline was found (and fills in aResult).
    * Otherwise returns false.
    */
-  static bool GetFirstLineBaseline(const nsIFrame* aFrame, nscoord* aResult);
+  static bool GetFirstLineBaseline(mozilla::WritingMode aWritingMode,
+                                   const nsIFrame* aFrame, nscoord* aResult);
 
   /**
    * Just like GetFirstLineBaseline, except also returns the top and
@@ -1333,17 +1367,18 @@ public:
    * Otherwise returns false.
    */
   struct LinePosition {
-    nscoord mTop, mBaseline, mBottom;
+    nscoord mBStart, mBaseline, mBEnd;
 
     LinePosition operator+(nscoord aOffset) const {
       LinePosition result;
-      result.mTop = mTop + aOffset;
+      result.mBStart = mBStart + aOffset;
       result.mBaseline = mBaseline + aOffset;
-      result.mBottom = mBottom + aOffset;
+      result.mBEnd = mBEnd + aOffset;
       return result;
     }
   };
-  static bool GetFirstLinePosition(const nsIFrame* aFrame,
+  static bool GetFirstLinePosition(mozilla::WritingMode aWritingMode,
+                                   const nsIFrame* aFrame,
                                    LinePosition* aResult);
 
 
@@ -1355,17 +1390,20 @@ public:
    * Returns true if a baseline was found (and fills in aResult).
    * Otherwise returns false.
    */
-  static bool GetLastLineBaseline(const nsIFrame* aFrame, nscoord* aResult);
+  static bool GetLastLineBaseline(mozilla::WritingMode aWritingMode,
+                                  const nsIFrame* aFrame, nscoord* aResult);
 
   /**
-   * Returns a y coordinate relative to this frame's origin that represents
-   * the logical bottom of the frame or its visible content, whichever is lower.
+   * Returns a block-dir coordinate relative to this frame's origin that
+   * represents the logical block-end of the frame or its visible content,
+   * whichever is further from the origin.
    * Relative positioning is ignored and margins and glyph bounds are not
    * considered.
-   * This value will be >= mRect.height() and <= overflowRect.YMost() unless
+   * This value will be >= mRect.BSize() and <= overflowRect.BEnd() unless
    * relative positioning is applied.
    */
-  static nscoord CalculateContentBottom(nsIFrame* aFrame);
+  static nscoord CalculateContentBEnd(mozilla::WritingMode aWritingMode,
+                                      nsIFrame* aFrame);
 
   /**
    * Gets the closest frame (the frame passed in or one of its parents) that
@@ -1407,6 +1445,7 @@ public:
    *   @param aImageFlags       Image flags of the imgIContainer::FLAG_* variety
    */
   static nsresult DrawBackgroundImage(nsRenderingContext* aRenderingContext,
+                                      nsPresContext*      aPresContext,
                                       imgIContainer*      aImage,
                                       const nsIntSize&    aImageSize,
                                       GraphicsFilter      aGraphicsFilter,
@@ -1432,6 +1471,7 @@ public:
    *   @param aImageFlags       Image flags of the imgIContainer::FLAG_* variety
    */
   static nsresult DrawImage(nsRenderingContext* aRenderingContext,
+                            nsPresContext*       aPresContext,
                             imgIContainer*       aImage,
                             GraphicsFilter       aGraphicsFilter,
                             const nsRect&        aDest,
@@ -1462,6 +1502,7 @@ public:
    *   @param aDirty            Pixels outside this area may be skipped.
    */
   static void DrawPixelSnapped(nsRenderingContext* aRenderingContext,
+                               nsPresContext*       aPresContext,
                                gfxDrawable*         aDrawable,
                                GraphicsFilter       aFilter,
                                const nsRect&        aDest,
@@ -1486,6 +1527,7 @@ public:
    *                            be aligned with image pixels.
    */
   static nsresult DrawSingleUnscaledImage(nsRenderingContext* aRenderingContext,
+                                          nsPresContext*       aPresContext,
                                           imgIContainer*       aImage,
                                           GraphicsFilter       aGraphicsFilter,
                                           const nsPoint&       aDest,
@@ -1514,6 +1556,7 @@ public:
    *                            be aligned with image pixels.
    */
   static nsresult DrawSingleImage(nsRenderingContext*    aRenderingContext,
+                                  nsPresContext*         aPresContext,
                                   imgIContainer*         aImage,
                                   GraphicsFilter         aGraphicsFilter,
                                   const nsRect&          aDest,
@@ -1839,6 +1882,15 @@ public:
    * property.
    */
   static bool HasAnimations(nsIContent* aContent, nsCSSProperty aProperty);
+
+  /**
+   * Returns true if the content node has any current animations or transitions.
+   * A current animation is any animation that has not yet finished playing
+   * including paused animations.
+   */
+  static bool HasCurrentAnimations(nsIContent* aContent,
+                                   nsIAtom* aAnimationProperty,
+                                   nsPresContext* aPresContext);
 
   /**
    * Checks if off-main-thread animations are enabled.
@@ -2184,7 +2236,11 @@ public:
   static void LogTestDataForPaint(nsIPresShell* aPresShell,
                                   ViewID aScrollId,
                                   const std::string& aKey,
-                                  const std::string& aValue);
+                                  const std::string& aValue) {
+    if (IsAPZTestLoggingEnabled()) {
+      DoLogTestDataForPaint(aPresShell, aScrollId, aKey, aValue);
+    }
+  }
 
   /**
    * A convenience overload of LogTestDataForPaint() that accepts any type
@@ -2196,8 +2252,10 @@ public:
                                   ViewID aScrollId,
                                   const std::string& aKey,
                                   const Value& aValue) {
-    LogTestDataForPaint(aPresShell, aScrollId, aKey,
-        mozilla::ToString(aValue));
+    if (IsAPZTestLoggingEnabled()) {
+      DoLogTestDataForPaint(aPresShell, aScrollId, aKey,
+          mozilla::ToString(aValue));
+    }
   }
 
  /**
@@ -2220,6 +2278,8 @@ public:
                                           nsRect aDisplayPortBase,
                                           nsRect* aOutDisplayport);
 
+  static bool IsOutlineStyleAutoEnabled();
+
 private:
   static uint32_t sFontSizeInflationEmPerLine;
   static uint32_t sFontSizeInflationMinTwips;
@@ -2231,6 +2291,16 @@ private:
   static bool sInvalidationDebuggingIsEnabled;
   static bool sCSSVariablesEnabled;
   static bool sInterruptibleReflowEnabled;
+
+  /**
+   * Helper function for LogTestDataForPaint().
+   */
+  static void DoLogTestDataForPaint(nsIPresShell* aPresShell,
+                                    ViewID aScrollId,
+                                    const std::string& aKey,
+                                    const std::string& aValue);
+
+  static bool IsAPZTestLoggingEnabled();
 };
 
 MOZ_FINISH_NESTED_ENUM_CLASS(nsLayoutUtils::RepaintMode)
@@ -2294,6 +2364,8 @@ namespace mozilla {
       nsPresContext *mPresContext;
       bool mOldValue;
     };
+
+    void MaybeSetupTransactionIdAllocator(layers::LayerManager* aManager, nsView* aView);
 
   }
 }

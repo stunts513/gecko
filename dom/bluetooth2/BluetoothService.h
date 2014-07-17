@@ -123,13 +123,13 @@ public:
   }
 
   /**
-   * Returns the path of the default adapter, implemented via a platform
+   * Returns an array of each adapter's properties, implemented via a platform
    * specific method.
    *
    * @return NS_OK on success, NS_ERROR_FAILURE otherwise
    */
   virtual nsresult
-  GetDefaultAdapterPathInternal(BluetoothReplyRunnable* aRunnable) = 0;
+  GetAdaptersInternal(BluetoothReplyRunnable* aRunnable) = 0;
 
   /**
    * Returns the properties of paired devices, implemented via a platform
@@ -150,6 +150,16 @@ public:
   virtual nsresult
   GetConnectedDevicePropertiesInternal(uint16_t aServiceUuid,
                                        BluetoothReplyRunnable* aRunnable) = 0;
+
+  /**
+   * Returns up-to-date uuids of given device address,
+   * implemented via a platform specific methood.
+   *
+   * @return NS_OK on success, NS_ERROR_FAILURE otherwise
+   */
+  virtual nsresult
+  FetchUuidsInternal(const nsAString& aDeviceAddress,
+                     BluetoothReplyRunnable* aRunnable) = 0;
 
   /**
    * Stop device discovery (platform specific implementation)
@@ -308,18 +318,31 @@ public:
   bool
   IsToggling() const;
 
+  void FireAdapterStateChanged(bool aEnable);
+  nsresult EnableDisable(bool aEnable,
+                         BluetoothReplyRunnable* aRunnable);
+
   /**
-   * Below 2 function/variable are used for ensuring event 'AdapterAdded' will
-   * be fired after event 'Enabled'.
+   * Platform specific startup functions go here. Usually deals with member
+   * variables, so not static. Guaranteed to be called outside of main thread.
+   *
+   * @return NS_OK on correct startup, NS_ERROR_FAILURE otherwise
    */
-  void TryFiringAdapterAdded();
-  void AdapterAddedReceived();
+  virtual nsresult
+  StartInternal(BluetoothReplyRunnable* aRunnable) = 0;
+
+  /**
+   * Platform specific startup functions go here. Usually deals with member
+   * variables, so not static. Guaranteed to be called outside of main thread.
+   *
+   * @return NS_OK on correct startup, NS_ERROR_FAILURE otherwise
+   */
+  virtual nsresult
+  StopInternal(BluetoothReplyRunnable* aRunnable) = 0;
 
 protected:
   BluetoothService() : mEnabled(false)
-                     , mAdapterAddedReceived(false)
-  {
-  }
+  { }
 
   virtual ~BluetoothService();
 
@@ -330,31 +353,15 @@ protected:
   Cleanup();
 
   nsresult
-  StartBluetooth(bool aIsStartup);
+  StartBluetooth(bool aIsStartup, BluetoothReplyRunnable* aRunnable);
 
   nsresult
-  StopBluetooth(bool aIsStartup);
+  StopBluetooth(bool aIsStartup, BluetoothReplyRunnable* aRunnable);
 
   nsresult
-  StartStopBluetooth(bool aStart, bool aIsStartup);
-
-  /**
-   * Platform specific startup functions go here. Usually deals with member
-   * variables, so not static. Guaranteed to be called outside of main thread.
-   *
-   * @return NS_OK on correct startup, NS_ERROR_FAILURE otherwise
-   */
-  virtual nsresult
-  StartInternal() = 0;
-
-  /**
-   * Platform specific startup functions go here. Usually deals with member
-   * variables, so not static. Guaranteed to be called outside of main thread.
-   *
-   * @return NS_OK on correct startup, NS_ERROR_FAILURE otherwise
-   */
-  virtual nsresult
-  StopInternal() = 0;
+  StartStopBluetooth(bool aStart,
+                     bool aIsStartup,
+                     BluetoothReplyRunnable* aRunnable);
 
   /**
    * Called when XPCOM first creates this service.
@@ -394,9 +401,6 @@ protected:
   BluetoothSignalObserverTable mBluetoothSignalObserverTable;
 
   bool mEnabled;
-
-private:
-  bool mAdapterAddedReceived;
 };
 
 END_BLUETOOTH_NAMESPACE

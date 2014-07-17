@@ -24,13 +24,16 @@
 #include "vm/WrapperObject.h"
 
 #include "jsobjinlines.h"
+#include "jsscriptinlines.h"
 
 #include "vm/ScopeObject-inl.h"
 
 using namespace js;
 using namespace JS;
 
+using mozilla::Move;
 using mozilla::PodArrayZero;
+using mozilla::UniquePtr;
 
 // Required by PerThreadDataFriendFields::getMainThread()
 JS_STATIC_ASSERT(offsetof(JSRuntime, mainThread) ==
@@ -49,22 +52,21 @@ PerThreadDataFriendFields::PerThreadDataFriendFields()
 }
 
 JS_FRIEND_API(void)
-js::SetSourceHook(JSRuntime *rt, SourceHook *hook)
+js::SetSourceHook(JSRuntime *rt, UniquePtr<SourceHook> hook)
 {
-    rt->sourceHook = hook;
+    rt->sourceHook = Move(hook);
 }
 
-JS_FRIEND_API(SourceHook *)
+JS_FRIEND_API(UniquePtr<SourceHook>)
 js::ForgetSourceHook(JSRuntime *rt)
 {
-    return rt->sourceHook.forget();
+    return Move(rt->sourceHook);
 }
 
 JS_FRIEND_API(void)
 JS_SetGrayGCRootsTracer(JSRuntime *rt, JSTraceDataOp traceOp, void *data)
 {
-    rt->gc.grayRootTracer.op = traceOp;
-    rt->gc.grayRootTracer.data = data;
+    rt->gc.setGrayRootsTracer(traceOp, data);
 }
 
 JS_FRIEND_API(JSString *)
@@ -72,12 +74,6 @@ JS_GetAnonymousString(JSRuntime *rt)
 {
     JS_ASSERT(rt->hasContexts());
     return rt->commonNames->anonymous;
-}
-
-JS_FRIEND_API(void)
-JS_SetIsWorkerRuntime(JSRuntime *rt)
-{
-    rt->setIsWorkerRuntime();
 }
 
 JS_FRIEND_API(JSObject *)
@@ -253,16 +249,22 @@ JS_SetCompartmentPrincipals(JSCompartment *compartment, JSPrincipals *principals
     compartment->isSystem = isSystem;
 }
 
+JS_FRIEND_API(JSPrincipals *)
+JS_GetScriptPrincipals(JSScript *script)
+{
+    return script->principals();
+}
+
+JS_FRIEND_API(JSPrincipals *)
+JS_GetScriptOriginPrincipals(JSScript *script)
+{
+    return script->originPrincipals();
+}
+
 JS_FRIEND_API(bool)
 JS_WrapPropertyDescriptor(JSContext *cx, JS::MutableHandle<js::PropertyDescriptor> desc)
 {
     return cx->compartment()->wrap(cx, desc);
-}
-
-JS_FRIEND_API(bool)
-JS_WrapAutoIdVector(JSContext *cx, js::AutoIdVector &props)
-{
-    return cx->compartment()->wrap(cx, props);
 }
 
 JS_FRIEND_API(void)
@@ -444,7 +446,7 @@ js::RunningWithTrustedPrincipals(JSContext *cx)
     return cx->runningWithTrustedPrincipals();
 }
 
-JS_FRIEND_API(JSScript *)
+JS_FRIEND_API(JSFunction *)
 js::GetOutermostEnclosingFunctionOfScriptedCaller(JSContext *cx)
 {
     ScriptFrameIter iter(cx);
@@ -454,13 +456,12 @@ js::GetOutermostEnclosingFunctionOfScriptedCaller(JSContext *cx)
     if (!iter.isFunctionFrame())
         return nullptr;
 
-    RootedFunction scriptedCaller(cx, iter.callee());
-    RootedScript outermost(cx, scriptedCaller->nonLazyScript());
-    for (StaticScopeIter<NoGC> i(scriptedCaller); !i.done(); i++) {
+    RootedFunction curr(cx, iter.callee());
+    for (StaticScopeIter<NoGC> i(curr); !i.done(); i++) {
         if (i.type() == StaticScopeIter<NoGC>::FUNCTION)
-            outermost = i.funScript();
+            curr = &i.fun();
     }
-    return outermost;
+    return curr;
 }
 
 JS_FRIEND_API(JSFunction *)
@@ -514,21 +515,6 @@ js::NewFunctionByIdWithReserved(JSContext *cx, JSNative native, unsigned nargs, 
     JSFunction::Flags funFlags = JSAPIToJSFunctionFlags(flags);
     return NewFunction(cx, NullPtr(), native, nargs, funFlags, parent, atom,
                        JSFunction::ExtendedFinalizeKind);
-}
-
-JS_FRIEND_API(JSObject *)
-js::InitClassWithReserved(JSContext *cx, JSObject *objArg, JSObject *parent_protoArg,
-                          const JSClass *clasp, JSNative constructor, unsigned nargs,
-                          const JSPropertySpec *ps, const JSFunctionSpec *fs,
-                          const JSPropertySpec *static_ps, const JSFunctionSpec *static_fs)
-{
-    RootedObject obj(cx, objArg);
-    RootedObject parent_proto(cx, parent_protoArg);
-    CHECK_REQUEST(cx);
-    assertSameCompartment(cx, obj, parent_proto);
-    return js_InitClass(cx, obj, parent_proto, Valueify(clasp), constructor,
-                        nargs, ps, fs, static_ps, static_fs, nullptr,
-                        JSFunction::ExtendedFinalizeKind);
 }
 
 JS_FRIEND_API(const Value &)
@@ -634,7 +620,7 @@ js::TraceWeakMaps(WeakMapTracer *trc)
 extern JS_FRIEND_API(bool)
 js::AreGCGrayBitsValid(JSRuntime *rt)
 {
-    return rt->gc.grayBitsValid;
+    return rt->gc.areGrayBitsValid();
 }
 
 JS_FRIEND_API(bool)
@@ -673,6 +659,12 @@ js::GetWeakmapKeyDelegate(JSObject *key)
     if (JSWeakmapKeyDelegateOp op = key->getClass()->ext.weakmapKeyDelegateOp)
         return op(key);
     return nullptr;
+}
+
+JS_FRIEND_API(JSLinearString *)
+js::StringToLinearStringSlow(JSContext *cx, JSString *str)
+{
+    return str->ensureLinear(cx);
 }
 
 JS_FRIEND_API(void)
@@ -858,15 +850,13 @@ js::IsContextRunningJS(JSContext *cx)
 JS_FRIEND_API(JS::GCSliceCallback)
 JS::SetGCSliceCallback(JSRuntime *rt, GCSliceCallback callback)
 {
-    JS::GCSliceCallback old = rt->gc.sliceCallback;
-    rt->gc.sliceCallback = callback;
-    return old;
+    return rt->gc.setSliceCallback(callback);
 }
 
 JS_FRIEND_API(bool)
 JS::WasIncrementalGC(JSRuntime *rt)
 {
-    return rt->gc.isIncremental;
+    return rt->gc.isIncrementalGc();
 }
 
 jschar *
@@ -884,46 +874,25 @@ GCDescription::formatJSON(JSRuntime *rt, uint64_t timestamp) const
 JS_FRIEND_API(void)
 JS::NotifyDidPaint(JSRuntime *rt)
 {
-    if (rt->gcZeal() == gc::ZealFrameVerifierPreValue) {
-        gc::VerifyBarriers(rt, gc::PreBarrierVerifier);
-        return;
-    }
-
-    if (rt->gcZeal() == gc::ZealFrameVerifierPostValue) {
-        gc::VerifyBarriers(rt, gc::PostBarrierVerifier);
-        return;
-    }
-
-    if (rt->gcZeal() == gc::ZealFrameGCValue) {
-        PrepareForFullGC(rt);
-        GCSlice(rt, GC_NORMAL, gcreason::REFRESH_FRAME);
-        return;
-    }
-
-    if (JS::IsIncrementalGCInProgress(rt) && !rt->gc.interFrameGC) {
-        JS::PrepareForIncrementalGC(rt);
-        GCSlice(rt, GC_NORMAL, gcreason::REFRESH_FRAME);
-    }
-
-    rt->gc.interFrameGC = false;
+    rt->gc.notifyDidPaint();
 }
 
 JS_FRIEND_API(bool)
 JS::IsIncrementalGCEnabled(JSRuntime *rt)
 {
-    return rt->gc.incrementalEnabled && rt->gcMode() == JSGC_MODE_INCREMENTAL;
+    return rt->gc.isIncrementalGCEnabled();
 }
 
 JS_FRIEND_API(bool)
 JS::IsIncrementalGCInProgress(JSRuntime *rt)
 {
-    return rt->gc.incrementalState != gc::NO_INCREMENTAL && !rt->gc.verifyPreData;
+    return rt->gc.isIncrementalGCInProgress();
 }
 
 JS_FRIEND_API(void)
 JS::DisableIncrementalGC(JSRuntime *rt)
 {
-    rt->gc.incrementalEnabled = false;
+    rt->gc.disallowIncrementalGC();
 }
 
 JS::AutoDisableGenerationalGC::AutoDisableGenerationalGC(JSRuntime *rt)
@@ -958,7 +927,7 @@ JS::IsGenerationalGCEnabled(JSRuntime *rt)
 JS_FRIEND_API(bool)
 JS::IsIncrementalBarrierNeeded(JSRuntime *rt)
 {
-    return rt->gc.incrementalState == gc::MARK && !rt->isHeapBusy();
+    return rt->gc.state() == gc::MARK && !rt->isHeapBusy();
 }
 
 JS_FRIEND_API(bool)
@@ -986,6 +955,9 @@ JS::IncrementalReferenceBarrier(void *ptr, JSGCTraceKind kind)
     if (!ptr)
         return;
 
+    if (kind == JSTRACE_STRING && StringIsPermanentAtom(static_cast<JSString *>(ptr)))
+        return;
+
     gc::Cell *cell = static_cast<gc::Cell *>(ptr);
     Zone *zone = kind == JSTRACE_OBJECT
                  ? static_cast<JSObject *>(cell)->zone()
@@ -999,6 +971,8 @@ JS::IncrementalReferenceBarrier(void *ptr, JSGCTraceKind kind)
         JSObject::writeBarrierPre(static_cast<JSObject*>(cell));
     else if (kind == JSTRACE_STRING)
         JSString::writeBarrierPre(static_cast<JSString*>(cell));
+    else if (kind == JSTRACE_SYMBOL)
+        JS::Symbol::writeBarrierPre(static_cast<JS::Symbol*>(cell));
     else if (kind == JSTRACE_SCRIPT)
         JSScript::writeBarrierPre(static_cast<JSScript*>(cell));
     else if (kind == JSTRACE_LAZY_SCRIPT)
@@ -1022,7 +996,7 @@ JS::IncrementalValueBarrier(const Value &v)
 JS_FRIEND_API(void)
 JS::PokeGC(JSRuntime *rt)
 {
-    rt->gc.poke = true;
+    rt->gc.poke();
 }
 
 JS_FRIEND_API(JSCompartment *)
@@ -1191,7 +1165,7 @@ js_DefineOwnProperty(JSContext *cx, JSObject *objArg, jsid idArg,
 {
     RootedObject obj(cx, objArg);
     RootedId id(cx, idArg);
-    JS_ASSERT(cx->runtime()->gc.heapState == js::Idle);
+    js::AssertHeapIsIdle(cx);
     CHECK_REQUEST(cx);
     assertSameCompartment(cx, obj, id, descriptor.value());
     if (descriptor.hasGetterObject())
@@ -1206,6 +1180,21 @@ JS_FRIEND_API(bool)
 js_ReportIsNotFunction(JSContext *cx, JS::HandleValue v)
 {
     return ReportIsNotFunction(cx, v);
+}
+
+JS_FRIEND_API(void)
+js::ReportErrorWithId(JSContext *cx, const char *msg, HandleId id)
+{
+    RootedValue idv(cx);
+    if (!JS_IdToValue(cx, id, &idv))
+        return;
+    JSString *idstr = JS::ToString(cx, idv);
+    if (!idstr)
+        return;
+    JSAutoByteString bytes(cx, idstr);
+    if (!bytes)
+        return;
+    JS_ReportError(cx, msg, bytes.ptr());
 }
 
 #ifdef DEBUG

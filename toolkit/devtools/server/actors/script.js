@@ -1,4 +1,4 @@
-/* -*- Mode: javascript; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2; js-indent-level: 2; -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2; js-indent-level: 2 -*- */
 /* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -6,18 +6,23 @@
 
 "use strict";
 
-const Debugger = require("Debugger");
 const Services = require("Services");
-const { Cc, Ci, Cu, components } = require("chrome");
+const { Cc, Ci, Cu, components, ChromeWorker } = require("chrome");
 const { ActorPool } = require("devtools/server/actors/common");
 const { DebuggerServer } = require("devtools/server/main");
 const DevToolsUtils = require("devtools/toolkit/DevToolsUtils");
 const { dbg_assert, dumpn, update } = DevToolsUtils;
 const { SourceMapConsumer, SourceMapGenerator } = require("source-map");
-const { defer, resolve, reject, all } = require("devtools/toolkit/deprecated-sync-thenables");
-const {CssLogic} = require("devtools/styleinspector/css-logic");
+const promise = require("promise");
+const Debugger = require("Debugger");
+const xpcInspector = require("xpcInspector");
 
-Cu.import("resource://gre/modules/NetUtil.jsm");
+const { defer, resolve, reject, all } = require("devtools/toolkit/deprecated-sync-thenables");
+const { CssLogic } = require("devtools/styleinspector/css-logic");
+
+DevToolsUtils.defineLazyGetter(this, "NetUtil", () => {
+  return Cu.import("resource://gre/modules/NetUtil.jsm", {}).NetUtil;
+});
 
 let B2G_ID = "{3c2e2abc-06d4-11e1-ac3b-374f68613e61}";
 
@@ -38,7 +43,8 @@ let addonManager = null;
  * about them.
  */
 function mapURIToAddonID(uri, id) {
-  if ((Services.appinfo.ID || undefined) == B2G_ID) {
+  if (Services.appinfo.processType == Services.appinfo.PROCESS_TYPE_CONTENT ||
+      (Services.appinfo.ID || undefined) == B2G_ID) {
     return false;
   }
 
@@ -324,9 +330,6 @@ exports.BreakpointStore = BreakpointStore;
  * Manages pushing event loops and automatically pops and exits them in the
  * correct order as they are resolved.
  *
- * @param nsIJSInspector inspector
- *        The underlying JS inspector we use to enter and exit nested event
- *        loops.
  * @param ThreadActor thread
  *        The thread actor instance that owns this EventLoopStack.
  * @param DebuggerServerConnection connection
@@ -338,8 +341,7 @@ exports.BreakpointStore = BreakpointStore;
  *          - preNest: function called before entering a nested event loop
  *          - postNest: function called after exiting a nested event loop
  */
-function EventLoopStack({ inspector, thread, connection, hooks }) {
-  this._inspector = inspector;
+function EventLoopStack({ thread, connection, hooks }) {
   this._hooks = hooks;
   this._thread = thread;
   this._connection = connection;
@@ -350,7 +352,7 @@ EventLoopStack.prototype = {
    * The number of nested event loops on the stack.
    */
   get size() {
-    return this._inspector.eventLoopNestLevel;
+    return xpcInspector.eventLoopNestLevel;
   },
 
   /**
@@ -360,7 +362,7 @@ EventLoopStack.prototype = {
     let url = null;
     if (this.size > 0) {
       try {
-        url = this._inspector.lastNestRequestor.url
+        url = xpcInspector.lastNestRequestor.url
       } catch (e) {
         // The tab's URL getter may throw if the tab is destroyed by the time
         // this code runs, but we don't really care at this point.
@@ -375,7 +377,7 @@ EventLoopStack.prototype = {
    * top of the stack
    */
   get lastConnection() {
-    return this._inspector.lastNestRequestor._connection;
+    return xpcInspector.lastNestRequestor._connection;
   },
 
   /**
@@ -385,7 +387,6 @@ EventLoopStack.prototype = {
    */
   push: function () {
     return new EventLoop({
-      inspector: this._inspector,
       thread: this._thread,
       connection: this._connection,
       hooks: this._hooks
@@ -397,8 +398,6 @@ EventLoopStack.prototype = {
  * An object that represents a nested event loop. It is used as the nest
  * requestor with nsIJSInspector instances.
  *
- * @param nsIJSInspector inspector
- *        The JS Inspector that runs nested event loops.
  * @param ThreadActor thread
  *        The thread actor that is creating this nested event loop.
  * @param DebuggerServerConnection connection
@@ -407,8 +406,7 @@ EventLoopStack.prototype = {
  *        The same hooks object passed into EventLoopStack during its
  *        initialization.
  */
-function EventLoop({ inspector, thread, connection, hooks }) {
-  this._inspector = inspector;
+function EventLoop({ thread, connection, hooks }) {
   this._thread = thread;
   this._hooks = hooks;
   this._connection = connection;
@@ -431,13 +429,13 @@ EventLoop.prototype = {
       : null;
 
     this.entered = true;
-    this._inspector.enterNestedEventLoop(this);
+    xpcInspector.enterNestedEventLoop(this);
 
     // Keep exiting nested event loops while the last requestor is resolved.
-    if (this._inspector.eventLoopNestLevel > 0) {
-      const { resolved } = this._inspector.lastNestRequestor;
+    if (xpcInspector.eventLoopNestLevel > 0) {
+      const { resolved } = xpcInspector.lastNestRequestor;
       if (resolved) {
-        this._inspector.exitNestedEventLoop();
+        xpcInspector.exitNestedEventLoop();
       }
     }
 
@@ -465,8 +463,8 @@ EventLoop.prototype = {
       throw new Error("Already resolved this nested event loop!");
     }
     this.resolved = true;
-    if (this === this._inspector.lastNestRequestor) {
-      this._inspector.exitNestedEventLoop();
+    if (this === xpcInspector.lastNestRequestor) {
+      xpcInspector.exitNestedEventLoop();
       return true;
     }
     return false;
@@ -504,7 +502,8 @@ function ThreadActor(aHooks, aGlobal)
   this._allEventsListener = this._allEventsListener.bind(this);
 
   this._options = {
-    useSourceMaps: false
+    useSourceMaps: false,
+    autoBlackBox: false
   };
 
   this._gripDepth = 0;
@@ -542,7 +541,7 @@ ThreadActor.prototype = {
 
   get sources() {
     if (!this._sources) {
-      this._sources = new ThreadSources(this, this._options.useSourceMaps,
+      this._sources = new ThreadSources(this, this._options,
                                         this._allowSource, this.onNewSource);
     }
     return this._sources;
@@ -786,7 +785,6 @@ ThreadActor.prototype = {
     // Initialize an event loop stack. This can't be done in the constructor,
     // because this.conn is not yet initialized by the actor pool at that time.
     this._nestedEventLoops = new EventLoopStack({
-      inspector: DebuggerServer.xpcInspector,
       hooks: this._hooks,
       connection: this.conn,
       thread: this
@@ -1083,10 +1081,12 @@ ThreadActor.prototype = {
    *        The frame we want to clear the stepping hooks from.
    */
   _clearSteppingHooks: function (aFrame) {
-    while (aFrame) {
-      aFrame.onStep = undefined;
-      aFrame.onPop = undefined;
-      aFrame = aFrame.older;
+    if (aFrame && aFrame.live) {
+      while (aFrame) {
+        aFrame.onStep = undefined;
+        aFrame.onPop = undefined;
+        aFrame = aFrame.older;
+      }
     }
   },
 
@@ -1584,8 +1584,7 @@ ThreadActor.prototype = {
           if (!actualLocation) {
             actualLocation = {
               url: aLocation.url,
-              line: line,
-              column: 0
+              line: line
             };
           }
           found = true;
@@ -2052,14 +2051,14 @@ ThreadActor.prototype = {
    */
   createProtocolCompletionValue: function (aCompletion) {
     let protoValue = {};
-    if ("return" in aCompletion) {
+    if (aCompletion == null) {
+      protoValue.terminated = true;
+    } else if ("return" in aCompletion) {
       protoValue.return = this.createValueGrip(aCompletion.return);
-    } else if ("yield" in aCompletion) {
-      protoValue.return = this.createValueGrip(aCompletion.yield);
     } else if ("throw" in aCompletion) {
       protoValue.throw = this.createValueGrip(aCompletion.throw);
     } else {
-      protoValue.terminated = true;
+      protoValue.return = this.createValueGrip(aCompletion.yield);
     }
     return protoValue;
   },
@@ -3072,7 +3071,14 @@ ObjectActor.prototype = {
     };
 
     if (this.obj.class != "DeadObject") {
-      let raw = Cu.unwaiveXrays(this.obj.unsafeDereference());
+      let raw = this.obj.unsafeDereference();
+
+      // If Cu is not defined, we are running on a worker thread, where xrays
+      // don't exist.
+      if (Cu) {
+        raw = Cu.unwaiveXrays(raw);
+      }
+
       if (!DevToolsUtils.isSafeJSObject(raw)) {
         raw = null;
       }
@@ -3612,8 +3618,16 @@ DebuggerServer.ObjectActorPreviewers = {
     let raw = obj.unsafeDereference();
     let items = aGrip.preview.items = [];
 
-    for (let [i, value] of Array.prototype.entries.call(raw)) {
-      if (Object.hasOwnProperty.call(raw, i)) {
+    for (let i = 0; i < length; ++i) {
+      // Array Xrays filter out various possibly-unsafe properties (like
+      // functions, and claim that the value is undefined instead. This
+      // is generally the right thing for privileged code accessing untrusted
+      // objects, but quite confusing for Object previews. So we manually
+      // override this protection by waiving Xrays on the array, and re-applying
+      // Xrays on any indexed value props that we pull off of it.
+      let desc = Object.getOwnPropertyDescriptor(Cu.waiveXrays(raw), i);
+      if (desc && !desc.get && !desc.set) {
+        let value = Cu.unwaiveXrays(desc.value);
         value = makeDebuggeeValueIfNeeded(obj, value);
         items.push(threadActor.createValueGrip(value));
       } else {
@@ -3646,7 +3660,18 @@ DebuggerServer.ObjectActorPreviewers = {
 
     let raw = obj.unsafeDereference();
     let items = aGrip.preview.items = [];
-    for (let item of Set.prototype.values.call(raw)) {
+    // We currently lack XrayWrappers for Set, so when we iterate over
+    // the values, the temporary iterator objects get created in the target
+    // compartment. However, we _do_ have Xrays to Object now, so we end up
+    // Xraying those temporary objects, and filtering access to |it.value|
+    // based on whether or not it's Xrayable and/or callable, which breaks
+    // the for/of iteration.
+    //
+    // This code is designed to handle untrusted objects, so we can safely
+    // waive Xrays on the iterable, and relying on the Debugger machinery to
+    // make sure we handle the resulting objects carefully.
+    for (let item of Cu.waiveXrays(Set.prototype.values.call(raw))) {
+      item = Cu.unwaiveXrays(item);
       item = makeDebuggeeValueIfNeeded(obj, item);
       items.push(threadActor.createValueGrip(item));
       if (items.length == OBJECT_PREVIEW_MAX_ITEMS) {
@@ -3674,7 +3699,21 @@ DebuggerServer.ObjectActorPreviewers = {
 
     let raw = obj.unsafeDereference();
     let entries = aGrip.preview.entries = [];
-    for (let [key, value] of Map.prototype.entries.call(raw)) {
+    // Iterating over a Map via .entries goes through various intermediate
+    // objects - an Iterator object, then a 2-element Array object, then the
+    // actual values we care about. We don't have Xrays to Iterator objects,
+    // so we get Opaque wrappers for them. And even though we have Xrays to
+    // Arrays, the semantics often deny access to the entires based on the
+    // nature of the values. So we need waive Xrays for the iterator object
+    // and the tupes, and then re-apply them on the underlying values until
+    // we fix bug 1023984.
+    //
+    // Even then though, we might want to continue waiving Xrays here for the
+    // same reason we do so for Arrays above - this filtering behavior is likely
+    // to be more confusing than beneficial in the case of Object previews.
+    for (let keyValuePair of Cu.waiveXrays(Map.prototype.entries.call(raw))) {
+      let key = Cu.unwaiveXrays(keyValuePair[0]);
+      let value = Cu.unwaiveXrays(keyValuePair[1]);
       key = makeDebuggeeValueIfNeeded(obj, key);
       value = makeDebuggeeValueIfNeeded(obj, value);
       entries.push([threadActor.createValueGrip(key),
@@ -3778,7 +3817,9 @@ DebuggerServer.ObjectActorPreviewers.Object = [
     let raw = obj.unsafeDereference();
     let global = Cu.getGlobalForObject(DebuggerServer);
     let classProto = global[obj.class].prototype;
-    let safeView = classProto.subarray.call(raw, 0, OBJECT_PREVIEW_MAX_ITEMS);
+    // The Xray machinery for TypedArrays denies indexed access on the grounds
+    // that it's slow, and advises callers to do a structured clone instead.
+    let safeView = Cu.cloneInto(classProto.subarray.call(raw, 0, OBJECT_PREVIEW_MAX_ITEMS), global);
     let items = aGrip.preview.items = [];
     for (let i = 0; i < safeView.length; i++) {
       items.push(safeView[i]);
@@ -3818,7 +3859,7 @@ DebuggerServer.ObjectActorPreviewers.Object = [
   },
 
   function CSSMediaRule({obj, threadActor}, aGrip, aRawObj) {
-    if (!aRawObj || !(aRawObj instanceof Ci.nsIDOMCSSMediaRule)) {
+    if (isWorker || !aRawObj || !(aRawObj instanceof Ci.nsIDOMCSSMediaRule)) {
       return false;
     }
     aGrip.preview = {
@@ -3829,7 +3870,7 @@ DebuggerServer.ObjectActorPreviewers.Object = [
   },
 
   function CSSStyleRule({obj, threadActor}, aGrip, aRawObj) {
-    if (!aRawObj || !(aRawObj instanceof Ci.nsIDOMCSSStyleRule)) {
+    if (isWorker || !aRawObj || !(aRawObj instanceof Ci.nsIDOMCSSStyleRule)) {
       return false;
     }
     aGrip.preview = {
@@ -3840,11 +3881,10 @@ DebuggerServer.ObjectActorPreviewers.Object = [
   },
 
   function ObjectWithURL({obj, threadActor}, aGrip, aRawObj) {
-    if (!aRawObj ||
-        !(aRawObj instanceof Ci.nsIDOMCSSImportRule ||
-          aRawObj instanceof Ci.nsIDOMCSSStyleSheet ||
-          aRawObj instanceof Ci.nsIDOMLocation ||
-          aRawObj instanceof Ci.nsIDOMWindow)) {
+    if (isWorker || !aRawObj || !(aRawObj instanceof Ci.nsIDOMCSSImportRule ||
+                                  aRawObj instanceof Ci.nsIDOMCSSStyleSheet ||
+                                  aRawObj instanceof Ci.nsIDOMLocation ||
+                                  aRawObj instanceof Ci.nsIDOMWindow)) {
       return false;
     }
 
@@ -3866,7 +3906,7 @@ DebuggerServer.ObjectActorPreviewers.Object = [
   },
 
   function ArrayLike({obj, threadActor}, aGrip, aRawObj) {
-    if (!aRawObj ||
+    if (isWorker || !aRawObj ||
         obj.class != "DOMStringList" &&
         obj.class != "DOMTokenList" &&
         !(aRawObj instanceof Ci.nsIDOMMozNamedAttrMap ||
@@ -3905,7 +3945,7 @@ DebuggerServer.ObjectActorPreviewers.Object = [
   }, // ArrayLike
 
   function CSSStyleDeclaration({obj, threadActor}, aGrip, aRawObj) {
-    if (!aRawObj || !(aRawObj instanceof Ci.nsIDOMCSSStyleDeclaration)) {
+    if (isWorker || !aRawObj || !(aRawObj instanceof Ci.nsIDOMCSSStyleDeclaration)) {
       return false;
     }
 
@@ -3927,7 +3967,8 @@ DebuggerServer.ObjectActorPreviewers.Object = [
   },
 
   function DOMNode({obj, threadActor}, aGrip, aRawObj) {
-    if (obj.class == "Object" || !aRawObj || !(aRawObj instanceof Ci.nsIDOMNode)) {
+    if (isWorker || obj.class == "Object" || !aRawObj ||
+        !(aRawObj instanceof Ci.nsIDOMNode)) {
       return false;
     }
 
@@ -3978,7 +4019,7 @@ DebuggerServer.ObjectActorPreviewers.Object = [
   }, // DOMNode
 
   function DOMEvent({obj, threadActor}, aGrip, aRawObj) {
-    if (!aRawObj || !(aRawObj instanceof Ci.nsIDOMEvent)) {
+    if (isWorker || !aRawObj || !(aRawObj instanceof Ci.nsIDOMEvent)) {
       return false;
     }
 
@@ -4060,7 +4101,7 @@ DebuggerServer.ObjectActorPreviewers.Object = [
   }, // DOMEvent
 
   function DOMException({obj, threadActor}, aGrip, aRawObj) {
-    if (!aRawObj || !(aRawObj instanceof Ci.nsIDOMDOMException)) {
+    if (isWorker || !aRawObj || !(aRawObj instanceof Ci.nsIDOMDOMException)) {
       return false;
     }
 
@@ -4934,10 +4975,11 @@ exports.AddonThreadActor = AddonThreadActor;
  * Manages the sources for a thread. Handles source maps, locations in the
  * sources, etc for ThreadActors.
  */
-function ThreadSources(aThreadActor, aUseSourceMaps, aAllowPredicate,
+function ThreadSources(aThreadActor, aOptions, aAllowPredicate,
                        aOnNewSource) {
   this._thread = aThreadActor;
-  this._useSourceMaps = aUseSourceMaps;
+  this._useSourceMaps = aOptions.useSourceMaps;
+  this._autoBlackBox = aOptions.autoBlackBox;
   this._allow = aAllowPredicate;
   this._onNewSource = aOnNewSource;
 
@@ -4957,6 +4999,13 @@ function ThreadSources(aThreadActor, aUseSourceMaps, aAllowPredicate,
  */
 ThreadSources._blackBoxedSources = new Set(["self-hosted"]);
 ThreadSources._prettyPrintedSources = new Map();
+
+/**
+ * Matches strings of the form "foo.min.js" or "foo-min.js", etc. If the regular
+ * expression matches, we can be fairly sure that the source is minified, and
+ * treat it as such.
+ */
+const MINIFIED_SOURCE_REGEXP = /\bmin\.js$/;
 
 ThreadSources.prototype = {
   /**
@@ -4989,6 +5038,10 @@ ThreadSources.prototype = {
       return this._sourceActors[url];
     }
 
+    if (this._autoBlackBox && this._isMinifiedURL(url)) {
+      this.blackBox(url);
+    }
+
     let actor = new SourceActor({
       url: url,
       thread: this._thread,
@@ -5005,6 +5058,26 @@ ThreadSources.prototype = {
       reportError(e);
     }
     return actor;
+  },
+
+  /**
+   * Returns true if the URL likely points to a minified resource, false
+   * otherwise.
+   *
+   * @param String aURL
+   *        The URL to test.
+   * @returns Boolean
+   */
+  _isMinifiedURL: function (aURL) {
+    try {
+      let url = Services.io.newURI(aURL, null, null)
+                           .QueryInterface(Ci.nsIURL);
+      return MINIFIED_SOURCE_REGEXP.test(url.fileName);
+    } catch (e) {
+      // Not a valid URL so don't try to parse out the filename, just test the
+      // whole thing with the minified source regexp.
+      return MINIFIED_SOURCE_REGEXP.test(aURL);
+    }
   },
 
   /**
@@ -5026,7 +5099,13 @@ ThreadSources.prototype = {
           .QueryInterface(Ci.nsIURL);
         if (url.fileExtension === "js") {
           spec.contentType = "text/javascript";
-          spec.text = aScript.source.text;
+          // If the Debugger API wasn't able to load the source,
+          // because sources were discarded
+          // (javascript.options.discardSystemSource == true),
+          // give source() a chance to fetch them.
+          if (aScript.source.text != "[no source]") {
+            spec.text = aScript.source.text;
+          }
         }
       } catch(ex) {
         // Not a valid URI.
@@ -5142,6 +5221,8 @@ ThreadSources.prototype = {
    */
   getOriginalLocation: function ({ url, line, column }) {
     if (url in this._sourceMapsByGeneratedSource) {
+      column = column || 0;
+
       return this._sourceMapsByGeneratedSource[url]
         .then((aSourceMap) => {
           let { source: aSourceURL, line: aLine, column: aColumn } = aSourceMap.originalPositionFor({
@@ -5482,10 +5563,11 @@ function convertToUnicode(aString, aCharset=null) {
  * @param String aPrefix
  *        An optional prefix for the reported error message.
  */
-function reportError(aError, aPrefix="") {
+let oldReportError = reportError;
+reportError = function(aError, aPrefix="") {
   dbg_assert(aError instanceof Error, "Must pass Error objects to reportError");
   let msg = aPrefix + aError.message + ":\n" + aError.stack;
-  Cu.reportError(msg);
+  oldReportError(msg);
   dumpn(msg);
 }
 

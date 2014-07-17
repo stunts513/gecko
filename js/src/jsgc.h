@@ -25,6 +25,10 @@ struct JSCompartment;
 class JSFlatString;
 class JSLinearString;
 
+namespace JS {
+class Symbol;
+} /* namespace JS */
+
 namespace js {
 
 class ArgumentsObject;
@@ -33,14 +37,18 @@ class ArrayBufferViewObject;
 class SharedArrayBufferObject;
 class BaseShape;
 class DebugScopeObject;
-class GCHelperThread;
 class GlobalObject;
 class LazyScript;
 class Nursery;
 class PropertyName;
+class SavedFrame;
 class ScopeObject;
 class Shape;
 class UnownedBaseShape;
+
+namespace gc {
+class ForkJoinNursery;
+}
 
 unsigned GetCPUCount();
 
@@ -63,35 +71,6 @@ enum State {
     MARK,
     SWEEP,
     INVALID
-};
-
-class ChunkPool {
-    Chunk   *emptyChunkListHead;
-    size_t  emptyCount;
-
-  public:
-    ChunkPool()
-      : emptyChunkListHead(nullptr),
-        emptyCount(0) { }
-
-    size_t getEmptyCount() const {
-        return emptyCount;
-    }
-
-    /* Must be called with the GC lock taken. */
-    inline Chunk *get(JSRuntime *rt);
-
-    /* Must be called either during the GC or with the GC lock taken. */
-    inline void put(Chunk *chunk);
-
-    /*
-     * Return the list of chunks that can be released outside the GC lock.
-     * Must be called either during the GC or with the GC lock taken.
-     */
-    Chunk *expire(JSRuntime *rt, bool releaseAll);
-
-    /* Must be called with the GC lock taken. */
-    void expireAndFree(JSRuntime *rt, bool releaseAll);
 };
 
 static inline JSGCTraceKind
@@ -118,6 +97,7 @@ MapAllocToTraceKind(AllocKind kind)
         JSTRACE_STRING,     /* FINALIZE_FAT_INLINE_STRING */
         JSTRACE_STRING,     /* FINALIZE_STRING */
         JSTRACE_STRING,     /* FINALIZE_EXTERNAL_STRING */
+        JSTRACE_SYMBOL,     /* FINALIZE_SYMBOL */
         JSTRACE_JITCODE,    /* FINALIZE_JITCODE */
     };
     JS_STATIC_ASSERT(JS_ARRAY_LENGTH(map) == FINALIZE_LIMIT);
@@ -135,6 +115,7 @@ template <> struct MapTypeToTraceKind<SharedArrayBufferObject>{ static const JSG
 template <> struct MapTypeToTraceKind<DebugScopeObject> { static const JSGCTraceKind kind = JSTRACE_OBJECT; };
 template <> struct MapTypeToTraceKind<GlobalObject>     { static const JSGCTraceKind kind = JSTRACE_OBJECT; };
 template <> struct MapTypeToTraceKind<ScopeObject>      { static const JSGCTraceKind kind = JSTRACE_OBJECT; };
+template <> struct MapTypeToTraceKind<SavedFrame>       { static const JSGCTraceKind kind = JSTRACE_OBJECT; };
 template <> struct MapTypeToTraceKind<JSScript>         { static const JSGCTraceKind kind = JSTRACE_SCRIPT; };
 template <> struct MapTypeToTraceKind<LazyScript>       { static const JSGCTraceKind kind = JSTRACE_LAZY_SCRIPT; };
 template <> struct MapTypeToTraceKind<Shape>            { static const JSGCTraceKind kind = JSTRACE_SHAPE; };
@@ -145,6 +126,7 @@ template <> struct MapTypeToTraceKind<JSAtom>           { static const JSGCTrace
 template <> struct MapTypeToTraceKind<JSString>         { static const JSGCTraceKind kind = JSTRACE_STRING; };
 template <> struct MapTypeToTraceKind<JSFlatString>     { static const JSGCTraceKind kind = JSTRACE_STRING; };
 template <> struct MapTypeToTraceKind<JSLinearString>   { static const JSGCTraceKind kind = JSTRACE_STRING; };
+template <> struct MapTypeToTraceKind<JS::Symbol>       { static const JSGCTraceKind kind = JSTRACE_SYMBOL; }; 
 template <> struct MapTypeToTraceKind<PropertyName>     { static const JSGCTraceKind kind = JSTRACE_STRING; };
 template <> struct MapTypeToTraceKind<jit::JitCode>     { static const JSGCTraceKind kind = JSTRACE_JITCODE; };
 
@@ -162,6 +144,7 @@ template <> struct MapTypeToFinalizeKind<types::TypeObject> { static const Alloc
 template <> struct MapTypeToFinalizeKind<JSFatInlineString> { static const AllocKind kind = FINALIZE_FAT_INLINE_STRING; };
 template <> struct MapTypeToFinalizeKind<JSString>          { static const AllocKind kind = FINALIZE_STRING; };
 template <> struct MapTypeToFinalizeKind<JSExternalString>  { static const AllocKind kind = FINALIZE_EXTERNAL_STRING; };
+template <> struct MapTypeToFinalizeKind<JS::Symbol>        { static const AllocKind kind = FINALIZE_SYMBOL; };
 template <> struct MapTypeToFinalizeKind<jit::JitCode>      { static const AllocKind kind = FINALIZE_JITCODE; };
 
 #if defined(JSGC_GENERATIONAL) || defined(DEBUG)
@@ -190,6 +173,44 @@ IsNurseryAllocable(AllocKind kind)
         false,     /* FINALIZE_FAT_INLINE_STRING */
         false,     /* FINALIZE_STRING */
         false,     /* FINALIZE_EXTERNAL_STRING */
+        false,     /* FINALIZE_SYMBOL */
+        false,     /* FINALIZE_JITCODE */
+    };
+    JS_STATIC_ASSERT(JS_ARRAY_LENGTH(map) == FINALIZE_LIMIT);
+    return map[kind];
+}
+#endif
+
+#if defined(JSGC_FJGENERATIONAL)
+// This is separate from IsNurseryAllocable() so that the latter can evolve
+// without worrying about what the ForkJoinNursery's needs are, and vice
+// versa to some extent.
+static inline bool
+IsFJNurseryAllocable(AllocKind kind)
+{
+    JS_ASSERT(kind >= 0 && unsigned(kind) < FINALIZE_LIMIT);
+    static const bool map[] = {
+        false,     /* FINALIZE_OBJECT0 */
+        true,      /* FINALIZE_OBJECT0_BACKGROUND */
+        false,     /* FINALIZE_OBJECT2 */
+        true,      /* FINALIZE_OBJECT2_BACKGROUND */
+        false,     /* FINALIZE_OBJECT4 */
+        true,      /* FINALIZE_OBJECT4_BACKGROUND */
+        false,     /* FINALIZE_OBJECT8 */
+        true,      /* FINALIZE_OBJECT8_BACKGROUND */
+        false,     /* FINALIZE_OBJECT12 */
+        true,      /* FINALIZE_OBJECT12_BACKGROUND */
+        false,     /* FINALIZE_OBJECT16 */
+        true,      /* FINALIZE_OBJECT16_BACKGROUND */
+        false,     /* FINALIZE_SCRIPT */
+        false,     /* FINALIZE_LAZY_SCRIPT */
+        false,     /* FINALIZE_SHAPE */
+        false,     /* FINALIZE_BASE_SHAPE */
+        false,     /* FINALIZE_TYPE_OBJECT */
+        false,     /* FINALIZE_FAT_INLINE_STRING */
+        false,     /* FINALIZE_STRING */
+        false,     /* FINALIZE_EXTERNAL_STRING */
+        false,     /* FINALIZE_SYMBOL */
         false,     /* FINALIZE_JITCODE */
     };
     JS_STATIC_ASSERT(JS_ARRAY_LENGTH(map) == FINALIZE_LIMIT);
@@ -222,6 +243,7 @@ IsBackgroundFinalized(AllocKind kind)
         true,      /* FINALIZE_FAT_INLINE_STRING */
         true,      /* FINALIZE_STRING */
         false,     /* FINALIZE_EXTERNAL_STRING */
+        true,      /* FINALIZE_SYMBOL */
         false,     /* FINALIZE_JITCODE */
     };
     JS_STATIC_ASSERT(JS_ARRAY_LENGTH(map) == FINALIZE_LIMIT);
@@ -354,6 +376,12 @@ GetGCKindSlots(AllocKind thingKind, const Class *clasp)
 
     return nslots;
 }
+
+// Class to assist in triggering background chunk allocation. This cannot be done
+// while holding the GC or worker thread state lock due to lock ordering issues.
+// As a result, the triggering is delayed using this class until neither of the
+// above locks is held.
+class AutoMaybeStartBackgroundAllocation;
 
 /*
  * Arena lists have a head and a cursor. The cursor conceptually lies on arena
@@ -610,6 +638,10 @@ class ArenaLists
         return arenaListsToSweep[thingKind];
     }
 
+    ArenaHeader *getArenaAfterCursor(AllocKind thingKind) const {
+        return arenaLists[thingKind].arenaAfterCursor();
+    }
+
     bool arenaListsAreEmpty() const {
         for (size_t i = 0; i != FINALIZE_LIMIT; ++i) {
             /*
@@ -723,6 +755,15 @@ class ArenaLists
         return false;
     }
 
+    /* Check if |aheader|'s arena is in use. */
+    bool arenaIsInUse(ArenaHeader *aheader, AllocKind kind) const {
+        JS_ASSERT(aheader);
+        const FreeList &freeList = freeLists[kind];
+        if (freeList.isEmpty())
+            return false;
+        return aheader == freeList.arenaHeader();
+    }
+
     MOZ_ALWAYS_INLINE void *allocateFromFreeList(AllocKind thingKind, size_t thingSize) {
         return freeLists[thingKind].allocate(thingSize);
     }
@@ -754,7 +795,7 @@ class ArenaLists
     }
 
     void queueObjectsForSweep(FreeOp *fop);
-    void queueStringsForSweep(FreeOp *fop);
+    void queueStringsAndSymbolsForSweep(FreeOp *fop);
     void queueShapesForSweep(FreeOp *fop);
     void queueScriptsForSweep(FreeOp *fop);
     void queueJitCodeForSweep(FreeOp *fop);
@@ -771,11 +812,13 @@ class ArenaLists
     inline void queueForBackgroundSweep(FreeOp *fop, AllocKind thingKind);
 
     void *allocateFromArena(JS::Zone *zone, AllocKind thingKind);
-    inline void *allocateFromArenaInline(JS::Zone *zone, AllocKind thingKind);
+    inline void *allocateFromArenaInline(JS::Zone *zone, AllocKind thingKind,
+                                         AutoMaybeStartBackgroundAllocation &maybeStartBackgroundAllocation);
 
     inline void normalizeBackgroundFinalizeState(AllocKind thingKind);
 
     friend class js::Nursery;
+    friend class js::gc::ForkJoinNursery;
 };
 
 /*
@@ -894,11 +937,6 @@ MinorGC(JSRuntime *rt, JS::gcreason::Reason reason);
 extern void
 MinorGC(JSContext *cx, JS::gcreason::Reason reason);
 
-#ifdef JS_GC_ZEAL
-extern void
-SetGCZeal(JSRuntime *rt, uint8_t zeal, uint32_t frequency);
-#endif
-
 /* Functions for managing cross compartment gray pointers. */
 
 extern void
@@ -914,20 +952,20 @@ extern void
 NotifyGCPostSwap(JSObject *a, JSObject *b, unsigned preResult);
 
 /*
- * Helper that implements sweeping and allocation for kinds that can be swept
- * and allocated off the main thread.
+ * Helper state for use when JS helper threads sweep and allocate GC thing kinds
+ * that can be swept and allocated off the main thread.
  *
  * In non-threadsafe builds, all actual sweeping and allocation is performed
- * on the main thread, but GCHelperThread encapsulates this from clients as
+ * on the main thread, but GCHelperState encapsulates this from clients as
  * much as possible.
  */
-class GCHelperThread {
+class GCHelperState
+{
     enum State {
         IDLE,
         SWEEPING,
         ALLOCATING,
-        CANCEL_ALLOCATION,
-        SHUTDOWN
+        CANCEL_ALLOCATION
     };
 
     /*
@@ -943,13 +981,25 @@ class GCHelperThread {
     static const size_t FREE_ARRAY_SIZE = size_t(1) << 16;
     static const size_t FREE_ARRAY_LENGTH = FREE_ARRAY_SIZE / sizeof(void *);
 
-    JSRuntime         *const rt;
-    PRThread          *thread;
-    PRCondVar         *wakeup;
-    PRCondVar         *done;
-    volatile State    state;
+    // Associated runtime.
+    JSRuntime *const rt;
 
-    void wait(PRCondVar *which);
+    // Condvar for notifying the main thread when work has finished. This is
+    // associated with the runtime's GC lock --- the worker thread state
+    // condvars can't be used here due to lock ordering issues.
+    PRCondVar *done;
+
+    // Activity for the helper to do, protected by the GC lock.
+    State state_;
+
+    // Thread which work is being performed on, or null.
+    PRThread *thread;
+
+    void startBackgroundThread(State newState);
+    void waitForBackgroundThread();
+
+    State state();
+    void setState(State state);
 
     bool              sweepFlag;
     bool              shrinkFlag;
@@ -972,19 +1022,15 @@ class GCHelperThread {
         js_free(array);
     }
 
-    static void threadMain(void* arg);
-    void threadLoop();
-
     /* Must be called with the GC lock taken. */
     void doSweep();
 
   public:
-    explicit GCHelperThread(JSRuntime *rt)
+    explicit GCHelperState(JSRuntime *rt)
       : rt(rt),
-        thread(nullptr),
-        wakeup(nullptr),
         done(nullptr),
-        state(IDLE),
+        state_(IDLE),
+        thread(nullptr),
         sweepFlag(false),
         shrinkFlag(false),
         freeCursor(nullptr),
@@ -994,6 +1040,8 @@ class GCHelperThread {
 
     bool init();
     void finish();
+
+    void work();
 
     /* Must be called with the GC lock taken. */
     void startBackgroundSweep(bool shouldShrink);
@@ -1008,7 +1056,7 @@ class GCHelperThread {
     void waitBackgroundSweepOrAllocEnd();
 
     /* Must be called with the GC lock taken. */
-    inline void startBackgroundAllocationIfIdle();
+    void startBackgroundAllocationIfIdle();
 
     bool canBackgroundAllocate() const {
         return backgroundAllocation;
@@ -1018,27 +1066,23 @@ class GCHelperThread {
         backgroundAllocation = false;
     }
 
-    PRThread *getThread() const {
-        return thread;
-    }
-
     bool onBackgroundThread();
 
     /*
      * Outside the GC lock may give true answer when in fact the sweeping has
      * been done.
      */
-    bool sweeping() const {
-        return state == SWEEPING;
+    bool isBackgroundSweeping() const {
+        return state_ == SWEEPING;
     }
 
     bool shouldShrink() const {
-        JS_ASSERT(sweeping());
+        JS_ASSERT(isBackgroundSweeping());
         return shrinkFlag;
     }
 
     void freeLater(void *ptr) {
-        JS_ASSERT(!sweeping());
+        JS_ASSERT(!isBackgroundSweeping());
         if (freeCursor != freeCursorEnd)
             *freeCursor++ = ptr;
         else
@@ -1149,15 +1193,6 @@ GCIfNeeded(JSContext *cx);
 void
 RunDebugGC(JSContext *cx);
 
-void
-SetDeterministicGC(JSContext *cx, bool enabled);
-
-void
-SetValidateGC(JSContext *cx, bool enabled);
-
-void
-SetFullCompartmentChecks(JSContext *cx, bool enabled);
-
 /* Wait for the background thread to finish sweeping if it is running. */
 void
 FinishBackgroundFinalize(JSRuntime *rt);
@@ -1251,6 +1286,12 @@ class AutoEnterOOMUnsafeRegion
 class AutoEnterOOMUnsafeRegion {};
 #endif /* DEBUG */
 
+// This tests whether something is inside the GGC's nursery only;
+// use sparingly, mostly testing for any nursery, using IsInsideNursery,
+// is appropriate.
+bool
+IsInsideGGCNursery(const gc::Cell *cell);
+
 } /* namespace gc */
 
 #ifdef DEBUG
@@ -1258,15 +1299,12 @@ class AutoEnterOOMUnsafeRegion {};
 class AutoDisableProxyCheck
 {
     MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER;
-    uintptr_t &count;
+    gc::GCRuntime &gc;
 
   public:
-    AutoDisableProxyCheck(JSRuntime *rt
-                          MOZ_GUARD_OBJECT_NOTIFIER_PARAM);
-
-    ~AutoDisableProxyCheck() {
-        count--;
-    }
+    explicit AutoDisableProxyCheck(JSRuntime *rt
+                                   MOZ_GUARD_OBJECT_NOTIFIER_PARAM);
+    ~AutoDisableProxyCheck();
 };
 #else
 struct AutoDisableProxyCheck

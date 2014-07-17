@@ -1,4 +1,4 @@
-/* -*- Mode: Java; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim: set shiftwidth=2 tabstop=2 autoindent cindent expandtab: */
 /* Copyright 2012 Mozilla Foundation
  *
@@ -21,8 +21,8 @@ if (typeof PDFJS === 'undefined') {
   (typeof window !== 'undefined' ? window : this).PDFJS = {};
 }
 
-PDFJS.version = '1.0.266';
-PDFJS.build = '5b16323';
+PDFJS.version = '1.0.370';
+PDFJS.build = '13efe84';
 
 (function pdfjsWrapper() {
   // Use strict in our context only - users might not want it
@@ -883,15 +883,15 @@ function isBool(v) {
 }
 
 function isInt(v) {
-  return typeof v == 'number' && ((v | 0) == v);
+  return typeof v === 'number' && ((v | 0) === v);
 }
 
 function isNum(v) {
-  return typeof v == 'number';
+  return typeof v === 'number';
 }
 
 function isString(v) {
-  return typeof v == 'string';
+  return typeof v === 'string';
 }
 
 function isNull(v) {
@@ -903,7 +903,7 @@ function isName(v) {
 }
 
 function isCmd(v, cmd) {
-  return v instanceof Cmd && (!cmd || v.cmd == cmd);
+  return v instanceof Cmd && (cmd === undefined || v.cmd === cmd);
 }
 
 function isDict(v, type) {
@@ -914,7 +914,7 @@ function isDict(v, type) {
     return true;
   }
   var dictType = v.get('Type');
-  return isName(dictType) && dictType.name == type;
+  return isName(dictType) && dictType.name === type;
 }
 
 function isArray(v) {
@@ -922,13 +922,11 @@ function isArray(v) {
 }
 
 function isStream(v) {
-  return typeof v == 'object' && v !== null && v !== undefined &&
-         ('getBytes' in v);
+  return typeof v === 'object' && v !== null && v.getBytes !== undefined;
 }
 
 function isArrayBuffer(v) {
-  return typeof v == 'object' && v !== null && v !== undefined &&
-         ('byteLength' in v);
+  return typeof v === 'object' && v !== null && v.byteLength !== undefined;
 }
 
 function isRef(v) {
@@ -1414,7 +1412,7 @@ var Annotation = (function AnnotationClosure() {
                 data &&
                 (!data.annotationFlags ||
                  !(data.annotationFlags & 0x22)) &&  // Hidden or NoView
-                data.rect);                          // rectangle is nessessary
+                data.rect);                          // rectangle is necessary
     },
 
     isPrintable: function Annotation_isPrintable() {
@@ -1423,7 +1421,8 @@ var Annotation = (function AnnotationClosure() {
                 data &&
                 data.annotationFlags &&              // Default: not printable
                 data.annotationFlags & 0x4 &&        // Print
-                data.rect);                          // rectangle is nessessary
+                !(data.annotationFlags & 0x2) &&     // Hidden
+                data.rect);                          // rectangle is necessary
     },
 
     loadResources: function Annotation_loadResources(keys) {
@@ -1548,7 +1547,9 @@ var Annotation = (function AnnotationClosure() {
     if (annotation.isViewable() || annotation.isPrintable()) {
       return annotation;
     } else {
-      warn('unimplemented annotation type: ' + subtype);
+      if (SUPPORTED_TYPES.indexOf(subtype) === -1) {
+        warn('unimplemented annotation type: ' + subtype);
+      }
     }
   };
 
@@ -2151,6 +2152,13 @@ PDFJS.disableWebGL = (PDFJS.disableWebGL === undefined ?
                       true : PDFJS.disableWebGL);
 
 /**
+ * Enables CSS only zooming.
+ * @var {boolean}
+ */
+PDFJS.useOnlyCssZoom = (PDFJS.useOnlyCssZoom === undefined ?
+                        false : PDFJS.useOnlyCssZoom);
+
+/**
  * Controls the logging level.
  * The constants from PDFJS.VERBOSITY_LEVELS should be used:
  * - errors
@@ -2160,6 +2168,14 @@ PDFJS.disableWebGL = (PDFJS.disableWebGL === undefined ?
  */
 PDFJS.verbosity = (PDFJS.verbosity === undefined ?
                    PDFJS.VERBOSITY_LEVELS.warnings : PDFJS.verbosity);
+
+/**
+ * The maximum supported canvas size in total pixels e.g. width * height. 
+ * The default value is 4096 * 4096. Use -1 for no limit.
+ * @var {number}
+ */
+PDFJS.maxCanvasPixels = (PDFJS.maxCanvasPixels === undefined ?
+                         16777216 : PDFJS.maxCanvasPixels);
 
 /**
  * Document initialization / loading parameters object.
@@ -3750,6 +3766,7 @@ var CanvasExtraState = (function CanvasExtraStateClosure() {
     this.fontSize = 0;
     this.fontSizeScale = 1;
     this.textMatrix = IDENTITY_MATRIX;
+    this.textMatrixScale = 1;
     this.fontMatrix = FONT_IDENTITY_MATRIX;
     this.leading = 0;
     // Current point (in user coordinates)
@@ -3792,6 +3809,8 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
   // Defines the time the executeOperatorList is going to be executing
   // before it stops and shedules a continue of execution.
   var EXECUTION_TIME = 15;
+  // Defines the number of steps before checking the execution time
+  var EXECUTION_STEPS = 10;
 
   function CanvasGraphics(canvasCtx, commonObjs, objs, imageLayer) {
     this.ctx = canvasCtx;
@@ -3997,49 +4016,54 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
     }
   }
 
+  function composeSMaskBackdrop(bytes, r0, g0, b0) {
+    var length = bytes.length;
+    for (var i = 3; i < length; i += 4) {
+      var alpha = bytes[i];
+      if (alpha === 0) {
+        bytes[i - 3] = r0;
+        bytes[i - 2] = g0;
+        bytes[i - 1] = b0;
+      } else if (alpha < 255) {
+        var alpha_ = 255 - alpha;
+        bytes[i - 3] = (bytes[i - 3] * alpha + r0 * alpha_) >> 8;
+        bytes[i - 2] = (bytes[i - 2] * alpha + g0 * alpha_) >> 8;
+        bytes[i - 1] = (bytes[i - 1] * alpha + b0 * alpha_) >> 8;
+      }
+    }
+  }
+
+  function composeSMaskAlpha(maskData, layerData) {
+    var length = maskData.length;
+    var scale = 1 / 255;
+    for (var i = 3; i < length; i += 4) {
+      var alpha = maskData[i];
+      layerData[i] = (layerData[i] * alpha * scale) | 0;
+    }
+  }
+
+  function composeSMaskLuminosity(maskData, layerData) {
+    var length = maskData.length;
+    for (var i = 3; i < length; i += 4) {
+      var y = ((maskData[i - 3] * 77) +     // * 0.3 / 255 * 0x10000
+               (maskData[i - 2] * 152) +    // * 0.59 ....
+               (maskData[i - 1] * 28)) | 0; // * 0.11 ....
+      layerData[i] = (layerData[i] * y) >> 16;
+    }
+  }
+
   function genericComposeSMask(maskCtx, layerCtx, width, height,
                                subtype, backdrop) {
-    var addBackdropFn;
-    if (backdrop) {
-      addBackdropFn = function (r0, g0, b0, bytes) {
-        var length = bytes.length;
-        for (var i = 3; i < length; i += 4) {
-          var alpha = bytes[i] / 255;
-          if (alpha === 0) {
-            bytes[i - 3] = r0;
-            bytes[i - 2] = g0;
-            bytes[i - 1] = b0;
-          } else if (alpha < 1) {
-            var alpha_ = 1 - alpha;
-            bytes[i - 3] = (bytes[i - 3] * alpha + r0 * alpha_) | 0;
-            bytes[i - 2] = (bytes[i - 2] * alpha + g0 * alpha_) | 0;
-            bytes[i - 1] = (bytes[i - 1] * alpha + b0 * alpha_) | 0;
-          }
-        }
-      }.bind(null, backdrop[0], backdrop[1], backdrop[2]);
-    } else {
-      addBackdropFn = function () {};
-    }
+    var hasBackdrop = !!backdrop;
+    var r0 = hasBackdrop ? backdrop[0] : 0;
+    var g0 = hasBackdrop ? backdrop[1] : 0;
+    var b0 = hasBackdrop ? backdrop[2] : 0;
 
     var composeFn;
     if (subtype === 'Luminosity') {
-      composeFn = function (maskDataBytes, layerDataBytes) {
-        var length = maskDataBytes.length;
-        for (var i = 3; i < length; i += 4) {
-          var y = ((maskDataBytes[i - 3] * 77) +     // * 0.3 / 255 * 0x10000
-                   (maskDataBytes[i - 2] * 152) +    // * 0.59 ....
-                   (maskDataBytes[i - 1] * 28)) | 0; // * 0.11 ....
-          layerDataBytes[i] = (layerDataBytes[i] * y) >> 16;
-        }
-      };
+      composeFn = composeSMaskLuminosity;
     } else {
-      composeFn = function (maskDataBytes, layerDataBytes) {
-        var length = maskDataBytes.length;
-        for (var i = 3; i < length; i += 4) {
-          var alpha = maskDataBytes[i];
-          layerDataBytes[i] = (layerDataBytes[i] * alpha / 255) | 0;
-        }
-      };
+      composeFn = composeSMaskAlpha;
     }
 
     // processing image in chunks to save memory
@@ -4050,7 +4074,9 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
       var maskData = maskCtx.getImageData(0, row, width, chunkHeight);
       var layerData = layerCtx.getImageData(0, row, width, chunkHeight);
 
-      addBackdropFn(maskData.data);
+      if (hasBackdrop) {
+        composeSMaskBackdrop(maskData.data, r0, g0, b0);
+      }
       composeFn(maskData.data, layerData.data);
 
       maskCtx.putImageData(layerData, 0, row);
@@ -4124,18 +4150,21 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
       var argsArrayLen = argsArray.length;
 
       // Sometimes the OperatorList to execute is empty.
-      if (argsArrayLen == i) {
+      if (argsArrayLen === i) {
         return i;
       }
 
-      var endTime = Date.now() + EXECUTION_TIME;
+      var chunkOperations = (argsArrayLen - i > EXECUTION_STEPS &&
+                             typeof continueCallback === 'function');
+      var endTime = chunkOperations ? Date.now() + EXECUTION_TIME : 0;
+      var steps = 0;
 
       var commonObjs = this.commonObjs;
       var objs = this.objs;
       var fnId;
 
       while (true) {
-        if (stepper && i === stepper.nextBreakPoint) {
+        if (stepper !== undefined && i === stepper.nextBreakPoint) {
           stepper.breakIt(i, continueCallback);
           return i;
         }
@@ -4148,16 +4177,13 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
           var deps = argsArray[i];
           for (var n = 0, nn = deps.length; n < nn; n++) {
             var depObjId = deps[n];
-            var common = depObjId.substring(0, 2) == 'g_';
+            var common = depObjId[0] === 'g' && depObjId[1] === '_';
+            var objsPool = common ? commonObjs : objs;
 
             // If the promise isn't resolved yet, add the continueCallback
             // to the promise and bail out.
-            if (!common && !objs.isResolved(depObjId)) {
-              objs.get(depObjId, continueCallback);
-              return i;
-            }
-            if (common && !commonObjs.isResolved(depObjId)) {
-              commonObjs.get(depObjId, continueCallback);
+            if (!objsPool.isResolved(depObjId)) {
+              objsPool.get(depObjId, continueCallback);
               return i;
             }
           }
@@ -4166,15 +4192,18 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
         i++;
 
         // If the entire operatorList was executed, stop as were done.
-        if (i == argsArrayLen) {
+        if (i === argsArrayLen) {
           return i;
         }
 
         // If the execution took longer then a certain amount of time and
         // `continueCallback` is specified, interrupt the execution.
-        if (continueCallback && Date.now() > endTime) {
-          continueCallback();
-          return i;
+        if (chunkOperations && ++steps > EXECUTION_STEPS) {
+          if (Date.now() > endTime) {
+            continueCallback();
+            return i;
+          }
+          steps = 0;
         }
 
         // If the operatorList isn't executed completely yet OR the execution
@@ -4333,18 +4362,15 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
       var old = this.current;
       this.stateStack.push(old);
       this.current = old.clone();
-      if (this.current.activeSMask) {
-        this.current.activeSMask = null;
-      }
+      this.current.activeSMask = null;
     },
     restore: function CanvasGraphics_restore() {
-      var prev = this.stateStack.pop();
-      if (prev) {
-        if (this.current.activeSMask) {
+      if (this.stateStack.length !== 0) {
+        if (this.current.activeSMask !== null) {
           this.endSMaskGroup();
         }
 
-        this.current = prev;
+        this.current = this.stateStack.pop();
         this.ctx.restore();
       }
     },
@@ -4516,6 +4542,7 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
     // Text
     beginText: function CanvasGraphics_beginText() {
       this.current.textMatrix = IDENTITY_MATRIX;
+      this.current.textMatrixScale = 1;
       this.current.x = this.current.lineX = 0;
       this.current.y = this.current.lineY = 0;
     },
@@ -4620,6 +4647,7 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
     },
     setTextMatrix: function CanvasGraphics_setTextMatrix(a, b, c, d, e, f) {
       this.current.textMatrix = [a, b, c, d, e, f];
+      this.current.textMatrixScale = Math.sqrt(a * a + b * b);
 
       this.current.x = this.current.lineX = 0;
       this.current.y = this.current.lineY = 0;
@@ -4627,24 +4655,13 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
     nextLine: function CanvasGraphics_nextLine() {
       this.moveText(0, this.current.leading);
     },
-    applyTextTransforms: function CanvasGraphics_applyTextTransforms() {
-      var ctx = this.ctx;
-      var current = this.current;
-      ctx.transform.apply(ctx, current.textMatrix);
-      ctx.translate(current.x, current.y + current.textRise);
-      if (current.fontDirection > 0) {
-        ctx.scale(current.textHScale, -1);
-      } else {
-        ctx.scale(-current.textHScale, 1);
-      }
-    },
 
     paintChar: function CanvasGraphics_paintChar(character, x, y) {
       var ctx = this.ctx;
       var current = this.current;
       var font = current.font;
-      var fontSize = current.fontSize / current.fontSizeScale;
       var textRenderingMode = current.textRenderingMode;
+      var fontSize = current.fontSize / current.fontSizeScale;
       var fillStrokeMode = textRenderingMode &
         TextRenderingMode.FILL_STROKE_MASK;
       var isAddToPathSet = !!(textRenderingMode &
@@ -4710,181 +4727,182 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
     },
 
     showText: function CanvasGraphics_showText(glyphs) {
-      var ctx = this.ctx;
       var current = this.current;
       var font = current.font;
-      var fontSize = current.fontSize;
-      var fontSizeScale = current.fontSizeScale;
-      var charSpacing = current.charSpacing;
-      var wordSpacing = current.wordSpacing;
-      var textHScale = current.textHScale * current.fontDirection;
-      var fontMatrix = current.fontMatrix || FONT_IDENTITY_MATRIX;
-      var glyphsLength = glyphs.length;
-      var vertical = font.vertical;
-      var defaultVMetrics = font.defaultVMetrics;
-      var i, glyph, width;
+      if (font.isType3Font) {
+        return this.showType3Text(glyphs);
+      }
 
+      var fontSize = current.fontSize;
       if (fontSize === 0) {
         return;
       }
 
-      // Type3 fonts - each glyph is a "mini-PDF"
-      if (font.isType3Font) {
-        ctx.save();
-        ctx.transform.apply(ctx, current.textMatrix);
-        ctx.translate(current.x, current.y);
+      var ctx = this.ctx;
+      var fontSizeScale = current.fontSizeScale;
+      var charSpacing = current.charSpacing;
+      var wordSpacing = current.wordSpacing;
+      var fontDirection = current.fontDirection;
+      var textHScale = current.textHScale * fontDirection;
+      var glyphsLength = glyphs.length;
+      var vertical = font.vertical;
+      var defaultVMetrics = font.defaultVMetrics;
+      var widthAdvanceScale = fontSize * current.fontMatrix[0];
 
-        ctx.scale(textHScale, 1);
+      var simpleFillText =
+        current.textRenderingMode === TextRenderingMode.FILL &&
+        !font.disableFontFace;
 
-        for (i = 0; i < glyphsLength; ++i) {
-          glyph = glyphs[i];
-          if (glyph === null) {
-            // word break
-            this.ctx.translate(wordSpacing, 0);
-            current.x += wordSpacing * textHScale;
-            continue;
-          }
+      ctx.save();
+      ctx.transform.apply(ctx, current.textMatrix);
+      ctx.translate(current.x, current.y + current.textRise);
 
-          this.processingType3 = glyph;
-          this.save();
-          ctx.scale(fontSize, fontSize);
-          ctx.transform.apply(ctx, fontMatrix);
-          var operatorList = font.charProcOperatorList[glyph.operatorListId];
-          this.executeOperatorList(operatorList);
-          this.restore();
-
-          var transformed = Util.applyTransform([glyph.width, 0], fontMatrix);
-          width = ((transformed[0] * fontSize + charSpacing) *
-                   current.fontDirection);
-
-          ctx.translate(width, 0);
-          current.x += width * textHScale;
-        }
-        ctx.restore();
-        this.processingType3 = null;
+      if (fontDirection > 0) {
+        ctx.scale(textHScale, -1);
       } else {
-        ctx.save();
-        this.applyTextTransforms();
+        ctx.scale(textHScale, 1);
+      }
 
-        var lineWidth = current.lineWidth;
-        var a1 = current.textMatrix[0], b1 = current.textMatrix[1];
-        var scale = Math.sqrt(a1 * a1 + b1 * b1);
-        if (scale === 0 || lineWidth === 0) {
-          lineWidth = this.getSinglePixelWidth();
+      var lineWidth = current.lineWidth;
+      var scale = current.textMatrixScale;
+      if (scale === 0 || lineWidth === 0) {
+        lineWidth = this.getSinglePixelWidth();
+      } else {
+        lineWidth /= scale;
+      }
+
+      if (fontSizeScale != 1.0) {
+        ctx.scale(fontSizeScale, fontSizeScale);
+        lineWidth /= fontSizeScale;
+      }
+
+      ctx.lineWidth = lineWidth;
+
+      var x = 0, i;
+      for (i = 0; i < glyphsLength; ++i) {
+        var glyph = glyphs[i];
+        if (glyph === null) {
+          // word break
+          x += fontDirection * wordSpacing;
+          continue;
+        } else if (isNum(glyph)) {
+          x += -glyph * fontSize * 0.001;
+          continue;
+        }
+
+        var restoreNeeded = false;
+        var character = glyph.fontChar;
+        var accent = glyph.accent;
+        var scaledX, scaledY, scaledAccentX, scaledAccentY;
+        var width = glyph.width;
+        if (vertical) {
+          var vmetric, vx, vy;
+          vmetric = glyph.vmetric || defaultVMetrics;
+          vx = glyph.vmetric ? vmetric[1] : width * 0.5;
+          vx = -vx * widthAdvanceScale;
+          vy = vmetric[2] * widthAdvanceScale;
+
+          width = vmetric ? -vmetric[0] : width;
+          scaledX = vx / fontSizeScale;
+          scaledY = (x + vy) / fontSizeScale;
         } else {
-          lineWidth /= scale;
+          scaledX = x / fontSizeScale;
+          scaledY = 0;
         }
 
-        if (fontSizeScale != 1.0) {
-          ctx.scale(fontSizeScale, fontSizeScale);
-          lineWidth /= fontSizeScale;
+        if (font.remeasure && width > 0 && this.isFontSubpixelAAEnabled) {
+          // some standard fonts may not have the exact width, trying to
+          // rescale per character
+          var measuredWidth = ctx.measureText(character).width * 1000 /
+            fontSize * fontSizeScale;
+          var characterScaleX = width / measuredWidth;
+          restoreNeeded = true;
+          ctx.save();
+          ctx.scale(characterScaleX, 1);
+          scaledX /= characterScaleX;
         }
 
-        ctx.lineWidth = lineWidth;
-
-        var x = 0;
-        for (i = 0; i < glyphsLength; ++i) {
-          glyph = glyphs[i];
-          if (glyph === null) {
-            // word break
-            x += current.fontDirection * wordSpacing;
-            continue;
-          }
-
-          var restoreNeeded = false;
-          var character = glyph.fontChar;
-          var vmetric = glyph.vmetric || defaultVMetrics;
-          if (vertical) {
-            var vx = glyph.vmetric ? vmetric[1] : glyph.width * 0.5;
-            vx = -vx * fontSize * current.fontMatrix[0];
-            var vy = vmetric[2] * fontSize * current.fontMatrix[0];
-          }
-          width = vmetric ? -vmetric[0] : glyph.width;
-          var charWidth = width * fontSize * current.fontMatrix[0] +
-                          charSpacing * current.fontDirection;
-          var accent = glyph.accent;
-
-          var scaledX, scaledY, scaledAccentX, scaledAccentY;
-
-          if (vertical) {
-            scaledX = vx / fontSizeScale;
-            scaledY = (x + vy) / fontSizeScale;
-          } else {
-            scaledX = x / fontSizeScale;
-            scaledY = 0;
-          }
-
-          if (font.remeasure && width > 0 && this.isFontSubpixelAAEnabled) {
-            // some standard fonts may not have the exact width, trying to
-            // rescale per character
-            var measuredWidth = ctx.measureText(character).width * 1000 /
-              current.fontSize * current.fontSizeScale;
-            var characterScaleX = width / measuredWidth;
-            restoreNeeded = true;
-            ctx.save();
-            ctx.scale(characterScaleX, 1);
-            scaledX /= characterScaleX;
-            if (accent) {
-              scaledAccentX /= characterScaleX;
-            }
-          }
-
+        if (simpleFillText && !accent) {
+          // common case
+          ctx.fillText(character, scaledX, scaledY);
+        } else {
           this.paintChar(character, scaledX, scaledY);
           if (accent) {
             scaledAccentX = scaledX + accent.offset.x / fontSizeScale;
             scaledAccentY = scaledY - accent.offset.y / fontSizeScale;
             this.paintChar(accent.fontChar, scaledAccentX, scaledAccentY);
           }
-
-          x += charWidth;
-
-          if (restoreNeeded) {
-            ctx.restore();
-          }
         }
-        if (vertical) {
-          current.y -= x * textHScale;
-        } else {
-          current.x += x * textHScale;
+
+        var charWidth = width * widthAdvanceScale + charSpacing * fontDirection;
+        x += charWidth;
+
+        if (restoreNeeded) {
+          ctx.restore();
         }
-        ctx.restore();
       }
+      if (vertical) {
+        current.y -= x * textHScale;
+      } else {
+        current.x += x * textHScale;
+      }
+      ctx.restore();
     },
-    showSpacedText: function CanvasGraphics_showSpacedText(arr) {
+
+    showType3Text: function CanvasGraphics_showType3Text(glyphs) {
+      // Type3 fonts - each glyph is a "mini-PDF"
+      var ctx = this.ctx;
       var current = this.current;
       var font = current.font;
       var fontSize = current.fontSize;
-      // TJ array's number is independent from fontMatrix
-      var textHScale = current.textHScale * 0.001 * current.fontDirection;
-      var arrLength = arr.length;
-      var vertical = font.vertical;
+      var fontDirection = current.fontDirection;
+      var charSpacing = current.charSpacing;
+      var wordSpacing = current.wordSpacing;
+      var textHScale = current.textHScale * fontDirection;
+      var fontMatrix = current.fontMatrix || FONT_IDENTITY_MATRIX;
+      var glyphsLength = glyphs.length;
+      var i, glyph, width;
 
-      for (var i = 0; i < arrLength; ++i) {
-        var e = arr[i];
-        if (isNum(e)) {
-          var spacingLength = -e * fontSize * textHScale;
-          if (vertical) {
-            current.y += spacingLength;
-          } else {
-            current.x += spacingLength;
-          }
-
-        } else {
-          this.showText(e);
-        }
+      if (fontSize === 0) {
+        return;
       }
-    },
-    nextLineShowText: function CanvasGraphics_nextLineShowText(text) {
-      this.nextLine();
-      this.showText(text);
-    },
-    nextLineSetSpacingShowText:
-      function CanvasGraphics_nextLineSetSpacingShowText(wordSpacing,
-                                                         charSpacing,
-                                                         text) {
-      this.setWordSpacing(wordSpacing);
-      this.setCharSpacing(charSpacing);
-      this.nextLineShowText(text);
+
+      ctx.save();
+      ctx.transform.apply(ctx, current.textMatrix);
+      ctx.translate(current.x, current.y);
+
+      ctx.scale(textHScale, 1);
+
+      for (i = 0; i < glyphsLength; ++i) {
+        glyph = glyphs[i];
+        if (glyph === null) {
+          // word break
+          this.ctx.translate(wordSpacing, 0);
+          current.x += wordSpacing * textHScale;
+          continue;
+        } else if (isNum(glyph)) {
+          var spacingLength = -glyph * 0.001 * fontSize;
+          this.ctx.translate(spacingLength, 0);
+          current.x += spacingLength * textHScale;
+          continue;
+        }
+
+        this.processingType3 = glyph;
+        this.save();
+        ctx.scale(fontSize, fontSize);
+        ctx.transform.apply(ctx, fontMatrix);
+        var operatorList = font.charProcOperatorList[glyph.operatorListId];
+        this.executeOperatorList(operatorList);
+        this.restore();
+
+        var transformed = Util.applyTransform([glyph.width, 0], fontMatrix);
+        width = ((transformed[0] * fontSize + charSpacing) * fontDirection);
+
+        ctx.translate(width, 0);
+        current.x += width * textHScale;
+      }
+      ctx.restore();
+      this.processingType3 = null;
     },
 
     // Type3 fonts
@@ -4908,7 +4926,7 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
     // Color
     getColorN_Pattern: function CanvasGraphics_getColorN_Pattern(IR) {
       var pattern;
-      if (IR[0] == 'TilingPattern') {
+      if (IR[0] === 'TilingPattern') {
         var color = IR[1];
         pattern = new TilingPattern(IR, color, this.ctx, this.objs,
                                     this.commonObjs, this.baseTransform);
@@ -4984,13 +5002,13 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
       this.save();
       this.baseTransformStack.push(this.baseTransform);
 
-      if (matrix && isArray(matrix) && 6 == matrix.length) {
+      if (isArray(matrix) && 6 === matrix.length) {
         this.transform.apply(this, matrix);
       }
 
       this.baseTransform = this.ctx.mozCurrentTransform;
 
-      if (bbox && isArray(bbox) && 4 == bbox.length) {
+      if (isArray(bbox) && 4 === bbox.length) {
         var width = bbox[2] - bbox[0];
         var height = bbox[3] - bbox[1];
         this.rectangle(bbox[0], bbox[1], width, height);
@@ -5142,7 +5160,7 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
                                                              matrix) {
       this.save();
 
-      if (rect && isArray(rect) && 4 == rect.length) {
+      if (isArray(rect) && 4 === rect.length) {
         var width = rect[2] - rect[0];
         var height = rect[3] - rect[1];
         this.rectangle(rect[0], rect[1], width, height);
@@ -5460,7 +5478,7 @@ var CanvasGraphics = (function CanvasGraphicsClosure() {
     consumePath: function CanvasGraphics_consumePath() {
       var ctx = this.ctx;
       if (this.pendingClip) {
-        if (this.pendingClip == EO_CLIP) {
+        if (this.pendingClip === EO_CLIP) {
           if (ctx.mozFillRule !== undefined) {
             ctx.mozFillRule = 'evenodd';
             ctx.clip();

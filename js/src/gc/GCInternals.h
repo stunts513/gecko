@@ -8,9 +8,9 @@
 #define gc_GCInternals_h
 
 #include "jscntxt.h"
-#include "jsworkers.h"
 
 #include "gc/Zone.h"
+#include "vm/HelperThreads.h"
 #include "vm/Runtime.h"
 
 namespace js {
@@ -18,6 +18,13 @@ namespace gc {
 
 void
 MarkPersistentRootedChains(JSTracer *trc);
+
+#ifdef JSGC_FJGENERATIONAL
+class ForkJoinNurseryCollectionTracer;
+
+void
+MarkForkJoinStack(ForkJoinNurseryCollectionTracer *trc);
+#endif
 
 class AutoCopyFreeListToArenas
 {

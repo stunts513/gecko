@@ -24,6 +24,7 @@
 #include "nsRect.h"                     // for nsIntRect
 #include "nsTArray.h"                   // for nsTArray
 #include "nscore.h"                     // for nsAString
+#include "mozilla/layers/TransactionIdAllocator.h"
 
 class nsIWidget;
 
@@ -43,11 +44,19 @@ class ClientLayerManager : public LayerManager
 
 public:
   ClientLayerManager(nsIWidget* aWidget);
+
+protected:
   virtual ~ClientLayerManager();
 
+public:
   virtual ShadowLayerForwarder* AsShadowForwarder()
   {
     return mForwarder;
+  }
+
+  virtual ClientLayerManager* AsClientLayerManager()
+  {
+    return this;
   }
 
   virtual int32_t GetMaxTextureSize() const;
@@ -71,6 +80,8 @@ public:
   virtual void SetRoot(Layer* aLayer);
 
   virtual void Mutated(Layer* aLayer);
+
+  virtual bool IsOptimizedFor(ThebesLayer* aLayer, ThebesLayerCreationHint aHint);
 
   virtual already_AddRefed<ThebesLayer> CreateThebesLayer();
   virtual already_AddRefed<ThebesLayer> CreateThebesLayerWithHint(ThebesLayerCreationHint aHint);
@@ -104,8 +115,8 @@ public:
 
   virtual void SetIsFirstPaint() MOZ_OVERRIDE;
 
-  TextureClientPool *GetTexturePool(gfx::SurfaceFormat aFormat);
-  SimpleTextureClientPool *GetSimpleTileTexturePool(gfx::SurfaceFormat aFormat);
+  TextureClientPool* GetTexturePool(gfx::SurfaceFormat aFormat);
+  SimpleTextureClientPool* GetSimpleTileTexturePool(gfx::SurfaceFormat aFormat);
 
   // Drop cached resources and ask our shadow manager to do the same,
   // if we have one.
@@ -120,7 +131,7 @@ public:
 
   bool HasShadowTarget() { return !!mShadowTarget; }
 
-  void SetShadowTarget(gfxContext *aTarget) { mShadowTarget = aTarget; }
+  void SetShadowTarget(gfxContext* aTarget) { mShadowTarget = aTarget; }
 
   bool CompositorMightResample() { return mCompositorMightResample; } 
   
@@ -130,12 +141,14 @@ public:
   void* GetThebesLayerCallbackData() const
   { return mThebesLayerCallbackData; }
 
-  CompositorChild *GetRemoteRenderer();
+  CompositorChild* GetRemoteRenderer();
+
+  CompositorChild* GetCompositorChild();
 
   /**
-   * Called for each iteration of a progressive tile update. Fills
-   * aCompositionBounds and aZoom with the current scale and composition bounds
-   * being used to composite the layers in this manager, to determine what area
+   * Called for each iteration of a progressive tile update. Updates
+   * aMetrics with the current scroll offset and scale being used to composite
+   * the primary scrollable layer in this manager, to determine what area
    * intersects with the target composition bounds.
    * aDrawingCritical will be true if the current drawing operation is using
    * the critical displayport.
@@ -145,8 +158,7 @@ public:
    * true.
    */
   bool ProgressiveUpdateCallback(bool aHasPendingNewThebesContent,
-                                 ParentLayerRect& aCompositionBounds,
-                                 CSSToParentLayerScale& aZoom,
+                                 FrameMetrics& aMetrics,
                                  bool aDrawingCritical);
 
   bool InConstruction() { return mPhase == PHASE_CONSTRUCTION; }
@@ -166,7 +178,7 @@ public:
   virtual bool RequestOverfill(mozilla::dom::OverfillCallback* aCallback) MOZ_OVERRIDE;
   virtual void RunOverfillCallback(const uint32_t aOverfill) MOZ_OVERRIDE;
 
-  virtual void DidComposite();
+  virtual void DidComposite(uint64_t aTransactionId);
 
   virtual bool SupportsMixBlendModes(EnumSet<gfx::CompositionOp>& aMixBlendModes) MOZ_OVERRIDE
   {
@@ -190,6 +202,9 @@ public:
   {
     mApzTestData.StartNewRepaintRequest(aSequenceNumber);
   }
+  // TODO(botond): When we start using this and write a wrapper similar to
+  // nsLayoutUtils::LogTestDataForPaint(), make sure that wrapper checks
+  // gfxPrefs::APZTestLoggingEnabled().
   void LogTestDataForRepaintRequest(SequenceNumber aSequenceNumber,
                                     FrameMetrics::ViewID aScrollId,
                                     const std::string& aKey,
@@ -206,6 +221,8 @@ public:
 
   // Get a copy of the compositor-side APZ test data for our layers ID.
   void GetCompositorSideAPZTestData(APZTestData* aData) const;
+
+  void SetTransactionIdAllocator(TransactionIdAllocator* aAllocator) { mTransactionIdAllocator = aAllocator; }
 
 protected:
   enum TransactionPhase {
@@ -252,6 +269,9 @@ private:
   // being drawn to the default target, and then copy those pixels
   // back to mShadowTarget.
   nsRefPtr<gfxContext> mShadowTarget;
+
+  nsRefPtr<TransactionIdAllocator> mTransactionIdAllocator;
+  uint64_t mLatestTransactionId;
 
   // Sometimes we draw to targets that don't natively support
   // landscape/portrait orientation.  When we need to implement that

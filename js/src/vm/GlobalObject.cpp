@@ -14,7 +14,6 @@
 #include "json.h"
 #include "jsprototypes.h"
 #include "jsweakmap.h"
-#include "jsworkers.h"
 
 #include "builtin/Eval.h"
 #if EXPOSE_INTL_API
@@ -24,7 +23,9 @@
 #include "builtin/Object.h"
 #include "builtin/RegExp.h"
 #include "builtin/SIMD.h"
+#include "builtin/SymbolObject.h"
 #include "builtin/TypedObject.h"
+#include "vm/HelperThreads.h"
 #include "vm/PIC.h"
 #include "vm/RegExpStatics.h"
 #include "vm/StopIterationObject.h"
@@ -51,7 +52,7 @@ JS_FOR_EACH_PROTOTYPE(DECLARE_PROTOTYPE_CLASS_INIT)
 JSObject *
 js_InitViaClassSpec(JSContext *cx, Handle<JSObject*> obj)
 {
-    MOZ_ASSUME_UNREACHABLE();
+    MOZ_CRASH("js_InitViaClassSpec() should not be called.");
 }
 
 static const ProtoTableEntry protoTable[JSProto_LIMIT] = {
@@ -62,7 +63,7 @@ static const ProtoTableEntry protoTable[JSProto_LIMIT] = {
 #undef INIT_FUNC
 };
 
-const js::Class *
+JS_FRIEND_API(const js::Class *)
 js::ProtoKeyToClass(JSProtoKey key)
 {
     MOZ_ASSERT(key < JSProto_LIMIT);
@@ -165,18 +166,21 @@ GlobalObject::resolveConstructor(JSContext *cx, Handle<GlobalObject*> global, JS
     global->setConstructor(key, ObjectValue(*ctor));
     global->setConstructorPropertySlot(key, ObjectValue(*ctor));
 
-    // Define any specified functions and properties.
-    if (const JSFunctionSpec *funs = clasp->spec.prototypeFunctions) {
-        if (!JS_DefineFunctions(cx, proto, funs))
-            return false;
-    }
-    if (const JSPropertySpec *props = clasp->spec.prototypeProperties) {
-        if (!JS_DefineProperties(cx, proto, props))
-            return false;
-    }
-    if (const JSFunctionSpec *funs = clasp->spec.constructorFunctions) {
-        if (!JS_DefineFunctions(cx, ctor, funs))
-            return false;
+    // Define any specified functions and properties, unless we're a dependent
+    // standard class (in which case they live on the prototype).
+    if (!StandardClassIsDependent(key)) {
+        if (const JSFunctionSpec *funs = clasp->spec.prototypeFunctions) {
+            if (!JS_DefineFunctions(cx, proto, funs))
+                return false;
+        }
+        if (const JSPropertySpec *props = clasp->spec.prototypeProperties) {
+            if (!JS_DefineProperties(cx, proto, props))
+                return false;
+        }
+        if (const JSFunctionSpec *funs = clasp->spec.constructorFunctions) {
+            if (!JS_DefineFunctions(cx, ctor, funs))
+                return false;
+        }
     }
 
     // If the prototype exists, link it with the constructor.
@@ -317,7 +321,6 @@ GlobalObject::createConstructor(JSContext *cx, Native ctor, JSAtom *nameArg, uns
 static JSObject *
 CreateBlankProto(JSContext *cx, const Class *clasp, JSObject &proto, GlobalObject &global)
 {
-    JS_ASSERT(clasp != &JSObject::class_);
     JS_ASSERT(clasp != &JSFunction::class_);
 
     RootedObject blankProto(cx, NewObjectWithGivenProto(cx, clasp, &proto, &global, SingletonObject));
@@ -360,11 +363,9 @@ js::LinkConstructorAndPrototype(JSContext *cx, JSObject *ctor_, JSObject *proto_
 }
 
 bool
-js::DefinePropertiesAndBrand(JSContext *cx, JSObject *obj_,
-                             const JSPropertySpec *ps, const JSFunctionSpec *fs)
+js::DefinePropertiesAndFunctions(JSContext *cx, HandleObject obj,
+                                 const JSPropertySpec *ps, const JSFunctionSpec *fs)
 {
-    RootedObject obj(cx, obj_);
-
     if (ps && !JS_DefineProperties(cx, obj, ps))
         return false;
     if (fs && !JS_DefineFunctions(cx, obj, fs))

@@ -151,7 +151,6 @@ public:
 
   static
   already_AddRefed<TestInterface> Test2(const GlobalObject&,
-                                        JSContext*,
                                         const DictForConstructor&,
                                         JS::Handle<JS::Value>,
                                         JS::Handle<JSObject*>,
@@ -160,6 +159,11 @@ public:
                                         JS::Handle<JS::Value>,
                                         const Optional<JS::Handle<JSObject*> >&,
                                         const Optional<JS::Handle<JSObject*> >&,
+                                        ErrorResult&);
+
+  static
+  already_AddRefed<TestInterface> Test3(const GlobalObject&,
+                                        const LongOrAnyMozMap&,
                                         ErrorResult&);
 
   // Integer types
@@ -380,8 +384,10 @@ public:
   void PassCastableObjectNullableSequence(const Nullable< Sequence< OwningNonNull<TestInterface> > >&);
   void PassNullableCastableObjectNullableSequence(const Nullable< Sequence< nsRefPtr<TestInterface> > >&);
   void PassOptionalSequence(const Optional<Sequence<int32_t> >&);
+  void PassOptionalSequenceWithDefaultValue(const Sequence<int32_t> &);
   void PassOptionalNullableSequence(const Optional<Nullable<Sequence<int32_t> > >&);
   void PassOptionalNullableSequenceWithDefaultValue(const Nullable< Sequence<int32_t> >&);
+  void PassOptionalNullableSequenceWithDefaultValue2(const Nullable< Sequence<int32_t> >&);
   void PassOptionalObjectSequence(const Optional<Sequence<OwningNonNull<TestInterface> > >&);
   void PassExternalInterfaceSequence(const Sequence<nsRefPtr<TestExternalInterface> >&);
   void PassNullableExternalInterfaceSequence(const Sequence<nsRefPtr<TestExternalInterface> >&);
@@ -450,7 +456,7 @@ public:
   void PassMozMapOfNullableArrayBuffers(const MozMap<Nullable<ArrayBuffer> >&);
   void PassVariadicTypedArray(const Sequence<Float32Array>&);
   void PassVariadicNullableTypedArray(const Sequence<Nullable<Float32Array> >&);
-  JSObject* ReceiveUint8Array(JSContext*);
+  void ReceiveUint8Array(JSContext*, JS::MutableHandle<JSObject*>);
 
   // DOMString types
   void PassString(const nsAString&);
@@ -523,7 +529,7 @@ public:
   void PassOptionalNullableMozMapOfNullableMozMapOfAny(JSContext*, const Optional<Nullable<MozMap<Nullable<MozMap<JS::Value>>>>>&);
   void PassOptionalNullableMozMapOfNullableSequenceOfAny(JSContext*, const Optional<Nullable<MozMap<Nullable<Sequence<JS::Value>>>>>&);
   void PassOptionalNullableSequenceOfNullableMozMapOfAny(JSContext*, const Optional<Nullable<Sequence<Nullable<MozMap<JS::Value>>>>>&);
-  JS::Value ReceiveAny(JSContext*);
+  void ReceiveAny(JSContext*, JS::MutableHandle<JS::Value>);
 
   // object types
   void PassObject(JSContext*, JS::Handle<JSObject*>);
@@ -539,8 +545,8 @@ public:
   void PassOptionalNullableSequenceOfNullableSequenceOfObject(JSContext*, const Optional<Nullable<Sequence<Nullable<Sequence<JSObject*> > > > >&);
   void PassOptionalNullableSequenceOfNullableSequenceOfNullableObject(JSContext*, const Optional<Nullable<Sequence<Nullable<Sequence<JSObject*> > > > >&);
   void PassMozMapOfObject(JSContext*, const MozMap<JSObject*>&);
-  JSObject* ReceiveObject(JSContext*);
-  JSObject* ReceiveNullableObject(JSContext*);
+  void ReceiveObject(JSContext*, JS::MutableHandle<JSObject*>);
+  void ReceiveNullableObject(JSContext*, JS::MutableHandle<JSObject*>);
 
   // Union types
   void PassUnion(JSContext*, const ObjectOrLong& arg);
@@ -572,7 +578,19 @@ public:
   void PassUnion12(const EventInitOrLong& arg);
   void PassUnion13(JSContext*, const ObjectOrLongOrNull& arg);
   void PassUnion14(JSContext*, const ObjectOrLongOrNull& arg);
+  void PassUnion15(const LongSequenceOrLong&);
+  void PassUnion16(const Optional<LongSequenceOrLong>&);
+  void PassUnion17(const LongSequenceOrNullOrLong&);
+  void PassUnion18(JSContext*, const ObjectSequenceOrLong&);
+  void PassUnion19(JSContext*, const Optional<ObjectSequenceOrLong>&);
+  void PassUnion20(JSContext*, const ObjectSequenceOrLong&);
+  void PassUnion21(const LongMozMapOrLong&);
+  void PassUnion22(JSContext*, const ObjectMozMapOrLong&);
   void PassUnionWithCallback(const EventHandlerNonNullOrNullOrLong& arg);
+  void PassUnionWithByteString(const ByteStringOrLong&);
+  void PassUnionWithMozMap(const StringMozMapOrString&);
+  void PassUnionWithMozMapAndSequence(const StringMozMapOrStringSequence&);
+  void PassUnionWithSequenceAndMozMap(const StringSequenceOrStringMozMap&);
 #endif
   void PassNullableUnion(JSContext*, const Nullable<ObjectOrLong>&);
   void PassOptionalUnion(JSContext*, const Optional<ObjectOrLong>&);
@@ -682,8 +700,7 @@ public:
 
   // Static methods and attributes
   static void StaticMethod(const GlobalObject&, bool);
-  static void StaticMethodWithContext(const GlobalObject&, JSContext*,
-                                      JS::Value);
+  static void StaticMethodWithContext(const GlobalObject&, JS::Value);
   static bool StaticAttribute(const GlobalObject&);
   static void SetStaticAttribute(const GlobalObject&, bool);
 
@@ -726,6 +743,10 @@ public:
   void Overload15(const Optional<NonNull<TestInterface> >&);
   void Overload16(int32_t);
   void Overload16(const Optional<TestInterface*>&);
+  void Overload17(const Sequence<int32_t>&);
+  void Overload17(const MozMap<int32_t>&);
+  void Overload18(const MozMap<nsString>&);
+  void Overload18(const Sequence<nsString>&);
 
   // Variadic handling
   void PassVariadicThirdArg(const nsAString&, int32_t,
@@ -762,12 +783,14 @@ public:
   void SetAttrWithLenientThis(int32_t);
   uint32_t UnforgeableAttr();
   uint32_t UnforgeableAttr2();
+  uint32_t UnforgeableMethod();
+  uint32_t UnforgeableMethod2();
   void Stringify(nsString&);
   void PassRenamedInterface(nsRenamedInterface&);
   TestInterface* PutForwardsAttr();
   TestInterface* PutForwardsAttr2();
   TestInterface* PutForwardsAttr3();
-  JS::Value JsonifierShouldSkipThis(JSContext*);
+  void GetJsonifierShouldSkipThis(JSContext*, JS::MutableHandle<JS::Value>);
   void SetJsonifierShouldSkipThis(JSContext*, JS::Rooted<JS::Value>&);
   TestParentInterface* JsonifierShouldSkipThis2();
   void SetJsonifierShouldSkipThis2(TestParentInterface&);

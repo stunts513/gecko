@@ -89,6 +89,7 @@ public:
   virtual void Run() = 0;
   // When we're shutting down the application, most messages are ignored but
   // some cleanup messages should still be processed (on the main thread).
+  // This must not add new control messages to the graph.
   virtual void RunDuringShutdown() {}
   MediaStream* GetStream() { return mStream; }
 
@@ -392,7 +393,26 @@ public:
    */
   void ResumeAllAudioOutputs();
 
-  TrackRate AudioSampleRate() { return mSampleRate; }
+  TrackRate AudioSampleRate() const { return mSampleRate; }
+  TrackRate GraphRate() const { return mSampleRate; }
+
+  double MediaTimeToSeconds(GraphTime aTime)
+  {
+    return TrackTicksToSeconds(GraphRate(), aTime);
+  }
+  GraphTime SecondsToMediaTime(double aS)
+  {
+    return SecondsToTicksRoundDown(GraphRate(), aS);
+  }
+  GraphTime MillisecondsToMediaTime(int32_t aMS)
+  {
+    return RateConvertTicksRoundDown(GraphRate(), 1000, aMS);
+  }
+
+  TrackTicks TimeToTicksRoundDown(TrackRate aRate, StreamTime aTime)
+  {
+    return RateConvertTicksRoundDown(aRate, GraphRate(), aTime);
+  }
 
   // Data members
 
@@ -623,6 +643,14 @@ private:
    * Indicates that the MSG thread should gather data for a memory report.
    */
   bool mNeedsMemoryReport;
+
+#ifdef DEBUG
+  /**
+   * Used to assert when AppendMessage() runs ControlMessages synchronously.
+   */
+  bool mCanRunMessagesSynchronously;
+#endif
+
 };
 
 }

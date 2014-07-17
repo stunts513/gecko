@@ -538,8 +538,10 @@ public:
     BluetoothService* bs = BluetoothService::Get();
     NS_ENSURE_TRUE_VOID(bs);
 
+#if 0 // for API_V2
     bs->AdapterAddedReceived();
     bs->TryFiringAdapterAdded();
+#endif
   }
 };
 
@@ -2097,8 +2099,10 @@ public:
 };
 
 nsresult
-BluetoothDBusService::StartInternal()
+BluetoothDBusService::StartInternal(BluetoothReplyRunnable* aRunnable)
 {
+  MOZ_ASSERT(!aRunnable);
+
   nsRefPtr<nsRunnable> runnable = new StartBluetoothRunnable();
   nsresult rv = DispatchToBtThread(runnable);
   if (NS_FAILED(rv)) {
@@ -2225,8 +2229,10 @@ public:
 };
 
 nsresult
-BluetoothDBusService::StopInternal()
+BluetoothDBusService::StopInternal(BluetoothReplyRunnable* aRunnable)
 {
+  MOZ_ASSERT(!aRunnable);
+
   nsRefPtr<nsRunnable> runnable = new StopBluetoothRunnable();
   nsresult rv = DispatchToBtThread(runnable);
   if (NS_FAILED(rv)) {
@@ -2376,10 +2382,13 @@ private:
 };
 
 nsresult
-BluetoothDBusService::GetDefaultAdapterPathInternal(
-                                              BluetoothReplyRunnable* aRunnable)
+BluetoothDBusService::GetAdaptersInternal(BluetoothReplyRunnable* aRunnable)
 {
   MOZ_ASSERT(NS_IsMainThread());
+
+  /**
+   * TODO: implement method GetAdaptersInternal for bluez
+   */
 
   if (!IsReady()) {
     NS_NAMED_LITERAL_STRING(errorStr, "Bluetooth service is not ready yet!");
@@ -2802,6 +2811,13 @@ BluetoothDBusService::GetPairedDevicePropertiesInternal(
   Task* task = new ProcessRemainingDeviceAddressesTask(handler, aRunnable);
   DispatchToDBusThread(task);
 
+  return NS_OK;
+}
+
+nsresult
+FetchUuidsInternal(const nsAString& aDeviceAddress,
+                   BluetoothReplyRunnable* aRunnable)
+{
   return NS_OK;
 }
 

@@ -24,7 +24,7 @@ namespace layers {
 
 class CompositableClient;
 class AsyncTransactionTracker;
-class TextureFactoryIdentifier;
+struct TextureFactoryIdentifier;
 class SurfaceDescriptor;
 class SurfaceDescriptorTiles;
 class ThebesBufferData;
@@ -184,6 +184,11 @@ public:
                               TextureClient* aTexture,
                               nsIntRegion* aRegion) = 0;
 
+
+  virtual void SendFenceHandle(AsyncTransactionTracker* aTracker,
+                               PTextureChild* aTexture,
+                               const FenceHandle& aFence) = 0;
+
   void IdentifyTextureHost(const TextureFactoryIdentifier& aIdentifier);
 
   virtual int32_t GetMaxTextureSize() const MOZ_OVERRIDE
@@ -192,8 +197,6 @@ public:
   }
 
   bool IsOnCompositorSide() const MOZ_OVERRIDE { return false; }
-
-  virtual bool IsImageBridgeChild() const { return false; }
 
   /**
    * Returns the type of backend that is used off the main thread.

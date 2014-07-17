@@ -123,7 +123,7 @@ class RemoteOptions(MochitestOptions):
 
     def verifyRemoteOptions(self, options, automation):
         if not options.remoteTestRoot:
-            options.remoteTestRoot = automation._devicemanager.getDeviceRoot()
+            options.remoteTestRoot = automation._devicemanager.deviceRoot
 
         if options.remoteWebServer == None:
             if os.name != "nt":
@@ -239,7 +239,7 @@ class MochiRemote(Mochitest):
         self._automation.deleteANRs()
         self.certdbNew = True
 
-    def cleanup(self, manifest, options):
+    def cleanup(self, options):
         if self._dm.fileExists(self.remoteLog):
             self._dm.getFile(self.remoteLog, self.localLog)
             self._dm.removeFile(self.remoteLog)
@@ -247,7 +247,7 @@ class MochiRemote(Mochitest):
             log.warn("Unable to retrieve log file (%s) from remote device",
                 self.remoteLog)
         self._dm.removeDir(self.remoteProfile)
-        Mochitest.cleanup(self, manifest, options)
+        Mochitest.cleanup(self, options)
 
     def findPath(self, paths, filename = None):
         for path in paths:
@@ -322,7 +322,7 @@ class MochiRemote(Mochitest):
         if self.localProfile:
             options.profilePath = self.localProfile
         else:
-            options.profilePath = tempfile.mkdtemp()
+            options.profilePath = None
 
         def fixup():
             options.xrePath = remoteXrePath
@@ -380,13 +380,13 @@ class MochiRemote(Mochitest):
         options.logFile = self.localLog
         return retVal
 
-    def buildTestPath(self, options):
+    def buildTestPath(self, options, testsToFilter=None):
         if options.robocopIni != "":
             # Skip over manifest building if we just want to run
             # robocop tests.
             return self.buildTestURL(options)
         else:
-            return super(MochiRemote, self).buildTestPath(options)
+            return super(MochiRemote, self).buildTestPath(options, testsToFilter)
 
     def installChromeFile(self, filename, options):
         parts = options.app.split('/')
@@ -500,12 +500,12 @@ class MochiRemote(Mochitest):
                 logcat = self._dm.getLogcat(filterOutRegexps=fennecLogcatFilters)
                 log.info('\n'+(''.join(logcat)))
             log.info("Device info: %s", self._dm.getInfo())
-            log.info("Test root: %s", self._dm.getDeviceRoot())
+            log.info("Test root: %s", self._dm.deviceRoot)
         except devicemanager.DMError:
             log.warn("Error getting device information")
 
     def buildRobotiumConfig(self, options, browserEnv):
-        deviceRoot = self._dm.getDeviceRoot()
+        deviceRoot = self._dm.deviceRoot
         fHandle = tempfile.NamedTemporaryFile(suffix='.config',
                                               prefix='robotium-',
                                               dir=os.getcwd(),
@@ -597,7 +597,7 @@ def main():
     log.info("Android sdk version '%s'; will use this to filter manifests" % str(androidVersion))
     mozinfo.info['android_version'] = androidVersion
 
-    deviceRoot = dm.getDeviceRoot()
+    deviceRoot = dm.deviceRoot
     if options.dmdPath:
         dmdLibrary = "libdmd.so"
         dmdPathOnDevice = os.path.join(deviceRoot, dmdLibrary)
@@ -661,7 +661,7 @@ def main():
             if mochitest.localProfile:
                 options.profilePath = mochitest.localProfile
                 os.system("rm -Rf %s" % options.profilePath)
-                options.profilePath = tempfile.mkdtemp()
+                options.profilePath = None
                 mochitest.localProfile = options.profilePath
 
             options.app = "am"
@@ -711,7 +711,7 @@ def main():
                 traceback.print_exc()
                 mochitest.stopServers()
                 try:
-                    mochitest.cleanup(None, options)
+                    mochitest.cleanup(options)
                 except devicemanager.DMError:
                     # device error cleaning up... oh well!
                     pass
@@ -746,7 +746,7 @@ def main():
             traceback.print_exc()
             mochitest.stopServers()
             try:
-                mochitest.cleanup(None, options)
+                mochitest.cleanup(options)
             except devicemanager.DMError:
                 # device error cleaning up... oh well!
                 pass

@@ -88,9 +88,9 @@ pref("network.buffer.cache.count", 24);
 pref("network.buffer.cache.size",  16384);
 
 // predictive actions
-pref("network.seer.enable", false); // disabled on b2g
-pref("network.seer.max-db-size", 2097152); // bytes
-pref("network.seer.preserve", 50); // percentage of seer data to keep when cleaning up
+pref("network.predictor.enable", false); // disabled on b2g
+pref("network.predictor.max-db-size", 2097152); // bytes
+pref("network.predictor.preserve", 50); // percentage of predictor data to keep when cleaning up
 
 /* session history */
 pref("browser.sessionhistory.max_total_viewers", 1);
@@ -109,14 +109,16 @@ pref("mozilla.widget.use-buffer-pixmap", true);
 pref("mozilla.widget.disable-native-theme", true);
 pref("layout.reflow.synthMouseMove", false);
 pref("layers.enable-tiles", true);
+pref("layers.low-precision-buffer", true);
+pref("layers.low-precision-opacity", "0.5");
 /*
    Cross Process Mutex is not supported on Mac OS X so progressive
-   paint can not be enabled for B2G on Mac OS X desktop
+   paint cannot be enabled for B2G on Mac OS X desktop
 */
 #ifdef MOZ_WIDGET_COCOA
 pref("layers.progressive-paint", false);
 #else
-pref("layers.progressive-paint", false);
+pref("layers.progressive-paint", true);
 #endif
 
 /* download manager (don't show the window or alert) */
@@ -289,12 +291,9 @@ pref("layers.offmainthreadcomposition.enabled", true);
 pref("layers.offmainthreadcomposition.async-animations", true);
 #ifndef MOZ_WIDGET_GONK
 pref("dom.ipc.tabs.disabled", true);
-pref("layers.async-video.enabled", false);
 #else
 pref("dom.ipc.tabs.disabled", false);
 pref("layers.acceleration.disabled", false);
-pref("layers.async-video.enabled", true);
-pref("layers.async-video-oop.enabled",true);
 pref("layers.async-pan-zoom.enabled", true);
 pref("gfx.content.azure.backends", "cairo");
 #endif
@@ -392,7 +391,7 @@ pref("browser.dom.window.dump.enabled", false);
 // Default Content Security Policy to apply to privileged and certified apps
 pref("security.apps.privileged.CSP.default", "default-src *; script-src 'self'; object-src 'none'; style-src 'self' 'unsafe-inline'");
 // If you change this CSP, make sure to update the fast path in nsCSPService.cpp
-pref("security.apps.certified.CSP.default", "default-src *; script-src 'self'; object-src 'none'; style-src 'self'");
+pref("security.apps.certified.CSP.default", "default-src *; script-src 'self'; object-src 'none'; style-src 'self' 'unsafe-inline'");
 
 // Temporarily force-enable GL compositing.  This is default-disabled
 // deep within the bowels of the widgetry system.  Remove me when GL
@@ -460,13 +459,41 @@ pref("services.push.retryBaseInterval", 5000);
 pref("services.push.pingInterval", 1800000); // 30 minutes
 // How long before a DOMRequest errors as timeout
 pref("services.push.requestTimeout", 10000);
+pref("services.push.pingInterval.default", 180000);// 3 min
+pref("services.push.pingInterval.mobile", 180000); // 3 min
+pref("services.push.pingInterval.wifi", 180000);  // 3 min
+// Adaptive ping
+pref("services.push.adaptive.enabled", true);
+pref("services.push.adaptive.lastGoodPingInterval", 180000);// 3 min
+pref("services.push.adaptive.lastGoodPingInterval.mobile", 180000);// 3 min
+pref("services.push.adaptive.lastGoodPingInterval.wifi", 180000);// 3 min
+// Valid gap between the biggest good ping and the bad ping
+pref("services.push.adaptive.gap", 60000); // 1 minute
+// We limit the ping to this maximum value
+pref("services.push.adaptive.upperLimit", 1740000); // 29 min
 // enable udp wakeup support
 pref("services.push.udp.wakeupEnabled", true);
+// This value should be the prefix to be added to the current PDP context[1]
+// domain or a full-qualified domain name.
+// If finished with a dot, it will be added as a prefix to the PDP context
+// domain. If not, will be used as the DNS query.
+// If the DNS query is unsuccessful, the push agent will send a null netid and
+// is a server decision what to do with the device. If the MCC-MNC identifies a
+// unique network the server will change to UDP mode. Otherwise, a websocket
+// connection will be maintained.
+// [1] Packet Data Protocol
+//     http://en.wikipedia.org/wiki/GPRS_core_network#PDP_context
+pref("services.push.udp.well-known_netidAddress", "_wakeup_.");
 
 // NetworkStats
 #ifdef MOZ_WIDGET_GONK
 pref("dom.mozNetworkStats.enabled", true);
 pref("dom.webapps.firstRunWithSIM", true);
+#endif
+
+// ResourceStats
+#ifdef MOZ_WIDGET_GONK
+pref("dom.resource_stats.enabled", true);
 #endif
 
 #ifdef MOZ_B2G_RIL
@@ -548,15 +575,7 @@ pref("app.update.incompatible.mode", 0);
 pref("app.update.staging.enabled", true);
 pref("app.update.service.enabled", true);
 
-// The URL hosting the update manifest.
-// Temporary hack to only put Flame builds on aus4. 18 is Jelly Bean (4.3).
-// This needs to be changed if Flame upgrades to 19 (Kit Kat) before other devices
-// move to aus4.
-#if ANDROID_VERSION == 18
 pref("app.update.url", "https://aus4.mozilla.org/update/3/%PRODUCT%/%VERSION%/%BUILD_ID%/%PRODUCT_DEVICE%/%LOCALE%/%CHANNEL%/%OS_VERSION%/%DISTRIBUTION%/%DISTRIBUTION_VERSION%/update.xml");
-#else
-pref("app.update.url", "http://update.boot2gecko.org/%CHANNEL%/update.xml");
-#endif
 pref("app.update.channel", "@MOZ_UPDATE_CHANNEL@");
 
 // Interval at which update manifest is fetched.  In units of seconds.
@@ -645,6 +664,12 @@ pref("javascript.options.mem.gc_low_frequency_heap_growth", 120);
 pref("javascript.options.mem.high_water_mark", 6);
 pref("javascript.options.mem.gc_allocation_threshold_mb", 1);
 pref("javascript.options.mem.gc_decommit_threshold_mb", 1);
+#ifdef JSGC_GENERATIONAL
+pref("javascript.options.mem.gc_min_empty_chunk_count", 1);
+#else
+pref("javascript.options.mem.gc_min_empty_chunk_count", 0);
+#endif
+pref("javascript.options.mem.gc_max_empty_chunk_count", 2);
 
 // Show/Hide scrollbars when active/inactive
 pref("ui.showHideScrollbars", 1);
@@ -906,9 +931,6 @@ pref("gfx.canvas.max-size-for-skia-gl", -1);
 // enable fence with readpixels for SurfaceStream
 pref("gfx.gralloc.fence-with-readpixels", true);
 
-// Cell Broadcast API
-pref("ril.cellbroadcast.disabled", false);
-
 // The url of the page used to display network error details.
 pref("b2g.neterror.url", "app://system.gaiamobile.org/net_error.html");
 
@@ -954,9 +976,14 @@ pref("apz.axis_lock_mode", 2);
 pref("apz.subframe.enabled", true);
 
 // Overscroll-related settings
-pref("apz.overscroll.enabled", false);
-pref("apz.overscroll.snap_back_accel", "0.003");
-pref("apz.overscroll.snap_back_init_vel", "1");
+pref("apz.overscroll.enabled", true);
+pref("apz.overscroll.fling_friction", "0.02");
+pref("apz.overscroll.fling_stopped_threshold", "0.4");
+pref("apz.overscroll.clamping", "0.5");
+pref("apz.overscroll.z_effect", "0.5");
+pref("apz.overscroll.snap_back.spring_stiffness", "0.6");
+pref("apz.overscroll.snap_back.spring_friction", "0.1");
+pref("apz.overscroll.snap_back.mass", "1200");
 
 // This preference allows FirefoxOS apps (and content, I think) to force
 // the use of software (instead of hardware accelerated) 2D canvases by
@@ -975,11 +1002,18 @@ pref("browser.autofocus", false);
 // Enable wakelock
 pref("dom.wakelock.enabled", true);
 
+// Disable touch caret by default
+pref("touchcaret.enabled", false);
+
+// Disable selection caret by default
+pref("selectioncaret.enabled", false);
+
 // Enable sync and mozId with Firefox Accounts.
-#ifdef MOZ_SERVICES_FXACCOUNTS
 pref("services.sync.fxaccounts.enabled", true);
 pref("identity.fxaccounts.enabled", true);
-#endif
+
+// Mobile Identity API.
+pref("services.mobileid.server.uri", "https://msisdn.services.mozilla.com");
 
 // Enable mapped array buffer
 pref("dom.mapped_arraybuffer.enabled", true);

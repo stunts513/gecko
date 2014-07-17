@@ -1,4 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim: set ts=2 et sw=2 tw=80: */
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
@@ -170,10 +170,8 @@ add_task(function test_import()
 
   // Verify that disabled hosts have been imported.
   do_check_eq(store.data.disabledHosts.length, 2);
-  do_check_true(store.data.disabledHosts.some(
-                dataItem => dataItem.hostname == "http://www.example.com"));
-  do_check_true(store.data.disabledHosts.some(
-                dataItem => dataItem.hostname == "https://www.example.org"));
+  do_check_true(store.data.disabledHosts.indexOf("http://www.example.com") != -1);
+  do_check_true(store.data.disabledHosts.indexOf("https://www.example.org") != -1);
 });
 
 /**

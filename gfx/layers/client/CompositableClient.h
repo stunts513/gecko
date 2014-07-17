@@ -34,33 +34,32 @@ class PCompositableChild;
  */
 class RemoveTextureFromCompositableTracker : public AsyncTransactionTracker {
 public:
-  RemoveTextureFromCompositableTracker(CompositableClient* aCompositableClient)
-    : mCompositableClient(aCompositableClient)
+  RemoveTextureFromCompositableTracker()
   {
     MOZ_COUNT_CTOR(RemoveTextureFromCompositableTracker);
   }
 
+protected:
   ~RemoveTextureFromCompositableTracker()
   {
     MOZ_COUNT_DTOR(RemoveTextureFromCompositableTracker);
+    ReleaseTextureClient();
   }
 
+public:
   virtual void Complete() MOZ_OVERRIDE
   {
-    // The TextureClient's recycling is postponed until the transaction
-    // complete.
-    mTextureClient = nullptr;
-    mCompositableClient = nullptr;
+    ReleaseTextureClient();
   }
 
   virtual void Cancel() MOZ_OVERRIDE
   {
-    mTextureClient = nullptr;
-    mCompositableClient = nullptr;
+    ReleaseTextureClient();
   }
 
   virtual void SetTextureClient(TextureClient* aTextureClient) MOZ_OVERRIDE
   {
+    ReleaseTextureClient();
     mTextureClient = aTextureClient;
   }
 
@@ -71,8 +70,10 @@ public:
     }
   }
 
+protected:
+  void ReleaseTextureClient();
+
 private:
-  RefPtr<CompositableClient> mCompositableClient;
   RefPtr<TextureClient> mTextureClient;
 };
 
@@ -135,9 +136,10 @@ public:
 
   TemporaryRef<TextureClient>
   CreateTextureClientForDrawing(gfx::SurfaceFormat aFormat,
+                                gfx::IntSize aSize,
+                                gfx::BackendType aMoz2DBackend,
                                 TextureFlags aTextureFlags,
-                                gfx::BackendType aMoz2dBackend,
-                                const gfx::IntSize& aSizeHint);
+                                TextureAllocationFlags aAllocFlags = ALLOC_DEFAULT);
 
   virtual void SetDescriptorFromReply(TextureIdentifier aTextureId,
                                       const SurfaceDescriptor& aDescriptor)
@@ -193,6 +195,8 @@ public:
    */
   virtual void ClearCachedResources() {}
 
+  virtual void UseTexture(TextureClient* aTexture);
+
   /**
    * Should be called when deataching a TextureClient from a Compositable, because
    * some platforms need to do some extra book keeping when this happens (for
@@ -223,6 +227,8 @@ public:
   static void HoldUntilComplete(PCompositableChild* aActor, AsyncTransactionTracker* aTracker);
 
   static uint64_t GetTrackersHolderId(PCompositableChild* aActor);
+
+  TextureFlags GetTextureFlags() const { return mTextureFlags; }
 
 protected:
   CompositableChild* mCompositableChild;

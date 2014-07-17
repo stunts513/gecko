@@ -51,7 +51,6 @@ public:
     NS_DECL_NSIOUTPUTSTREAMCALLBACK
 
     nsHttpTransaction();
-    virtual ~nsHttpTransaction();
 
     //
     // called to initialize the transaction
@@ -110,6 +109,7 @@ public:
     void SetDontRouteViaWildCard(bool var) { mDontRouteViaWildCard = var; }
     bool DontRouteViaWildCard() { return mDontRouteViaWildCard; }
     void EnableKeepAlive() { mCaps |= NS_HTTP_ALLOW_KEEPALIVE; }
+    void MakeSticky() { mCaps |= NS_HTTP_STICKY_CONNECTION; }
 
     // SetPriority() may only be used by the connection manager.
     void    SetPriority(int32_t priority) { mPriority = priority; }
@@ -134,6 +134,9 @@ public:
     nsHttpTransaction *QueryHttpTransaction() MOZ_OVERRIDE { return this; }
 
 private:
+    friend class DeleteHttpTransaction;
+    virtual ~nsHttpTransaction();
+
     nsresult Restart();
     nsresult RestartInProgress();
     char    *LocateHttpStart(char *buf, uint32_t len,

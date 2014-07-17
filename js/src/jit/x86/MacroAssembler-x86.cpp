@@ -238,12 +238,12 @@ MacroAssemblerX86::callWithABIPost(uint32_t stackAdjust, MoveOp::Type result)
     if (result == MoveOp::DOUBLE) {
         reserveStack(sizeof(double));
         fstp(Operand(esp, 0));
-        loadDouble(Operand(esp, 0), ReturnFloatReg);
+        loadDouble(Operand(esp, 0), ReturnDoubleReg);
         freeStack(sizeof(double));
     } else if (result == MoveOp::FLOAT32) {
         reserveStack(sizeof(float));
         fstp32(Operand(esp, 0));
-        loadFloat32(Operand(esp, 0), ReturnFloatReg);
+        loadFloat32(Operand(esp, 0), ReturnFloat32Reg);
         freeStack(sizeof(float));
     }
     if (dynamicAlignment_)
@@ -387,6 +387,35 @@ MacroAssemblerX86::branchTestValue(Condition cond, const ValueOperand &value, co
     }
 }
 
+template <typename T>
+void
+MacroAssemblerX86::storeUnboxedValue(ConstantOrRegister value, MIRType valueType, const T &dest,
+                                     MIRType slotType)
+{
+    if (valueType == MIRType_Double) {
+        storeDouble(value.reg().typedReg().fpu(), dest);
+        return;
+    }
+
+    // Store the type tag if needed.
+    if (valueType != slotType)
+        storeTypeTag(ImmType(ValueTypeFromMIRType(valueType)), Operand(dest));
+
+    // Store the payload.
+    if (value.constant())
+        storePayload(value.value(), Operand(dest));
+    else
+        storePayload(value.reg().typedReg().gpr(), Operand(dest));
+}
+
+template void
+MacroAssemblerX86::storeUnboxedValue(ConstantOrRegister value, MIRType valueType, const Address &dest,
+                                     MIRType slotType);
+
+template void
+MacroAssemblerX86::storeUnboxedValue(ConstantOrRegister value, MIRType valueType, const BaseIndex &dest,
+                                     MIRType slotType);
+
 #ifdef JSGC_GENERATIONAL
 
 void
@@ -401,7 +430,7 @@ MacroAssemblerX86::branchPtrInNurseryRange(Condition cond, Register ptr, Registe
     movePtr(ImmWord(-ptrdiff_t(nursery.start())), temp);
     addPtr(ptr, temp);
     branchPtr(cond == Assembler::Equal ? Assembler::Below : Assembler::AboveOrEqual,
-              temp, Imm32(Nursery::NurserySize), label);
+              temp, Imm32(nursery.nurserySize()), label);
 }
 
 void

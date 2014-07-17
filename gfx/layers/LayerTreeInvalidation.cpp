@@ -69,14 +69,6 @@ AddRegion(nsIntRegion& aDest, const nsIntRegion& aSource)
   aDest.SimplifyOutward(20);
 }
 
-static nsIntRegion
-TransformRegion(const nsIntRegion& aRegion, const gfx3DMatrix& aTransform)
-{
-  nsIntRegion result;
-  AddTransformedRegion(result, aRegion, aTransform);
-  return result;
-}
-
 /**
  * Walks over this layer, and all descendant layers.
  * If any of these are a ContainerLayer that reports invalidations to a PresShell,
@@ -159,9 +151,7 @@ struct LayerPropertiesBase : public LayerProperties
     {
       aGeometryChanged = true;
       result = OldTransformedBounds();
-      if (transformChanged) {
-        AddRegion(result, NewTransformedBounds());
-      }
+      AddRegion(result, NewTransformedBounds());
 
       // If we don't have to generate invalidations separately for child
       // layers then we can just stop here since we've already invalidated the entire
@@ -182,6 +172,7 @@ struct LayerPropertiesBase : public LayerProperties
 
     if (mUseClipRect && otherClip) {
       if (!mClipRect.IsEqualInterior(*otherClip)) {
+        aGeometryChanged = true;
         nsIntRegion tmp; 
         tmp.Xor(mClipRect, *otherClip); 
         AddRegion(result, tmp);
@@ -302,6 +293,7 @@ struct ContainerLayerProperties : public LayerPropertiesBase
         invalidateChildsCurrentArea = true;
       }
       if (invalidateChildsCurrentArea) {
+        aGeometryChanged = true;
         gfx3DMatrix transform;
         gfx::To3DMatrix(child->GetTransform(), transform);
         AddTransformedRegion(result, child->GetVisibleRegion(), transform);
@@ -325,7 +317,8 @@ struct ContainerLayerProperties : public LayerPropertiesBase
 
     gfx3DMatrix transform;
     gfx::To3DMatrix(mLayer->GetTransform(), transform);
-    return TransformRegion(result, transform);
+    result.Transform(transform);
+    return result;
   }
 
   // The old list of children:
@@ -347,6 +340,7 @@ struct ColorLayerProperties : public LayerPropertiesBase
     ColorLayer* color = static_cast<ColorLayer*>(mLayer.get());
 
     if (mColor != color->GetColor()) {
+      aGeometryChanged = true;
       return NewTransformedBounds();
     }
 
@@ -373,6 +367,7 @@ struct ImageLayerProperties : public LayerPropertiesBase
     ImageLayer* imageLayer = static_cast<ImageLayer*>(mLayer.get());
     
     if (!imageLayer->GetVisibleRegion().IsEqual(mVisibleRegion)) {
+      aGeometryChanged = true;
       nsIntRect result = NewTransformedBounds();
       result = result.Union(OldTransformedBounds());
       return result;
@@ -382,6 +377,7 @@ struct ImageLayerProperties : public LayerPropertiesBase
         mFilter != imageLayer->GetFilter() ||
         mScaleToSize != imageLayer->GetScaleToSize() ||
         mScaleMode != imageLayer->GetScaleMode()) {
+      aGeometryChanged = true;
       return NewTransformedBounds();
     }
 

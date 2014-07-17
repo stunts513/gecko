@@ -25,7 +25,6 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared
     uint32_t passedArgs_;
     uint32_t stackForCall_;
     bool dynamicAlignment_;
-    bool enoughMemory_;
 
     struct Double {
         double value;
@@ -69,23 +68,19 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared
     using MacroAssemblerX86Shared::Pop;
     using MacroAssemblerX86Shared::callWithExitFrame;
     using MacroAssemblerX86Shared::branch32;
+    using MacroAssemblerX86Shared::branchTest32;
     using MacroAssemblerX86Shared::load32;
     using MacroAssemblerX86Shared::store32;
     using MacroAssemblerX86Shared::call;
 
     MacroAssemblerX86()
-      : inCall_(false),
-        enoughMemory_(true)
+      : inCall_(false)
     {
     }
 
     // The buffer is about to be linked, make sure any constant pools or excess
     // bookkeeping has been flushed to the instruction stream.
     void finish();
-
-    bool oom() const {
-        return MacroAssemblerX86Shared::oom() || !enoughMemory_;
-    }
 
     /////////////////////////////////////////////////////////////////
     // X86-specific interface.
@@ -295,6 +290,11 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared
         cmpl(tag, ImmTag(JSVAL_TAG_STRING));
         return cond;
     }
+    Condition testSymbol(Condition cond, Register tag) {
+        JS_ASSERT(cond == Equal || cond == NotEqual);
+        cmpl(tag, ImmTag(JSVAL_TAG_SYMBOL));
+        return cond;
+    }
     Condition testObject(Condition cond, Register tag) {
         JS_ASSERT(cond == Equal || cond == NotEqual);
         cmpl(tag, ImmTag(JSVAL_TAG_OBJECT));
@@ -387,6 +387,9 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared
     Condition testString(Condition cond, const ValueOperand &value) {
         return testString(cond, value.typeReg());
     }
+    Condition testSymbol(Condition cond, const ValueOperand &value) {
+        return testSymbol(cond, value.typeReg());
+    }
     Condition testObject(Condition cond, const ValueOperand &value) {
         return testObject(cond, value.typeReg());
     }
@@ -425,6 +428,11 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared
     Condition testString(Condition cond, const BaseIndex &address) {
         JS_ASSERT(cond == Equal || cond == NotEqual);
         cmpl(tagOf(address), ImmTag(JSVAL_TAG_STRING));
+        return cond;
+    }
+    Condition testSymbol(Condition cond, const BaseIndex &address) {
+        JS_ASSERT(cond == Equal || cond == NotEqual);
+        cmpl(tagOf(address), ImmTag(JSVAL_TAG_SYMBOL));
         return cond;
     }
     Condition testInt32(Condition cond, const BaseIndex &address) {
@@ -478,6 +486,12 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared
         cond = testNull(cond, value);
         emitSet(cond, dest);
     }
+
+    void testObjectSet(Condition cond, const ValueOperand &value, Register dest) {
+        cond = testObject(cond, value);
+        emitSet(cond, dest);
+    }
+
     void testUndefinedSet(Condition cond, const ValueOperand &value, Register dest) {
         cond = testUndefined(cond, value);
         emitSet(cond, dest);
@@ -591,6 +605,10 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared
     }
     void branch32(Condition cond, AbsoluteAddress lhs, Register rhs, Label *label) {
         cmpl(Operand(lhs), rhs);
+        j(cond, label);
+    }
+    void branchTest32(Condition cond, AbsoluteAddress address, Imm32 imm, Label *label) {
+        testl(Operand(address), imm);
         j(cond, label);
     }
 
@@ -752,6 +770,11 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared
         j(cond, label);
     }
     template <typename T>
+    void branchTestSymbol(Condition cond, const T &t, Label *label) {
+        cond = testSymbol(cond, t);
+        j(cond, label);
+    }
+    template <typename T>
     void branchTestObject(Condition cond, const T &t, Label *label) {
         cond = testObject(cond, t);
         j(cond, label);
@@ -794,42 +817,41 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared
             movl(src, dest.payloadReg());
         movl(ImmType(type), dest.typeReg());
     }
-    void unboxInt32(const ValueOperand &src, Register dest) {
-        movl(src.payloadReg(), dest);
-    }
-    void unboxInt32(const Address &src, Register dest) {
-        movl(payloadOf(src), dest);
-    }
-    void unboxDouble(const Address &src, FloatRegister dest) {
-        loadDouble(Operand(src), dest);
-    }
-    void unboxBoolean(const ValueOperand &src, Register dest) {
-        movl(src.payloadReg(), dest);
-    }
-    void unboxBoolean(const Address &src, Register dest) {
-        movl(payloadOf(src), dest);
-    }
-    void unboxObject(const ValueOperand &src, Register dest) {
+
+    void unboxNonDouble(const ValueOperand &src, Register dest) {
         if (src.payloadReg() != dest)
             movl(src.payloadReg(), dest);
     }
-    void unboxObject(const Address &src, Register dest) {
+    void unboxNonDouble(const Address &src, Register dest) {
         movl(payloadOf(src), dest);
     }
+    void unboxInt32(const ValueOperand &src, Register dest) { unboxNonDouble(src, dest); }
+    void unboxInt32(const Address &src, Register dest) { unboxNonDouble(src, dest); }
+    void unboxBoolean(const ValueOperand &src, Register dest) { unboxNonDouble(src, dest); }
+    void unboxBoolean(const Address &src, Register dest) { unboxNonDouble(src, dest); }
+    void unboxString(const ValueOperand &src, Register dest) { unboxNonDouble(src, dest); }
+    void unboxString(const Address &src, Register dest) { unboxNonDouble(src, dest); }
+    void unboxSymbol(const ValueOperand &src, Register dest) { unboxNonDouble(src, dest); }
+    void unboxSymbol(const Address &src, Register dest) { unboxNonDouble(src, dest); }
+    void unboxObject(const ValueOperand &src, Register dest) { unboxNonDouble(src, dest); }
+    void unboxObject(const Address &src, Register dest) { unboxNonDouble(src, dest); }
+    void unboxDouble(const Address &src, FloatRegister dest) {
+        loadDouble(Operand(src), dest);
+    }
     void unboxDouble(const ValueOperand &src, FloatRegister dest) {
-        JS_ASSERT(dest != ScratchFloatReg);
+        JS_ASSERT(dest != ScratchDoubleReg);
         if (Assembler::HasSSE41()) {
             movd(src.payloadReg(), dest);
             pinsrd(src.typeReg(), dest);
         } else {
             movd(src.payloadReg(), dest);
-            movd(src.typeReg(), ScratchFloatReg);
-            unpcklps(ScratchFloatReg, dest);
+            movd(src.typeReg(), ScratchDoubleReg);
+            unpcklps(ScratchDoubleReg, dest);
         }
     }
     void unboxDouble(const Operand &payload, const Operand &type,
                      Register scratch, FloatRegister dest) {
-        JS_ASSERT(dest != ScratchFloatReg);
+        JS_ASSERT(dest != ScratchDoubleReg);
         if (Assembler::HasSSE41()) {
             movl(payload, scratch);
             movd(scratch, dest);
@@ -839,15 +861,9 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared
             movl(payload, scratch);
             movd(scratch, dest);
             movl(type, scratch);
-            movd(scratch, ScratchFloatReg);
-            unpcklps(ScratchFloatReg, dest);
+            movd(scratch, ScratchDoubleReg);
+            unpcklps(ScratchDoubleReg, dest);
         }
-    }
-    void unboxString(const ValueOperand &src, Register dest) {
-        movl(src.payloadReg(), dest);
-    }
-    void unboxString(const Address &src, Register dest) {
-        movl(payloadOf(src), dest);
     }
     void unboxValue(const ValueOperand &src, AnyRegister dest) {
         if (dest.isFloat()) {
@@ -972,6 +988,10 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared
         else
             movl(Operand(src), dest.gpr());
     }
+
+    template <typename T>
+    void storeUnboxedValue(ConstantOrRegister value, MIRType valueType, const T &dest,
+                           MIRType slotType);
 
     void rshiftPtr(Imm32 imm, Register dest) {
         shrl(imm, dest);
@@ -1099,13 +1119,6 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared
         makeFrameDescriptor(dynStack, JitFrame_IonJS);
         Push(dynStack);
         call(target);
-    }
-    void call(const CallSiteDesc &desc, AsmJSImmPtr target) {
-        call(target);
-        appendCallSite(desc);
-    }
-    void callExit(AsmJSImmPtr target, uint32_t stackArgBytes) {
-        call(CallSiteDesc::Exit(), target);
     }
 
 #ifdef JSGC_GENERATIONAL

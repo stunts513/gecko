@@ -50,8 +50,11 @@ public:
                          ShadowLayersManager* aLayersManager,
                          uint64_t aId,
                          ProcessId aOtherProcess);
+
+protected:
   ~LayerTransactionParent();
 
+public:
   void Destroy();
 
   LayerManagerComposite* layer_manager() const { return mLayerManager; }
@@ -81,6 +84,9 @@ public:
 
   virtual bool IsSameProcess() const MOZ_OVERRIDE;
 
+  const uint64_t& GetPendingTransactionId() { return mPendingTransaction; }
+  void SetPendingTransactionId(uint64_t aId) { mPendingTransaction = aId; }
+
   // CompositableParentManager
   virtual void SendFenceHandle(AsyncTransactionTracker* aTracker,
                                PTextureParent* aTexture,
@@ -95,6 +101,7 @@ public:
 
 protected:
   virtual bool RecvUpdate(const EditArray& cset,
+                          const uint64_t& aTransactionId,
                           const TargetConfig& targetConfig,
                           const bool& isFirstPaint,
                           const bool& scheduleComposite,
@@ -102,6 +109,7 @@ protected:
                           EditReplyArray* reply) MOZ_OVERRIDE;
 
   virtual bool RecvUpdateNoSwap(const EditArray& cset,
+                                const uint64_t& aTransactionId,
                                 const TargetConfig& targetConfig,
                                 const bool& isFirstPaint,
                                 const bool& scheduleComposite,
@@ -164,6 +172,8 @@ private:
   //   mId != 0 => mRoot == null
   // because the "real tree" is owned by the compositor.
   uint64_t mId;
+
+  uint64_t mPendingTransaction;
   // When the widget/frame/browser stuff in this process begins its
   // destruction process, we need to Disconnect() all the currently
   // live shadow layers, because some of them might be orphaned from

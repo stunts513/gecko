@@ -1,5 +1,6 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -33,14 +34,14 @@ public:
   typedef mozilla::TimeDuration TimeDuration;
 
   TimerThread();
-  NS_HIDDEN_(nsresult) InitLocks();
+  nsresult InitLocks();
 
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIRUNNABLE
   NS_DECL_NSIOBSERVER
 
-  NS_HIDDEN_(nsresult) Init();
-  NS_HIDDEN_(nsresult) Shutdown();
+  nsresult Init();
+  nsresult Shutdown();
 
   nsresult AddTimer(nsTimerImpl* aTimer);
   nsresult TimerDelayChanged(nsTimerImpl* aTimer);

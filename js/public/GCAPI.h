@@ -10,8 +10,6 @@
 #include "mozilla/NullPtr.h"
 
 #include "js/HeapAPI.h"
-#include "js/RootingAPI.h"
-#include "js/Value.h"
 
 namespace js {
 namespace gc {
@@ -369,9 +367,36 @@ extern JS_FRIEND_API(void)
 ShrinkGCBuffers(JSRuntime *rt);
 
 /*
- * Assert if any GC occured while this guard object was live. This is most
- * useful to help the exact rooting hazard analysis in complex regions, since
- * it cannot understand dataflow.
+ * Assert if a GC occurs while this class is live. This class does not disable
+ * the static rooting hazard analysis.
+ */
+class JS_PUBLIC_API(AutoAssertOnGC)
+{
+#ifdef DEBUG
+    js::gc::GCRuntime *gc;
+    size_t gcNumber;
+
+  public:
+    AutoAssertOnGC();
+    explicit AutoAssertOnGC(JSRuntime *rt);
+    ~AutoAssertOnGC();
+
+    static void VerifyIsSafeToGC(JSRuntime *rt);
+#else
+  public:
+    AutoAssertOnGC() {}
+    explicit AutoAssertOnGC(JSRuntime *rt) {}
+    ~AutoAssertOnGC() {}
+
+    static void VerifyIsSafeToGC(JSRuntime *rt) {}
+#endif
+};
+
+/*
+ * Disable the static rooting hazard analysis in the live region, but assert if
+ * any GC occurs while this guard object is live. This is most useful to help
+ * the exact rooting hazard analysis in complex regions, since it cannot
+ * understand dataflow.
  *
  * Note: GC behavior is unpredictable even when deterministice and is generally
  *       non-deterministic in practice. The fact that this guard has not
@@ -381,63 +406,28 @@ ShrinkGCBuffers(JSRuntime *rt);
  *       that the hazard analysis is correct for that code, rather than relying
  *       on this class.
  */
-class JS_PUBLIC_API(AutoAssertNoGC)
+class JS_PUBLIC_API(AutoSuppressGCAnalysis) : public AutoAssertOnGC
 {
-#ifdef JS_DEBUG
-    JSRuntime *runtime;
-    size_t gcNumber;
-
   public:
-    AutoAssertNoGC();
-    AutoAssertNoGC(JSRuntime *rt);
-    ~AutoAssertNoGC();
-#else
-  public:
-    /* Prevent unreferenced local warnings in opt builds. */
-    AutoAssertNoGC() {}
-    explicit AutoAssertNoGC(JSRuntime *) {}
-#endif
+    AutoSuppressGCAnalysis() : AutoAssertOnGC() {}
+    explicit AutoSuppressGCAnalysis(JSRuntime *rt) : AutoAssertOnGC(rt) {}
 };
 
-class JS_PUBLIC_API(ObjectPtr)
+/*
+ * Place AutoCheckCannotGC in scopes that you believe can never GC. These
+ * annotations will be verified both dynamically via AutoAssertOnGC, and
+ * statically with the rooting hazard analysis (implemented by making the
+ * analysis consider AutoCheckCannotGC to be a GC pointer, and therefore
+ * complain if it is live across a GC call.) It is useful when dealing with
+ * internal pointers to GC things where the GC thing itself may not be present
+ * for the static analysis: e.g. acquiring inline chars from a JSString* on the
+ * heap.
+ */
+class JS_PUBLIC_API(AutoCheckCannotGC) : public AutoAssertOnGC
 {
-    Heap<JSObject *> value;
-
   public:
-    ObjectPtr() : value(nullptr) {}
-
-    explicit ObjectPtr(JSObject *obj) : value(obj) {}
-
-    /* Always call finalize before the destructor. */
-    ~ObjectPtr() { MOZ_ASSERT(!value); }
-
-    void finalize(JSRuntime *rt) {
-        if (IsIncrementalBarrierNeeded(rt))
-            IncrementalObjectBarrier(value);
-        value = nullptr;
-    }
-
-    void init(JSObject *obj) { value = obj; }
-
-    JSObject *get() const { return value; }
-
-    void writeBarrierPre(JSRuntime *rt) {
-        IncrementalObjectBarrier(value);
-    }
-
-    bool isAboutToBeFinalized();
-
-    ObjectPtr &operator=(JSObject *obj) {
-        IncrementalObjectBarrier(value);
-        value = obj;
-        return *this;
-    }
-
-    void trace(JSTracer *trc, const char *name);
-
-    JSObject &operator*() const { return *value; }
-    JSObject *operator->() const { return value; }
-    operator JSObject *() const { return value; }
+    AutoCheckCannotGC() : AutoAssertOnGC() {}
+    explicit AutoCheckCannotGC(JSRuntime *rt) : AutoAssertOnGC(rt) {}
 };
 
 /*
@@ -472,13 +462,6 @@ ExposeGCThingToActiveJS(void *thing, JSGCTraceKind kind)
         IncrementalReferenceBarrier(thing, kind);
     else if (GCThingIsMarkedGray(thing))
         UnmarkGrayGCThingRecursively(thing, kind);
-}
-
-static MOZ_ALWAYS_INLINE void
-ExposeValueToActiveJS(const Value &v)
-{
-    if (v.isMarkable())
-        ExposeGCThingToActiveJS(v.toGCThing(), v.gcKind());
 }
 
 static MOZ_ALWAYS_INLINE void

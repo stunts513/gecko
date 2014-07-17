@@ -48,6 +48,7 @@
 #include "nsIWritablePropertyBag2.h"
 #include "nsICategoryManager.h"
 #include "nsPluginStreamListenerPeer.h"
+#include "mozilla/LoadInfo.h"
 #include "mozilla/Preferences.h"
 
 #include "nsEnumeratorUtils.h"
@@ -719,10 +720,10 @@ void nsPluginHost::OnPluginInstanceDestroyed(nsPluginTag* aPluginTag)
   // Another reason not to unload immediately is that loading is expensive,
   // and it is better to leave popular plugins loaded.
   //
-  // Our default behavior is to try to unload a plugin three minutes after
-  // its last instance is destroyed. This seems like a reasonable compromise
-  // that allows us to reclaim memory while allowing short state retention
-  // and avoid perf hits for loading popular plugins.
+  // Our default behavior is to try to unload a plugin after a pref-controlled
+  // delay once its last instance is destroyed. This seems like a reasonable
+  // compromise that allows us to reclaim memory while allowing short state
+  // retention and avoid perf hits for loading popular plugins.
   if (!hasInstance) {
     if (UnloadPluginsASAP()) {
       aPluginTag->TryUnloadPlugin(false);
@@ -2851,7 +2852,10 @@ nsresult nsPluginHost::NewPluginURLStream(const nsString& aURL,
 
   if (doc) {
     // Set the owner of channel to the document principal...
-    channel->SetOwner(doc->NodePrincipal());
+    nsCOMPtr<nsILoadInfo> loadInfo =
+      new LoadInfo(doc->NodePrincipal(), LoadInfo::eInheritPrincipal,
+                   LoadInfo::eNotSandboxed);
+    channel->SetLoadInfo(loadInfo);
 
     // And if it's a script allow it to execute against the
     // document's script context.

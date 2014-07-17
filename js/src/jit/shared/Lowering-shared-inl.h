@@ -68,7 +68,7 @@ LIRGeneratorShared::defineFixed(LInstructionHelper<1, X, Y> *lir, MDefinition *m
 {
     LDefinition::Type type = LDefinition::TypeFrom(mir->type());
 
-    LDefinition def(type, LDefinition::PRESET);
+    LDefinition def(type, LDefinition::FIXED);
     def.setOutput(output);
 
     // Add an LNop to avoid regalloc problems if the next op uses this value
@@ -149,10 +149,10 @@ LIRGeneratorShared::defineReturn(LInstruction *lir, MDefinition *mir)
 #endif
         break;
       case MIRType_Float32:
-        lir->setDef(0, LDefinition(vreg, LDefinition::FLOAT32, LFloatReg(ReturnFloatReg)));
+        lir->setDef(0, LDefinition(vreg, LDefinition::FLOAT32, LFloatReg(ReturnFloat32Reg)));
         break;
       case MIRType_Double:
-        lir->setDef(0, LDefinition(vreg, LDefinition::DOUBLE, LFloatReg(ReturnFloatReg)));
+        lir->setDef(0, LDefinition(vreg, LDefinition::DOUBLE, LFloatReg(ReturnDoubleReg)));
         break;
       default:
         LDefinition::Type type = LDefinition::TypeFrom(mir->type());
@@ -290,6 +290,14 @@ LIRGeneratorShared::useOrConstant(MDefinition *mir)
     if (mir->isConstant())
         return LAllocation(mir->toConstant()->vp());
     return use(mir);
+}
+
+LAllocation
+LIRGeneratorShared::useOrConstantAtStart(MDefinition *mir)
+{
+    if (mir->isConstant())
+        return LAllocation(mir->toConstant()->vp());
+    return useAtStart(mir);
 }
 
 LAllocation

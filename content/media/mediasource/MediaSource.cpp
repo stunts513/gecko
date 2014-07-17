@@ -61,6 +61,9 @@ IsTypeSupported(const nsAString& aType)
   if (aType.IsEmpty()) {
     return NS_ERROR_DOM_INVALID_ACCESS_ERR;
   }
+  if (Preferences::GetBool("media.mediasource.ignore_codecs", false)) {
+    return NS_OK;
+  }
   // TODO: Further restrict this to formats in the spec.
   nsContentTypeParser parser(aType);
   nsAutoString mimeType;
@@ -77,9 +80,6 @@ IsTypeSupported(const nsAString& aType)
   }
   if (!found) {
     return NS_ERROR_DOM_NOT_SUPPORTED_ERR;
-  }
-  if (Preferences::GetBool("media.mediasource.ignore_codecs", false)) {
-    return NS_OK;
   }
   // Check aType against HTMLMediaElement list of MIME types.  Since we've
   // already restricted the container format, this acts as a specific check
@@ -104,6 +104,10 @@ MediaSource::Constructor(const GlobalObject& aGlobal,
 
   nsRefPtr<MediaSource> mediaSource = new MediaSource(window);
   return mediaSource.forget();
+}
+
+MediaSource::~MediaSource()
+{
 }
 
 SourceBufferList*
@@ -299,6 +303,7 @@ MediaSource::MediaSource(nsPIDOMWindow* aWindow)
   , mDuration(UnspecifiedNaN<double>())
   , mDecoder(nullptr)
   , mReadyState(MediaSourceReadyState::Closed)
+  , mWaitForDataMonitor("MediaSource.WaitForData.Monitor")
 {
   mSourceBuffers = new SourceBufferList(this);
   mActiveSourceBuffers = new SourceBufferList(this);
@@ -393,6 +398,20 @@ MediaSource::NotifyEvicted(double aStart, double aEnd)
   // Cycle through all SourceBuffers and tell them to evict data in
   // the given range.
   mSourceBuffers->Evict(aStart, aEnd);
+}
+
+void
+MediaSource::WaitForData()
+{
+  MonitorAutoLock lock(mWaitForDataMonitor);
+  lock.Wait();
+}
+
+void
+MediaSource::NotifyGotData()
+{
+  MonitorAutoLock lock(mWaitForDataMonitor);
+  lock.NotifyAll();
 }
 
 NS_IMPL_CYCLE_COLLECTION_INHERITED(MediaSource, DOMEventTargetHelper,

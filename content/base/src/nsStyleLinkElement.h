@@ -14,11 +14,11 @@
 #define nsStyleLinkElement_h___
 
 #include "mozilla/Attributes.h"
+#include "mozilla/CORSMode.h"
+#include "mozilla/CSSStyleSheet.h"
 #include "nsCOMPtr.h"
 #include "nsIStyleSheetLinkingElement.h"
-#include "nsCSSStyleSheet.h"
 #include "nsTArray.h"
-#include "mozilla/CORSMode.h"
 
 class nsIDocument;
 class nsIURI;
@@ -37,11 +37,11 @@ public:
 
   NS_IMETHOD QueryInterface(REFNSIID aIID, void** aInstancePtr) MOZ_OVERRIDE = 0;
 
-  nsCSSStyleSheet* GetSheet() const { return mStyleSheet; }
+  mozilla::CSSStyleSheet* GetSheet() const { return mStyleSheet; }
 
   // nsIStyleSheetLinkingElement  
-  NS_IMETHOD SetStyleSheet(nsCSSStyleSheet* aStyleSheet) MOZ_OVERRIDE;
-  NS_IMETHOD GetStyleSheet(nsIStyleSheet*& aStyleSheet) MOZ_OVERRIDE;
+  NS_IMETHOD SetStyleSheet(mozilla::CSSStyleSheet* aStyleSheet) MOZ_OVERRIDE;
+  NS_IMETHOD_(mozilla::CSSStyleSheet*) GetStyleSheet() MOZ_OVERRIDE;
   NS_IMETHOD InitStyleLinkElement(bool aDontLoadStyle) MOZ_OVERRIDE;
   NS_IMETHOD UpdateStyleSheet(nsICSSLoaderObserver* aObserver,
                               bool* aWillNotify,
@@ -61,9 +61,14 @@ public:
     eHTMLIMPORT =   0x00000020
   };
 
-  // The return value is a bitwise or of 0 or more RelValues
-  static uint32_t ParseLinkTypes(const nsAString& aTypes);
+  // The return value is a bitwise or of 0 or more RelValues.
+  // aPrincipal is used to check if HTML imports is enabled for the
+  // provided principal.
+  static uint32_t ParseLinkTypes(const nsAString& aTypes,
+                                 nsIPrincipal* aPrincipal);
 
+  static bool IsImportEnabled(nsIPrincipal* aPrincipal);
+  
   void UpdateStyleSheetInternal()
   {
     UpdateStyleSheetInternal(nullptr, nullptr);
@@ -120,7 +125,7 @@ private:
                               bool* aIsAlternate,
                               bool aForceUpdate);
 
-  nsRefPtr<nsCSSStyleSheet> mStyleSheet;
+  nsRefPtr<mozilla::CSSStyleSheet> mStyleSheet;
 protected:
   bool mDontLoadStyle;
   bool mUpdatesEnabled;

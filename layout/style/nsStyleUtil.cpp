@@ -13,6 +13,7 @@
 #include "nsIContentPolicy.h"
 #include "nsIContentSecurityPolicy.h"
 #include "nsIURI.h"
+#include "nsPrintfCString.h"
 
 using namespace mozilla;
 
@@ -142,6 +143,60 @@ nsStyleUtil::AppendEscapedCSSIdent(const nsAString& aIdent, nsAString& aReturn)
   }
   return true;
 }
+
+// unquoted family names must be a sequence of idents
+// so escape any parts that require escaping
+static void
+AppendUnquotedFamilyName(const nsAString& aFamilyName, nsAString& aResult)
+{
+  const char16_t *p, *p_end;
+  aFamilyName.BeginReading(p);
+  aFamilyName.EndReading(p_end);
+
+   bool moreThanOne = false;
+   while (p < p_end) {
+     const char16_t* identStart = p;
+     while (++p != p_end && *p != ' ')
+       /* nothing */ ;
+
+     nsDependentSubstring ident(identStart, p);
+     if (!ident.IsEmpty()) {
+       if (moreThanOne) {
+         aResult.Append(' ');
+       }
+       nsStyleUtil::AppendEscapedCSSIdent(ident, aResult);
+       moreThanOne = true;
+     }
+
+     ++p;
+  }
+}
+
+/* static */ void
+nsStyleUtil::AppendEscapedCSSFontFamilyList(
+  const mozilla::FontFamilyList& aFamilyList,
+  nsAString& aResult)
+{
+  const nsTArray<FontFamilyName>& fontlist = aFamilyList.GetFontlist();
+  size_t i, len = fontlist.Length();
+  for (i = 0; i < len; i++) {
+    if (i != 0) {
+      aResult.Append(',');
+    }
+    const FontFamilyName& name = fontlist[i];
+    switch (name.mType) {
+      case eFamily_named:
+        AppendUnquotedFamilyName(name.mName, aResult);
+        break;
+      case eFamily_named_quoted:
+        AppendEscapedCSSString(name.mName, aResult);
+        break;
+      default:
+        name.AppendToString(aResult);
+    }
+  }
+}
+
 
 /* static */ void
 nsStyleUtil::AppendBitmaskCSSValue(nsCSSProperty aProperty,
@@ -405,6 +460,51 @@ nsStyleUtil::ComputeFunctionalAlternates(const nsCSSValueList* aList,
       aAlternateValues.AppendElement(v);
     }
   }
+}
+
+// print all characters with at least four hex digits
+static void
+AppendSerializedUnicodePoint(uint32_t aCode, nsACString& aBuf)
+{
+  aBuf.Append(nsPrintfCString("%04X", aCode));
+}
+
+// A unicode-range: descriptor is represented as an array of integers,
+// to be interpreted as a sequence of pairs: min max min max ...
+// It is in source order.  (Possibly it should be sorted and overlaps
+// consolidated, but right now we don't do that.)
+/* static */ void
+nsStyleUtil::AppendUnicodeRange(const nsCSSValue& aValue, nsAString& aResult)
+{
+  NS_PRECONDITION(aValue.GetUnit() == eCSSUnit_Null ||
+                  aValue.GetUnit() == eCSSUnit_Array,
+                  "improper value unit for unicode-range:");
+  aResult.Truncate();
+  if (aValue.GetUnit() != eCSSUnit_Array)
+    return;
+
+  nsCSSValue::Array const & sources = *aValue.GetArrayValue();
+  nsAutoCString buf;
+
+  NS_ABORT_IF_FALSE(sources.Count() % 2 == 0,
+                    "odd number of entries in a unicode-range: array");
+
+  for (uint32_t i = 0; i < sources.Count(); i += 2) {
+    uint32_t min = sources[i].GetIntValue();
+    uint32_t max = sources[i+1].GetIntValue();
+
+    // We don't try to replicate the U+XX?? notation.
+    buf.AppendLiteral("U+");
+    AppendSerializedUnicodePoint(min, buf);
+
+    if (min != max) {
+      buf.Append('-');
+      AppendSerializedUnicodePoint(max, buf);
+    }
+    buf.AppendLiteral(", ");
+  }
+  buf.Truncate(buf.Length() - 2); // remove the last comma-space
+  CopyASCIItoUTF16(buf, aResult);
 }
 
 /* static */ float

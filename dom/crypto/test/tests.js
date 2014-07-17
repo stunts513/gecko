@@ -154,7 +154,7 @@ TestArray.addTest(
   "Import / export round-trip with 'pkcs8'",
   function() {
     var that = this;
-    var alg = { name: "RSASSA-PKCS1-v1_5", hash: "SHA1" };
+    var alg = { name: "RSASSA-PKCS1-v1_5", hash: "SHA-1" };
 
     function doExport(x) {
       if (!hasKeyFields(x)) {
@@ -186,7 +186,7 @@ TestArray.addTest(
   "Import failure with format 'pkcs8'",
   function() {
     var that = this;
-    var alg = { name: "RSASSA-PKCS1-v1_5", hash: "SHA1" };
+    var alg = { name: "RSASSA-PKCS1-v1_5", hash: "SHA-1" };
 
     crypto.subtle.importKey("pkcs8", tv.negative_pkcs8, alg, true, ["encrypt"])
       .then(error(that), complete(that));
@@ -311,6 +311,77 @@ TestArray.addTest(
 
 // -----------------------------------------------------------------------------
 TestArray.addTest(
+  "Generate a 256-bit HMAC-SHA-256 key",
+  function() {
+    var that = this;
+    var alg = { name: "HMAC", length: 256, hash: {name: "SHA-256"} };
+    crypto.subtle.generateKey(alg, true, ["sign", "verify"]).then(
+      complete(that, function(x) {
+        return hasKeyFields(x) && x.algorithm.length == 256;
+      }),
+      error(that)
+    );
+  }
+);
+
+// -----------------------------------------------------------------------------
+TestArray.addTest(
+  "Generate a 256-bit HMAC-SHA-256 key without specifying a key length",
+  function() {
+    var that = this;
+    var alg = { name: "HMAC", hash: {name: "SHA-256"} };
+    crypto.subtle.generateKey(alg, true, ["sign", "verify"]).then(
+      complete(that, function(x) {
+        return hasKeyFields(x) && x.algorithm.length == 512;
+      }),
+      error(that)
+    );
+  }
+);
+
+// -----------------------------------------------------------------------------
+TestArray.addTest(
+  "Generate a 256-bit HMAC-SHA-512 key without specifying a key length",
+  function() {
+    var that = this;
+    var alg = { name: "HMAC", hash: {name: "SHA-512"} };
+    crypto.subtle.generateKey(alg, true, ["sign", "verify"]).then(
+      complete(that, function(x) {
+        return hasKeyFields(x) && x.algorithm.length == 1024;
+      }),
+      error(that)
+    );
+  }
+);
+
+// -----------------------------------------------------------------------------
+TestArray.addTest(
+  "Fail generating an HMAC key when specifying an invalid hash algorithm",
+  function() {
+    var that = this;
+    var alg = { name: "HMAC", hash: {name: "SHA-123"} };
+    crypto.subtle.generateKey(alg, true, ["sign", "verify"]).then(
+      error(that),
+      complete(that, function() { return true; })
+    );
+  }
+);
+
+// -----------------------------------------------------------------------------
+TestArray.addTest(
+  "Fail generating an HMAC key when specifying a zero length",
+  function() {
+    var that = this;
+    var alg = { name: "HMAC", hash: {name: "SHA-256"}, length: 0 };
+    crypto.subtle.generateKey(alg, true, ["sign", "verify"]).then(
+      error(that),
+      complete(that, function() { return true; })
+    );
+  }
+);
+
+// -----------------------------------------------------------------------------
+TestArray.addTest(
   "Generate a 192-bit AES key",
   function() {
     var that = this;
@@ -353,6 +424,22 @@ TestArray.addTest(
       }),
       error(that)
     );
+  }
+);
+
+// -----------------------------------------------------------------------------
+TestArray.addTest(
+  "Fail cleanly when NSS refuses to generate a key pair",
+  function() {
+    var that = this;
+    var alg = {
+      name: "RSAES-PKCS1-v1_5",
+      modulusLength: 2299, // NSS does not like this key length
+      publicExponent: new Uint8Array([0x01, 0x00, 0x01])
+    };
+
+    crypto.subtle.generateKey(alg, false, ["encrypt"])
+      .then( error(that), complete(that) );
   }
 );
 
@@ -404,6 +491,36 @@ TestArray.addTest(
 
 // -----------------------------------------------------------------------------
 TestArray.addTest(
+  "AES-CBC encrypt with wrong IV size",
+  function () {
+    var that = this;
+
+    function encrypt(x, iv) {
+      console.log(x);
+      return crypto.subtle.encrypt(
+        { name: "AES-CBC", iv: iv },
+        x, tv.aes_cbc_enc.data);
+    }
+
+    function doEncrypt(x) {
+      return encrypt(x, new Uint8Array(15))
+        .then(
+          null,
+          function () { return encrypt(new Uint8Array(17)); }
+        );
+    }
+
+    crypto.subtle.importKey("raw", tv.aes_cbc_enc.key, "AES-CBC", false, ['encrypt'])
+      .then(doEncrypt)
+      .then(
+        error(that),
+        complete(that)
+      );
+  }
+);
+
+// -----------------------------------------------------------------------------
+TestArray.addTest(
   "AES-CBC decrypt",
   function () {
     var that = this;
@@ -419,6 +536,35 @@ TestArray.addTest(
       .then(
         memcmp_complete(that, tv.aes_cbc_dec.result),
         error(that)
+      );
+  }
+);
+
+// -----------------------------------------------------------------------------
+TestArray.addTest(
+  "AES-CBC decrypt with wrong IV size",
+  function () {
+    var that = this;
+
+    function decrypt(x, iv) {
+      return crypto.subtle.decrypt(
+        { name: "AES-CBC", iv: iv },
+        x, tv.aes_cbc_dec.data);
+    }
+
+    function doDecrypt(x) {
+      return decrypt(x, new Uint8Array(15))
+        .then(
+          null,
+          function () { return decrypt(x, new Uint8Array(17)); }
+        );
+    }
+
+    crypto.subtle.importKey("raw", tv.aes_cbc_dec.key, "AES-CBC", false, ['decrypt'])
+      .then(doDecrypt)
+      .then(
+        error(that),
+        complete(that)
       );
   }
 );
@@ -446,6 +592,35 @@ TestArray.addTest(
 
 // -----------------------------------------------------------------------------
 TestArray.addTest(
+  "AES-CTR encryption with wrong IV size",
+  function () {
+    var that = this;
+
+    function encrypt(x, iv) {
+      return crypto.subtle.encrypt(
+        { name: "AES-CTR", counter: iv, length: 32 },
+        x, tv.aes_ctr_enc.data);
+    }
+
+    function doEncrypt(x) {
+      return encrypt(x, new Uint8Array(15))
+        .then(
+          null,
+          function () { return encrypt(x, new Uint8Array(17)); }
+        );
+    }
+
+    crypto.subtle.importKey("raw", tv.aes_ctr_enc.key, "AES-CTR", false, ['encrypt'])
+      .then(doEncrypt)
+      .then(
+        error(that),
+        complete(that)
+      );
+  }
+);
+
+// -----------------------------------------------------------------------------
+TestArray.addTest(
   "AES-CTR decryption",
   function () {
     var that = this;
@@ -461,6 +636,35 @@ TestArray.addTest(
       .then(
         memcmp_complete(that, tv.aes_ctr_dec.result),
         error(that)
+      );
+  }
+);
+
+// -----------------------------------------------------------------------------
+TestArray.addTest(
+  "AES-CTR decryption with wrong IV size",
+  function () {
+    var that = this;
+
+    function doDecrypt(x, iv) {
+      return crypto.subtle.decrypt(
+        { name: "AES-CTR", counter: iv, length: 32 },
+        x, tv.aes_ctr_dec.data);
+    }
+
+    function decrypt(x) {
+      return decrypt(x, new Uint8Array(15))
+        .then(
+          null,
+          function () { return decrypt(x, new Uint8Array(17)); }
+        );
+    }
+
+    crypto.subtle.importKey("raw", tv.aes_ctr_dec.key, "AES-CTR", false, ['decrypt'])
+      .then(doDecrypt)
+      .then(
+        error(that),
+        complete(that)
       );
   }
 );
@@ -814,4 +1018,259 @@ TestArray.addTest(
   }
 );
 
+// -----------------------------------------------------------------------------
+TestArray.addTest(
+  "Import raw PBKDF2 key",
+  function() {
+    var that = this;
+    var alg = "PBKDF2";
+    var key = new TextEncoder("utf-8").encode("password");
+
+    crypto.subtle.importKey("raw", key, alg, false, ["deriveKey"]).then(
+      complete(that, hasKeyFields),
+      error(that)
+    );
+  }
+);
+
+// -----------------------------------------------------------------------------
+TestArray.addTest(
+  "Import raw PBKDF2 key and derive bits using HMAC-SHA-1",
+  function() {
+    var that = this;
+    var alg = "PBKDF2";
+    var key = tv.pbkdf2_sha1.password;
+
+    function doDerive(x) {
+      console.log("deriving");
+      if (!hasKeyFields(x)) {
+        throw "Invalid key; missing field(s)";
+      }
+
+      var alg = {
+        name: "PBKDF2",
+        hash: "SHA-1",
+        salt: tv.pbkdf2_sha1.salt,
+        iterations: tv.pbkdf2_sha1.iterations
+      };
+      return crypto.subtle.deriveBits(alg, x, tv.pbkdf2_sha1.length);
+    }
+    function fail(x) { console.log("failing"); error(that)(x); }
+
+    crypto.subtle.importKey("raw", key, alg, false, ["deriveKey"])
+      .then( doDerive, fail )
+      .then( memcmp_complete(that, tv.pbkdf2_sha1.derived), fail );
+  }
+);
+
+// -----------------------------------------------------------------------------
+TestArray.addTest(
+  "Import raw PBKDF2 key and derive a new key using HMAC-SHA-1",
+  function() {
+    var that = this;
+    var alg = "PBKDF2";
+    var key = tv.pbkdf2_sha1.password;
+
+    function doDerive(x) {
+      console.log("deriving");
+      if (!hasKeyFields(x)) {
+        throw "Invalid key; missing field(s)";
+      }
+
+      var alg = {
+        name: "PBKDF2",
+        hash: "SHA-1",
+        salt: tv.pbkdf2_sha1.salt,
+        iterations: tv.pbkdf2_sha1.iterations
+      };
+
+      var algDerived = {
+        name: "HMAC",
+        hash: {name: "SHA-1"}
+      };
+
+      return crypto.subtle.deriveKey(alg, x, algDerived, false, ["sign", "verify"])
+        .then(function (x) {
+          if (!hasKeyFields(x)) {
+            throw "Invalid key; missing field(s)";
+          }
+
+          if (x.algorithm.length != 512) {
+            throw "Invalid key; incorrect length";
+          }
+
+          return x;
+        });
+    }
+
+    function doSignAndVerify(x) {
+      var data = new Uint8Array(1024);
+
+      return crypto.subtle.sign("HMAC", x, data)
+        .then(function (sig) {
+          return crypto.subtle.verify("HMAC", x, sig, data);
+        });
+    }
+
+    function fail(x) { console.log("failing"); error(that)(x); }
+
+    crypto.subtle.importKey("raw", key, alg, false, ["deriveKey"])
+      .then( doDerive, fail )
+      .then( doSignAndVerify, fail )
+      .then( complete(that), fail );
+  }
+);
+
+// -----------------------------------------------------------------------------
+/*TestArray.addTest(
+  "Import raw PBKDF2 key and derive bits using HMAC-SHA-256",
+  function() {
+    var that = this;
+    var alg = "PBKDF2";
+    var key = tv.pbkdf2_sha256.password;
+
+    function doDerive(x) {
+      console.log("deriving");
+      if (!hasKeyFields(x)) {
+        throw "Invalid key; missing field(s)";
+      }
+
+      var alg = {
+        name: "PBKDF2",
+        hash: "SHA-256",
+        salt: tv.pbkdf2_sha256.salt,
+        iterations: tv.pbkdf2_sha256.iterations
+      };
+      return crypto.subtle.deriveBits(alg, x, tv.pbkdf2_sha256.length);
+    }
+    function fail(x) { console.log("failing"); error(that)(x); }
+
+    crypto.subtle.importKey("raw", key, alg, false, ["deriveKey"])
+      .then( doDerive, fail )
+      .then( memcmp_complete(that, tv.pbkdf2_sha256.derived), fail );
+  }
+);*/
+
+// -----------------------------------------------------------------------------
+TestArray.addTest(
+  "RSA-OAEP encrypt/decrypt round-trip",
+  function () {
+    var that = this;
+    var privKey, pubKey;
+    var alg = {name: "RSA-OAEP", hash: "SHA-1"};
+
+    var privKey, pubKey;
+    function setPriv(x) { privKey = x; }
+    function setPub(x) { pubKey = x; }
+    function doEncrypt() {
+      return crypto.subtle.encrypt(alg, pubKey, tv.rsaoaep.data);
+    }
+    function doDecrypt(x) {
+      return crypto.subtle.decrypt(alg, privKey, x);
+    }
+
+    Promise.all([
+      crypto.subtle.importKey("pkcs8", tv.rsaoaep.pkcs8, alg, false, ['decrypt'])
+          .then(setPriv, error(that)),
+      crypto.subtle.importKey("spki", tv.rsaoaep.spki, alg, false, ['encrypt'])
+          .then(setPub, error(that))
+    ]).then(doEncrypt, error(that))
+      .then(doDecrypt, error(that))
+      .then(
+        memcmp_complete(that, tv.rsaoaep.data),
+        error(that)
+      );
+  }
+);
+
+// -----------------------------------------------------------------------------
+TestArray.addTest(
+  "RSA-OAEP key generation and encrypt/decrypt round-trip (SHA-256)",
+  function () {
+    var that = this;
+    var alg = {
+      name: "RSA-OAEP",
+      hash: "SHA-256",
+      modulusLength: 2048,
+      publicExponent: new Uint8Array([0x01, 0x00, 0x01])
+    };
+
+    var privKey, pubKey, data = crypto.getRandomValues(new Uint8Array(128));
+    function setKey(x) { pubKey = x.publicKey; privKey = x.privateKey; }
+    function doEncrypt() {
+      return crypto.subtle.encrypt(alg, pubKey, data);
+    }
+    function doDecrypt(x) {
+      return crypto.subtle.decrypt(alg, privKey, x);
+    }
+
+    crypto.subtle.generateKey(alg, false, ['encrypt', 'decrypt'])
+      .then(setKey, error(that))
+      .then(doEncrypt, error(that))
+      .then(doDecrypt, error(that))
+      .then(
+        memcmp_complete(that, data),
+        error(that)
+      );
+  }
+);
+
+// -----------------------------------------------------------------------------
+TestArray.addTest(
+  "RSA-OAEP decryption known answer",
+  function () {
+    var that = this;
+    var alg = {name: "RSA-OAEP", hash: "SHA-1"};
+
+    function doDecrypt(x) {
+      return crypto.subtle.decrypt(alg, x, tv.rsaoaep.result);
+    }
+    function fail() { error(that); }
+
+    crypto.subtle.importKey("pkcs8", tv.rsaoaep.pkcs8, alg, false, ['decrypt'])
+      .then( doDecrypt, fail )
+      .then( memcmp_complete(that, tv.rsaoaep.data), fail );
+  }
+);
+
+// -----------------------------------------------------------------------------
+TestArray.addTest(
+  "RSA-OAEP input data length checks (2048-bit key)",
+  function () {
+    var that = this;
+    var privKey, pubKey;
+    var alg = {
+      name: "RSA-OAEP",
+      hash: "SHA-1",
+      modulusLength: 2048,
+      publicExponent: new Uint8Array([0x01, 0x00, 0x01])
+    };
+
+    var privKey, pubKey;
+    function setKey(x) { pubKey = x.publicKey; privKey = x.privateKey; }
+    function doEncrypt(n) {
+      return function () {
+        return crypto.subtle.encrypt(alg, pubKey, new Uint8Array(n));
+      }
+    }
+
+    crypto.subtle.generateKey(alg, false, ['encrypt'])
+      .then(setKey, error(that))
+      .then(doEncrypt(214), error(that))
+      .then(doEncrypt(215), error(that))
+      .then(error(that), complete(that));
+  }
+);
+
+// -----------------------------------------------------------------------------
+TestArray.addTest(
+  "RSA-OAEP key import with invalid hash",
+  function () {
+    var that = this;
+    var alg = {name: "RSA-OAEP", hash: "SHA-123"};
+
+    crypto.subtle.importKey("pkcs8", tv.rsaoaep.pkcs8, alg, false, ['decrypt'])
+      .then(error(that), complete(that));
+  }
+);
 

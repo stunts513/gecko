@@ -14,7 +14,6 @@
 #include "X11/Xlib.h"
 #endif
 
-class gfxImageSurface;
 class gfxFontconfigUtils;
 class QWindow;
 
@@ -28,9 +27,6 @@ public:
     }
 
     virtual already_AddRefed<gfxASurface>
-    OptimizeImage(gfxImageSurface *aSurface,
-                  gfxImageFormat format) MOZ_OVERRIDE;
-    virtual already_AddRefed<gfxASurface>
       CreateOffscreenSurface(const IntSize& size,
                              gfxContentType contentType) MOZ_OVERRIDE;
 
@@ -43,13 +39,9 @@ public:
 
     virtual nsresult UpdateFontList() MOZ_OVERRIDE;
 
-    virtual nsresult ResolveFontName(const nsAString& aFontName,
-                                     FontResolverCallback aCallback,
-                                     void *aClosure, bool& aAborted) MOZ_OVERRIDE;
-
     virtual nsresult GetStandardFamilyName(const nsAString& aFontName, nsAString& aFamilyName) MOZ_OVERRIDE;
 
-    virtual gfxFontGroup *CreateFontGroup(const nsAString &aFamilies,
+    virtual gfxFontGroup *CreateFontGroup(const mozilla::FontFamilyList& aFontFamilyList,
                                           const gfxFontStyle *aStyle,
                                           gfxUserFontSet* aUserFontSet) MOZ_OVERRIDE;
 
@@ -86,8 +78,6 @@ public:
 #endif
 
     virtual int GetScreenDepth() const MOZ_OVERRIDE;
-
-    virtual bool SupportsOffMainThreadCompositing() MOZ_OVERRIDE;
 
 protected:
     static gfxFontconfigUtils *sFontconfigUtils;

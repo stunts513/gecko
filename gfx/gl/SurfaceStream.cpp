@@ -8,11 +8,10 @@
 #include "gfxPoint.h"
 #include "SharedSurface.h"
 #include "SharedSurfaceGL.h"
-#include "SurfaceFactory.h"
 #include "GeckoProfiler.h"
 
 namespace mozilla {
-namespace gfx {
+namespace gl {
 
 SurfaceStreamType
 SurfaceStream::ChooseGLStreamType(SurfaceStream::OMTC omtc,
@@ -61,15 +60,15 @@ bool
 SurfaceStream_TripleBuffer::CopySurfaceToProducer(SharedSurface* src, SurfaceFactory* factory)
 {
     if (!mProducer) {
-        New(factory, src->Size(), mProducer);
+        New(factory, src->mSize, mProducer);
         if (!mProducer) {
             return false;
         }
     }
 
-    MOZ_ASSERT(src->Size() == mProducer->Size(), "Size mismatch");
+    MOZ_ASSERT(src->mSize == mProducer->mSize, "Size mismatch");
 
-    SharedSurface::Copy(src, mProducer, factory);
+    SharedSurface::ProdCopy(src, mProducer, factory);
     return true;
 }
 
@@ -254,12 +253,12 @@ SurfaceStream_SingleBuffer::SwapProducer(SurfaceFactory* factory,
 
         // Size mismatch means we need to squirrel the current Prod
         // into Cons, and leave Prod empty, so it gets a new surface below.
-        bool needsNewBuffer = mProducer->Size() != size;
+        bool needsNewBuffer = mProducer->mSize != size;
 
         // Even if we're the right size, if the type has changed, and we don't
         // need to preserve, we should switch out for (presumedly) better perf.
-        if (mProducer->Type() != factory->Type() &&
-            !factory->Caps().preserve)
+        if (mProducer->mType != factory->mType &&
+            !factory->mCaps.preserve)
         {
             needsNewBuffer = true;
         }
@@ -350,9 +349,9 @@ SurfaceStream_TripleBuffer_Copy::SwapProducer(SurfaceFactory* factory,
         mStaging->Fence();
 
         New(factory, size, mProducer);
-        
-        if (mProducer && mStaging->Size() == mProducer->Size())
-            SharedSurface::Copy(mStaging, mProducer, factory);
+
+        if (mProducer && mStaging->mSize == mProducer->mSize)
+            SharedSurface::ProdCopy(mStaging, mProducer, factory);
     } else {
         New(factory, size, mProducer);
     }
@@ -430,7 +429,8 @@ SharedSurface*
 SurfaceStream_TripleBuffer::SwapProducer(SurfaceFactory* factory,
                                          const gfx::IntSize& size)
 {
-    PROFILER_LABEL("SurfaceStream_TripleBuffer", "SwapProducer");
+    PROFILER_LABEL("SurfaceStream_TripleBuffer", "SwapProducer",
+        js::ProfileEntry::Category::GRAPHICS);
 
     MonitorAutoLock lock(mMonitor);
     if (mProducer) {
@@ -480,7 +480,8 @@ SurfaceStream_TripleBuffer_Async::~SurfaceStream_TripleBuffer_Async()
 void
 SurfaceStream_TripleBuffer_Async::WaitForCompositor()
 {
-    PROFILER_LABEL("SurfaceStream_TripleBuffer_Async", "WaitForCompositor");
+    PROFILER_LABEL("SurfaceStream_TripleBuffer_Async", "WaitForCompositor",
+        js::ProfileEntry::Category::GRAPHICS);
 
     // If we haven't be notified within 100ms, then
     // something must have happened and it will never arrive.

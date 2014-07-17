@@ -68,6 +68,7 @@ nsHttpConnection::nsHttpConnection()
     , mProxyConnectInProgress(false)
     , mExperienced(false)
     , mInSpdyTunnel(false)
+    , mForcePlainText(false)
     , mHttp1xTransactionCount(0)
     , mRemainingConnectionUses(0xffffffff)
     , mClassification(nsAHttpTransaction::CLASS_GENERAL)
@@ -417,7 +418,8 @@ nsHttpConnection::Activate(nsAHttpTransaction *trans, uint32_t caps, int32_t pri
     // The overflow state is not needed between activations
     mInputOverflow = nullptr;
 
-    mResponseTimeoutEnabled = mTransaction->ResponseTimeout() > 0 &&
+    mResponseTimeoutEnabled = gHttpHandler->ResponseTimeoutEnabled() &&
+                              mTransaction->ResponseTimeout() > 0 &&
                               mTransaction->ResponseTimeoutEnabled();
 
     rv = StartShortLivedTCPKeepalives();
@@ -459,7 +461,7 @@ nsHttpConnection::SetupSSL()
     // of this function
     mNPNComplete = true;
 
-    if (!mConnInfo->FirstHopSSL()) {
+    if (!mConnInfo->FirstHopSSL() || mForcePlainText) {
         return;
     }
 
@@ -1110,6 +1112,9 @@ nsHttpConnection::ReadTimeoutTick(PRIntervalTime now)
     uint32_t nextTickAfter = UINT32_MAX;
     // Timeout if the response is taking too long to arrive.
     if (mResponseTimeoutEnabled) {
+        NS_WARN_IF_FALSE(gHttpHandler->ResponseTimeoutEnabled(),
+                         "Timing out a response, but response timeout is disabled!");
+
         PRIntervalTime initialResponseDelta = now - mLastWriteTime;
 
         if (initialResponseDelta > mTransaction->ResponseTimeout()) {
@@ -1759,14 +1764,11 @@ nsHttpConnection::MakeConnectString(nsAHttpTransaction *trans,
     request->SetHeader(nsHttp::Proxy_Connection, NS_LITERAL_CSTRING("keep-alive"));
     request->SetHeader(nsHttp::Connection, NS_LITERAL_CSTRING("keep-alive"));
 
-    const char *val = trans->RequestHead()->PeekHeader(nsHttp::Host);
-    if (val) {
-        // all HTTP/1.1 requests must include a Host header (even though it
-        // may seem redundant in this case; see bug 82388).
-        request->SetHeader(nsHttp::Host, nsDependentCString(val));
-    }
+    // all HTTP/1.1 requests must include a Host header (even though it
+    // may seem redundant in this case; see bug 82388).
+    request->SetHeader(nsHttp::Host, result);
 
-    val = trans->RequestHead()->PeekHeader(nsHttp::Proxy_Authorization);
+    const char *val = trans->RequestHead()->PeekHeader(nsHttp::Proxy_Authorization);
     if (val) {
         // we don't know for sure if this authorization is intended for the
         // SSL proxy, so we add it just in case.

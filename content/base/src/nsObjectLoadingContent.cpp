@@ -390,6 +390,9 @@ public:
   // nsITimerCallback
   NS_IMETHOD Notify(nsITimer *timer);
 
+protected:
+  virtual ~nsStopPluginRunnable() {}
+
 private:
   nsCOMPtr<nsITimer> mTimer;
   nsRefPtr<nsPluginInstanceOwner> mInstanceOwner;
@@ -920,7 +923,8 @@ NS_IMETHODIMP
 nsObjectLoadingContent::OnStartRequest(nsIRequest *aRequest,
                                        nsISupports *aContext)
 {
-  PROFILER_LABEL("nsObjectLoadingContent", "OnStartRequest");
+  PROFILER_LABEL("nsObjectLoadingContent", "OnStartRequest",
+    js::ProfileEntry::Category::NETWORK);
 
   LOG(("OBJLC [%p]: Channel OnStartRequest", this));
 
@@ -982,6 +986,9 @@ nsObjectLoadingContent::OnStopRequest(nsIRequest *aRequest,
                                       nsISupports *aContext,
                                       nsresult aStatusCode)
 {
+  PROFILER_LABEL("nsObjectLoadingContent", "OnStopRequest",
+    js::ProfileEntry::Category::NETWORK);
+
   NS_ENSURE_TRUE(nsContentUtils::IsCallerChrome(), NS_ERROR_NOT_AVAILABLE);
 
   if (aRequest != mChannel) {
@@ -1155,6 +1162,7 @@ public:
   {}
 
 protected:
+  ~ObjectInterfaceRequestorShim() {}
   nsCOMPtr<nsIObjectLoadingContent> mContent;
 };
 
@@ -2359,18 +2367,11 @@ nsObjectLoadingContent::OpenChannel()
 
   // Set up the channel's principal and such, like nsDocShell::DoURILoad does.
   // If the content being loaded should be sandboxed with respect to origin we
-  // create a new null principal here. nsContentUtils::SetUpChannelOwner is
-  // used with a flag to force it to be set as the channel owner.
-  nsCOMPtr<nsIPrincipal> ownerPrincipal;
-  uint32_t sandboxFlags = doc->GetSandboxFlags();
-  if (sandboxFlags & SANDBOXED_ORIGIN) {
-    ownerPrincipal = do_CreateInstance("@mozilla.org/nullprincipal;1");
-  } else {
-    // Not sandboxed - we allow the content to assume its natural owner.
-    ownerPrincipal = thisContent->NodePrincipal();
-  }
-  nsContentUtils::SetUpChannelOwner(ownerPrincipal, chan, mURI, true,
-                                    sandboxFlags & SANDBOXED_ORIGIN);
+  // tell SetUpChannelOwner that.
+  nsContentUtils::SetUpChannelOwner(thisContent->NodePrincipal(), chan, mURI,
+                                    true,
+                                    doc->GetSandboxFlags() & SANDBOXED_ORIGIN,
+                                    false);
 
   nsCOMPtr<nsIScriptChannel> scriptChannel = do_QueryInterface(chan);
   if (scriptChannel) {
@@ -2445,7 +2446,7 @@ nsObjectLoadingContent::UnloadObject(bool aResetState)
 
   mScriptRequested = false;
 
-  if (!mInstanceOwner) {
+  if (mIsStopping) {
     // The protochain is normally thrown out after a plugin stops, but if we
     // re-enter while stopping a plugin and try to load something new, we need
     // to throw away the old protochain in the nested unload.
@@ -2646,7 +2647,7 @@ nsObjectLoadingContent::ScriptRequestPluginInstance(JSContext* aCx,
   MOZ_ASSERT_IF(nsContentUtils::GetCurrentJSContext(),
                 aCx == nsContentUtils::GetCurrentJSContext());
   bool callerIsContentJS = (!nsContentUtils::IsCallerChrome() &&
-                            !nsContentUtils::IsCallerXBL() &&
+                            !nsContentUtils::IsCallerContentXBL() &&
                             js::IsContextRunningJS(aCx));
 
   nsCOMPtr<nsIContent> thisContent =
@@ -3200,10 +3201,11 @@ nsObjectLoadingContent::GetContentDocument()
   return sub_doc;
 }
 
-JS::Value
+void
 nsObjectLoadingContent::LegacyCall(JSContext* aCx,
                                    JS::Handle<JS::Value> aThisVal,
                                    const Sequence<JS::Value>& aArguments,
+                                   JS::MutableHandle<JS::Value> aRetval,
                                    ErrorResult& aRv)
 {
   nsCOMPtr<nsIContent> thisContent =
@@ -3217,12 +3219,12 @@ nsObjectLoadingContent::LegacyCall(JSContext* aCx,
   // this is not an Xray situation by hand.
   if (!JS_WrapObject(aCx, &obj)) {
     aRv.Throw(NS_ERROR_UNEXPECTED);
-    return JS::UndefinedValue();
+    return;
   }
 
   if (nsDOMClassInfo::ObjectIsNativeWrapper(aCx, obj)) {
     aRv.Throw(NS_ERROR_NOT_AVAILABLE);
-    return JS::UndefinedValue();
+    return;
   }
 
   obj = thisContent->GetWrapper();
@@ -3231,33 +3233,33 @@ nsObjectLoadingContent::LegacyCall(JSContext* aCx,
   JS::AutoValueVector args(aCx);
   if (!args.append(aArguments.Elements(), aArguments.Length())) {
     aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
-    return JS::UndefinedValue();
+    return;
   }
 
   for (size_t i = 0; i < args.length(); i++) {
     if (!JS_WrapValue(aCx, args[i])) {
       aRv.Throw(NS_ERROR_UNEXPECTED);
-      return JS::UndefinedValue();
+      return;
     }
   }
 
   JS::Rooted<JS::Value> thisVal(aCx, aThisVal);
   if (!JS_WrapValue(aCx, &thisVal)) {
     aRv.Throw(NS_ERROR_UNEXPECTED);
-    return JS::UndefinedValue();
+    return;
   }
 
   nsRefPtr<nsNPAPIPluginInstance> pi;
   nsresult rv = ScriptRequestPluginInstance(aCx, getter_AddRefs(pi));
   if (NS_FAILED(rv)) {
     aRv.Throw(rv);
-    return JS::UndefinedValue();
+    return;
   }
 
   // if there's no plugin around for this object, throw.
   if (!pi) {
     aRv.Throw(NS_ERROR_NOT_AVAILABLE);
-    return JS::UndefinedValue();
+    return;
   }
 
   JS::Rooted<JSObject*> pi_obj(aCx);
@@ -3266,23 +3268,21 @@ nsObjectLoadingContent::LegacyCall(JSContext* aCx,
   rv = GetPluginJSObject(aCx, obj, pi, &pi_obj, &pi_proto);
   if (NS_FAILED(rv)) {
     aRv.Throw(rv);
-    return JS::UndefinedValue();
+    return;
   }
 
   if (!pi_obj) {
     aRv.Throw(NS_ERROR_NOT_AVAILABLE);
-    return JS::UndefinedValue();
+    return;
   }
 
-  JS::Rooted<JS::Value> retval(aCx);
-  bool ok = JS::Call(aCx, thisVal, pi_obj, args, &retval);
+  bool ok = JS::Call(aCx, thisVal, pi_obj, args, aRetval);
   if (!ok) {
     aRv.Throw(NS_ERROR_FAILURE);
-    return JS::UndefinedValue();
+    return;
   }
 
   Telemetry::Accumulate(Telemetry::PLUGIN_CALLED_DIRECTLY, true);
-  return retval;
 }
 
 void
@@ -3514,6 +3514,10 @@ nsObjectLoadingContent::SetupProtoChainRunner::SetupProtoChainRunner(
     nsObjectLoadingContent* aContent)
   : mContext(scriptContext)
   , mContent(aContent)
+{
+}
+
+nsObjectLoadingContent::SetupProtoChainRunner::~SetupProtoChainRunner()
 {
 }
 

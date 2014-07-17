@@ -18,6 +18,7 @@
 #include "nsHttp.h"
 #include "nsHttpHandler.h"
 #include "nsILoadGroup.h"
+#include "nsISupportsPriority.h"
 #include "prprf.h"
 #include "SpdyPush3.h"
 #include "SpdySession3.h"
@@ -1989,11 +1990,16 @@ SpdySession3::WriteSegments(nsAHttpSegmentWriter *writer,
   if (mDownstreamState == PROCESSING_CONTROL_RST_STREAM) {
     if (mDownstreamRstReason == RST_REFUSED_STREAM)
       rv = NS_ERROR_NET_RESET;            //we can retry this 100% safely
-    else if (mDownstreamRstReason == RST_CANCEL ||
-             mDownstreamRstReason == RST_PROTOCOL_ERROR ||
+    else if (mDownstreamRstReason == RST_CANCEL) {
+      rv = mInputFrameDataStream->RecvdData() ?
+        NS_ERROR_NET_PARTIAL_TRANSFER :
+        NS_ERROR_NET_INTERRUPT;
+    }
+    else if (mDownstreamRstReason == RST_PROTOCOL_ERROR ||
              mDownstreamRstReason == RST_INTERNAL_ERROR ||
-             mDownstreamRstReason == RST_UNSUPPORTED_VERSION)
+             mDownstreamRstReason == RST_UNSUPPORTED_VERSION) {
       rv = NS_ERROR_NET_INTERRUPT;
+    }
     else if (mDownstreamRstReason == RST_FRAME_TOO_LARGE)
       rv = NS_ERROR_FILE_TOO_BIG;
     else
@@ -2521,25 +2527,30 @@ SpdySession3::DispatchOnTunnel(nsAHttpTransaction *aHttpTransaction,
   // this transaction has done its work of setting up a tunnel, let
   // the connection manager queue it if necessary
   trans->SetDontRouteViaWildCard(true);
+  trans->EnableKeepAlive();
 
   if (FindTunnelCount(ci) < gHttpHandler->MaxConnectionsPerOrigin()) {
     LOG3(("SpdySession3::DispatchOnTunnel %p create on new tunnel %s",
           this, ci->HashKey().get()));
+    // The connect transaction will hold onto the underlying http
+    // transaction so that an auth created by the connect can be mappped
+    // to the correct security callbacks
     nsRefPtr<SpdyConnectTransaction> connectTrans =
       new SpdyConnectTransaction(ci, aCallbacks,
                                  trans->Caps(), trans, this);
-    AddStream(connectTrans, trans->Priority(),
+    AddStream(connectTrans, nsISupportsPriority::PRIORITY_NORMAL,
               false, nullptr);
     SpdyStream3 *tunnel = mStreamTransactionHash.Get(connectTrans);
     MOZ_ASSERT(tunnel);
     RegisterTunnel(tunnel);
+  } else {
+    // requeue it. The connection manager is responsible for actually putting
+    // this on the tunnel connection with the specific ci now that it
+    // has DontRouteViaWildCard set.
+    LOG3(("SpdySession3::DispatchOnTunnel %p trans=%p queue in connection manager",
+          this, trans));
+    gHttpHandler->InitiateTransaction(trans, trans->Priority());
   }
-
-  // requeue it. The connection manager is responsible for actually putting
-  // this on the tunnel connection with the specific ci now that it
-  // has DontRouteViaWildCard set.
-  trans->EnableKeepAlive();
-  gHttpHandler->InitiateTransaction(trans, trans->Priority());
 }
 
 //-----------------------------------------------------------------------------

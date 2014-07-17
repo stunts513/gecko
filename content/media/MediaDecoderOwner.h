@@ -49,10 +49,7 @@ public:
   // Called by the video decoder object, on the main thread,
   // when it has read the metadata containing video dimensions,
   // etc.
-  virtual void MetadataLoaded(int aChannels,
-                              int aRate,
-                              bool aHasAudio,
-                              bool aHasVideo,
+  virtual void MetadataLoaded(const MediaInfo* aInfo,
                               const MetadataTags* aTags) = 0;
 
   // Called by the video decoder object, on the main thread,
@@ -119,6 +116,9 @@ public:
     NEXT_FRAME_UNAVAILABLE_BUFFERING,
     // The next frame of audio/video is unavailable for some other reasons
     NEXT_FRAME_UNAVAILABLE,
+    // The next frame is unavailable due to waiting for more Media Source
+    // Extensions data to become available.
+    NEXT_FRAME_WAIT_FOR_MSE_DATA,
     // Sentinel value
     NEXT_FRAME_UNINITIALIZED
   };

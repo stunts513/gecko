@@ -54,43 +54,12 @@ Cu.import("resource://gre/modules/Promise.jsm", this);
 Cu.import("resource://gre/modules/Task.jsm", this);
 
 // The implementation of communications
-Cu.import("resource://gre/modules/osfile/_PromiseWorker.jsm", this);
-
+Cu.import("resource://gre/modules/PromiseWorker.jsm", this);
 Cu.import("resource://gre/modules/Services.jsm", this);
 Cu.import("resource://gre/modules/TelemetryStopwatch.jsm", this);
 Cu.import("resource://gre/modules/AsyncShutdown.jsm", this);
 let Native = Cu.import("resource://gre/modules/osfile/osfile_native.jsm", {});
 
-/**
- * Constructors for decoding standard exceptions
- * received from the worker.
- */
-const EXCEPTION_CONSTRUCTORS = {
-  EvalError: function(error) {
-    return new EvalError(error.message, error.fileName, error.lineNumber);
-  },
-  InternalError: function(error) {
-    return new InternalError(error.message, error.fileName, error.lineNumber);
-  },
-  RangeError: function(error) {
-    return new RangeError(error.message, error.fileName, error.lineNumber);
-  },
-  ReferenceError: function(error) {
-    return new ReferenceError(error.message, error.fileName, error.lineNumber);
-  },
-  SyntaxError: function(error) {
-    return new SyntaxError(error.message, error.fileName, error.lineNumber);
-  },
-  TypeError: function(error) {
-    return new TypeError(error.message, error.fileName, error.lineNumber);
-  },
-  URIError: function(error) {
-    return new URIError(error.message, error.fileName, error.lineNumber);
-  },
-  OSError: function(error) {
-    return OS.File.Error.fromMsg(error);
-  }
-};
 
 // It's possible for osfile.jsm to get imported before the profile is
 // set up. In this case, some path constants aren't yet available.
@@ -192,11 +161,19 @@ let Scheduler = {
   shutdown: false,
 
   /**
-   * A promise resolved once all operations are complete.
+   * A promise resolved once all currently pending operations are complete.
    *
    * This promise is never rejected and the result is always undefined.
    */
   queue: Promise.resolve(),
+
+  /**
+   * A promise resolved once all currently pending `kill` operations
+   * are complete.
+   *
+   * This promise is never rejected and the result is always undefined.
+   */
+  _killQueue: Promise.resolve(),
 
   /**
    * Miscellaneous debugging information
@@ -245,9 +222,11 @@ let Scheduler = {
    */
   get worker() {
     if (!this._worker) {
-      // Either the worker has never been created or it has been reset
-      this._worker = new PromiseWorker(
-	"resource://gre/modules/osfile/osfile_async_worker.js", LOG);
+      // Either the worker has never been created or it has been
+      // reset.  In either case, it is time to instantiate the worker.
+      this._worker = new BasePromiseWorker("resource://gre/modules/osfile/osfile_async_worker.js");
+      this._worker.log = LOG;
+      this._worker.ExceptionHandlers["OS.File.Error"] = OSError.fromMsg;
     }
     return this._worker;
   },
@@ -286,7 +265,14 @@ let Scheduler = {
    *   through some other mean.
    */
   kill: function({shutdown, reset}) {
-    return Task.spawn(function*() {
+    // Grab the kill queue to make sure that we
+    // cannot be interrupted by another call to `kill`.
+    let killQueue = this._killQueue;
+    return this._killQueue = Task.spawn(function*() {
+
+      yield killQueue;
+      // From this point, and until the end of the Task, we are the
+      // only call to `kill`, regardless of any `yield`.
 
       yield this.queue;
 
@@ -314,12 +300,11 @@ let Scheduler = {
       try {
         Scheduler.latestReceived = [];
         Scheduler.latestSent = [Date.now(), ...message];
-        let promise = this._worker.post(...message);
 
         // Wait for result
         let resources;
         try {
-          resources = (yield promise).ok;
+          resources = yield this._worker.post(...message);
 
           Scheduler.latestReceived = [Date.now(), message];
         } catch (ex) {
@@ -396,7 +381,7 @@ let Scheduler = {
    * @return {Promise} A promise conveying the result/error caused by
    * calling |method| with arguments |args|.
    */
-  post: function post(method, ...args) {
+  post: function post(method, args = undefined, closure = undefined) {
     if (this.shutdown) {
       LOG("OS.File is not available anymore. The following request has been rejected.",
         method, args);
@@ -411,12 +396,6 @@ let Scheduler = {
       Scheduler.Debugging.messagesSent++;
     }
 
-    // By convention, the last argument of any message may be an |options| object.
-    let options;
-    let methodArgs = args[0];
-    if (methodArgs) {
-      options = methodArgs[methodArgs.length - 1];
-    }
     Scheduler.Debugging.messagesQueued++;
     return this.push(Task.async(function*() {
       if (this.shutdown) {
@@ -428,77 +407,32 @@ let Scheduler = {
       // Update debugging information. As |args| may be quite
       // expensive, we only keep a shortened version of it.
       Scheduler.Debugging.latestReceived = null;
-      Scheduler.Debugging.latestSent = [Date.now(), method, summarizeObject(methodArgs)];
+      Scheduler.Debugging.latestSent = [Date.now(), method, summarizeObject(args)];
 
       // Don't kill the worker just yet
       Scheduler.restartTimer();
 
 
-      let data;
       let reply;
-      let isError = false;
       try {
         try {
-          data = yield this.worker.post(method, ...args);
+          Scheduler.Debugging.messagesSent++;
+          Scheduler.Debugging.latestSent = Scheduler.Debugging.latestSent.slice(0, 2);
+          reply = yield this.worker.post(method, args, closure);
+          Scheduler.Debugging.latestReceived = [Date.now(), summarizeObject(reply)];
+          return reply;
         } finally {
           Scheduler.Debugging.messagesReceived++;
         }
-        reply = data;
       } catch (error) {
-        reply = error;
-        isError = true;
-        if (error instanceof PromiseWorker.WorkerError) {
-          throw EXCEPTION_CONSTRUCTORS[error.data.exn || "OSError"](error.data);
-        }
-        if (error instanceof ErrorEvent) {
-          let message = error.message;
-          if (message == "uncaught exception: [object StopIteration]") {
-            isError = false;
-            throw StopIteration;
-          }
-          throw new Error(message, error.filename, error.lineno);
-        }
+        Scheduler.Debugging.latestReceived = [Date.now(), error.message, error.fileName, error.lineNumber];
         throw error;
       } finally {
-        Scheduler.Debugging.latestSent = Scheduler.Debugging.latestSent.slice(0, 2);
-        if (isError) {
-          Scheduler.Debugging.latestReceived = [Date.now(), reply.message, reply.fileName, reply.lineNumber];
-        } else {
-          Scheduler.Debugging.latestReceived = [Date.now(), summarizeObject(reply)];
-        }
         if (firstLaunch) {
           Scheduler._updateTelemetry();
         }
-
         Scheduler.restartTimer();
       }
-
-      // Check for duration and return result.
-      if (!options) {
-        return data.ok;
-      }
-      // Check for options.outExecutionDuration.
-      if (typeof options !== "object" ||
-        !("outExecutionDuration" in options)) {
-        return data.ok;
-      }
-      // If data.durationMs is not present, return data.ok (there was an
-      // exception applying the method).
-      if (!("durationMs" in data)) {
-        return data.ok;
-      }
-      // Bug 874425 demonstrates that two successive calls to Date.now()
-      // can actually produce an interval with negative duration.
-      // We assume that this is due to an operation that is so short
-      // that Date.now() is not monotonic, so we round this up to 0.
-      let durationMs = Math.max(0, data.durationMs);
-      // Accumulate (or initialize) outExecutionDuration
-      if (typeof options.outExecutionDuration == "number") {
-        options.outExecutionDuration += durationMs;
-      } else {
-        options.outExecutionDuration = durationMs;
-      }
-      return data.ok;
     }.bind(this)));
   },
 
@@ -593,7 +527,18 @@ const PREF_OSFILE_TEST_SHUTDOWN_OBSERVER =
 
 AsyncShutdown.webWorkersShutdown.addBlocker(
   "OS.File: flush pending requests, warn about unclosed files, shut down service.",
-  () => Scheduler.kill({reset: false, shutdown: true})
+  Task.async(function*() {
+    // Give clients a last chance to enqueue requests.
+    yield Barriers.shutdown.wait({crashAfterMS: null});
+
+    // Wait until all requests are complete and kill the worker.
+    yield Scheduler.kill({reset: false, shutdown: true});
+  }),
+  () => {
+    let details = Barriers.getDetails();
+    details.clients = Barriers.shutdown.state;
+    return details;
+  }
 );
 
 
@@ -808,12 +753,37 @@ File.prototype = {
   flush: function flush() {
     return Scheduler.post("File_prototype_flush",
       [this._fdmsg]);
+  },
+
+  /**
+   * Set the file's access permissions.  This does nothing on Windows.
+   *
+   * This operation is likely to fail if applied to a file that was
+   * not created by the currently running program (more precisely,
+   * if it was created by a program running under a different OS-level
+   * user account).  It may also fail, or silently do nothing, if the
+   * filesystem containing the file does not support access permissions.
+   *
+   * @param {*=} options Object specifying the requested permissions:
+   *
+   * - {number} unixMode The POSIX file mode to set on the file.  If omitted,
+   *  the POSIX file mode is reset to the default used by |OS.file.open|.  If
+   *  specified, the permissions will respect the process umask as if they
+   *  had been specified as arguments of |OS.File.open|, unless the
+   *  |unixHonorUmask| parameter tells otherwise.
+   * - {bool} unixHonorUmask If omitted or true, any |unixMode| value is
+   *  modified by the process umask, as |OS.File.open| would have done.  If
+   *  false, the exact value of |unixMode| will be applied.
+   */
+  setPermissions: function setPermissions(options = {}) {
+    return Scheduler.post("File_prototype_setPermissions",
+                          [this._fdmsg, options]);
   }
 };
 
 
-if (SharedAll.Constants.Sys.Name != "Android") {
-  /**
+if (SharedAll.Constants.Sys.Name != "Android" && SharedAll.Constants.Sys.Name != "Gonk") {
+   /**
    * Set the last access and modification date of the file.
    * The time stamp resolution is 1 second at best, but might be worse
    * depending on the platform.
@@ -906,6 +876,32 @@ File.setDates = function setDates(path, accessDate, modificationDate) {
   return Scheduler.post("setDates",
                         [Type.path.toMsg(path), accessDate, modificationDate],
                         this);
+};
+
+/**
+ * Set the file's access permissions.  This does nothing on Windows.
+ *
+ * This operation is likely to fail if applied to a file that was
+ * not created by the currently running program (more precisely,
+ * if it was created by a program running under a different OS-level
+ * user account).  It may also fail, or silently do nothing, if the
+ * filesystem containing the file does not support access permissions.
+ *
+ * @param {string} path The path to the file.
+ * @param {*=} options Object specifying the requested permissions:
+ *
+ * - {number} unixMode The POSIX file mode to set on the file.  If omitted,
+ *  the POSIX file mode is reset to the default used by |OS.file.open|.  If
+ *  specified, the permissions will respect the process umask as if they
+ *  had been specified as arguments of |OS.File.open|, unless the
+ *  |unixHonorUmask| parameter tells otherwise.
+ * - {bool} unixHonorUmask If omitted or true, any |unixMode| value is
+ *  modified by the process umask, as |OS.File.open| would have done.  If
+ *  false, the exact value of |unixMode| will be applied.
+ */
+File.setPermissions = function setPermissions(path, options = {}) {
+  return Scheduler.post("setPermissions",
+                        [Type.path.toMsg(path), options]);
 };
 
 /**
@@ -1491,28 +1487,16 @@ Object.defineProperty(OS.File, "queue", {
   }
 });
 
-// Auto-flush OS.File during profile-before-change. This ensures that any I/O
-// that has been queued *before* profile-before-change is properly completed.
-// To ensure that I/O queued *during* profile-before-change is completed,
-// clients should register using AsyncShutdown.addBlocker.
-AsyncShutdown.profileBeforeChange.addBlocker(
-  "OS.File: flush I/O queued before profile-before-change",
-  // Wait until the latest currently enqueued promise is satisfied/rejected
-  function() {
-    let DEBUG = false;
-    try {
-      DEBUG = Services.prefs.getBoolPref("toolkit.osfile.debug.failshutdown");
-    } catch (ex) {
-      // Ignore
-    }
-    if (DEBUG) {
-      // Return a promise that will never be satisfied
-      return Promise.defer().promise;
-    } else {
-      return Scheduler.queue;
-    }
-  },
-  function getDetails() {
+/**
+ * Shutdown barriers, to let clients register to be informed during shutdown.
+ */
+let Barriers = {
+  profileBeforeChange: new AsyncShutdown.Barrier("OS.File: Waiting for clients before profile-before-shutdown"),
+  shutdown: new AsyncShutdown.Barrier("OS.File: Waiting for clients before full shutdown"),
+  /**
+   * Return the shutdown state of OS.File
+   */
+  getDetails: function() {
     let result = {
       launched: Scheduler.launched,
       shutdown: Scheduler.shutdown,
@@ -1523,7 +1507,7 @@ AsyncShutdown.profileBeforeChange.addBlocker(
       messagesSent: Scheduler.Debugging.messagesSent,
       messagesReceived: Scheduler.Debugging.messagesReceived,
       messagesQueued: Scheduler.Debugging.messagesQueued,
-      DEBUG: SharedAll.Config.DEBUG
+      DEBUG: SharedAll.Config.DEBUG,
     };
     // Convert dates to strings for better readability
     for (let key of ["latestSent", "latestReceived"]) {
@@ -1532,5 +1516,28 @@ AsyncShutdown.profileBeforeChange.addBlocker(
       }
     }
     return result;
+  }
+};
+
+File.profileBeforeChange = Barriers.profileBeforeChange.client;
+File.shutdown = Barriers.shutdown.client;
+
+// Auto-flush OS.File during profile-before-change. This ensures that any I/O
+// that has been queued *before* profile-before-change is properly completed.
+// To ensure that I/O queued *during* profile-before-change is completed,
+// clients should register using AsyncShutdown.addBlocker.
+AsyncShutdown.profileBeforeChange.addBlocker(
+  "OS.File: flush I/O queued before profile-before-change",
+  Task.async(function*() {
+    // Give clients a last chance to enqueue requests.
+    yield Barriers.profileBeforeChange.wait({crashAfterMS: null});
+
+    // Wait until all currently enqueued requests are completed.
+    yield Scheduler.queue;
+  }),
+  () => {
+    let details = Barriers.getDetails();
+    details.clients = Barriers.profileBeforeChange.state;
+    return details;
   }
 );

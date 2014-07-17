@@ -43,6 +43,7 @@ namespace jit {
     _(ApplyArgs)                                                            \
     _(ArraySplice)                                                          \
     _(Bail)                                                                 \
+    _(Unreachable)                                                          \
     _(AssertFloat32)                                                        \
     _(GetDynamicName)                                                       \
     _(FilterArgumentsOrEval)                                                \
@@ -109,7 +110,6 @@ namespace jit {
     _(StringReplace)                                                        \
     _(Lambda)                                                               \
     _(LambdaArrow)                                                          \
-    _(ImplicitThis)                                                         \
     _(Slots)                                                                \
     _(Elements)                                                             \
     _(ConstantElements)                                                     \
@@ -137,6 +137,7 @@ namespace jit {
     _(SetArrayLength)                                                       \
     _(TypedArrayLength)                                                     \
     _(TypedArrayElements)                                                   \
+    _(TypedObjectProto)                                                     \
     _(TypedObjectElements)                                                  \
     _(SetTypedObjectOffset)                                                 \
     _(InitializedLength)                                                    \
@@ -196,6 +197,7 @@ namespace jit {
     _(GetDOMMember)                                                         \
     _(SetDOMProperty)                                                       \
     _(IsCallable)                                                           \
+    _(IsObject)                                                             \
     _(HaveSameClass)                                                        \
     _(HasClass)                                                             \
     _(AsmJSNeg)                                                             \
@@ -217,7 +219,6 @@ namespace jit {
     _(NewPar)                                                               \
     _(NewDenseArrayPar)                                                     \
     _(NewDerivedTypedObject)                                                \
-    _(AbortPar)                                                             \
     _(LambdaPar)                                                            \
     _(RestPar)                                                              \
     _(ForkJoinContext)                                                      \

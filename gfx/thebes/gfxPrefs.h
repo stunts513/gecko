@@ -32,8 +32,8 @@
 // means that you can call
 //   bool var = gfxPrefs::LayersDump();
 // from any thread, but that you will only get the preference value of
-// "layers.dump" as it was set at the start of the session. If the value
-// was not set, the default would be false.
+// "layers.dump" as it was set at the start of the session (subject to
+// note 2 below). If the value was not set, the default would be false.
 //
 // In another example, this line in the .h:
 //   DECL_GFX_PREF(Live,"gl.msaa-level",MSAALevel,uint32_t,2);
@@ -42,7 +42,7 @@
 // from any thread, you will get the most up to date preference value of
 // "gl.msaa-level".  If the value is not set, the default would be 2.
 
-// Note that changing a preference from Live to Once is now as simple
+// Note 1: Changing a preference from Live to Once is now as simple
 // as changing the Update argument.  If your code worked before, it will
 // keep working, and behave as if the user never changes the preference.
 // Things are a bit more complicated and perhaps even dangerous when
@@ -51,9 +51,17 @@
 // values changing mid execution, and if you're using those preferences
 // in any setup and initialization, you may need to do extra work.
 
+// Note 2: Prefs can be set by using the corresponding Set method. For
+// example, if the accessor is Foo() then calling SetFoo(...) will update
+// the preference and also change the return value of subsequent Foo() calls.
+// This is true even for 'Once' prefs which otherwise do not change if the
+// pref is updated after initialization.
+
 #define DECL_GFX_PREF(Update, Pref, Name, Type, Default)                     \
 public:                                                                       \
 static Type Name() { MOZ_ASSERT(SingletonExists()); return GetSingleton().mPref##Name.mValue; } \
+static void Set##Name(Type aVal) { MOZ_ASSERT(SingletonExists()); \
+    GetSingleton().mPref##Name.Set(UpdatePolicy::Update, Get##Name##PrefName(), aVal); } \
 private:                                                                      \
 static const char* Get##Name##PrefName() { return Pref; }                     \
 static Type Get##Name##PrefDefault() { return Default; }                      \
@@ -82,6 +90,7 @@ private:
     }
     void Register(UpdatePolicy aUpdate, const char* aPreference)
     {
+      AssertMainThread();
       switch(aUpdate) {
         case UpdatePolicy::Skip:
           break;
@@ -90,6 +99,22 @@ private:
           break;
         case UpdatePolicy::Live:
           PrefAddVarCache(&mValue,aPreference, mValue);
+          break;
+        default:
+          MOZ_CRASH();
+          break;
+      }
+    }
+    void Set(UpdatePolicy aUpdate, const char* aPref, T aValue)
+    {
+      AssertMainThread();
+      PrefSet(aPref, aValue);
+      switch (aUpdate) {
+        case UpdatePolicy::Skip:
+        case UpdatePolicy::Live:
+          break;
+        case UpdatePolicy::Once:
+          mValue = PrefGet(aPref, mValue);
           break;
         default:
           MOZ_CRASH();
@@ -110,22 +135,32 @@ private:
   DECL_GFX_PREF(Live, "apz.axis_lock_mode",                    APZAxisLockMode, int32_t, 0);
   DECL_GFX_PREF(Live, "apz.content_response_timeout",          APZContentResponseTimeout, int32_t, 300);
   DECL_GFX_PREF(Live, "apz.cross_slide.enabled",               APZCrossSlideEnabled, bool, false);
+  DECL_GFX_PREF(Live, "apz.danger_zone_x",                     APZDangerZoneX, int32_t, 50);
+  DECL_GFX_PREF(Live, "apz.danger_zone_y",                     APZDangerZoneY, int32_t, 100);
   DECL_GFX_PREF(Live, "apz.enlarge_displayport_when_clipped",  APZEnlargeDisplayPortWhenClipped, bool, false);
   DECL_GFX_PREF(Live, "apz.fling_accel_interval_ms",           APZFlingAccelInterval, int32_t, 500);
   DECL_GFX_PREF(Live, "apz.fling_accel_base_mult",             APZFlingAccelBaseMultiplier, float, 1.0f);
   DECL_GFX_PREF(Live, "apz.fling_accel_supplemental_mult",     APZFlingAccelSupplementalMultiplier, float, 1.0f);
   DECL_GFX_PREF(Once, "apz.fling_friction",                    APZFlingFriction, float, 0.002f);
   DECL_GFX_PREF(Live, "apz.fling_repaint_interval",            APZFlingRepaintInterval, int32_t, 75);
+  DECL_GFX_PREF(Once, "apz.fling_stop_on_tap_threshold",       APZFlingStopOnTapThreshold, float, 0.05f);
   DECL_GFX_PREF(Once, "apz.fling_stopped_threshold",           APZFlingStoppedThreshold, float, 0.01f);
   DECL_GFX_PREF(Once, "apz.max_velocity_inches_per_ms",        APZMaxVelocity, float, -1.0f);
   DECL_GFX_PREF(Once, "apz.max_velocity_queue_size",           APZMaxVelocityQueueSize, uint32_t, 5);
   DECL_GFX_PREF(Live, "apz.min_skate_speed",                   APZMinSkateSpeed, float, 1.0f);
   DECL_GFX_PREF(Live, "apz.num_paint_duration_samples",        APZNumPaintDurationSamples, int32_t, 3);
   DECL_GFX_PREF(Live, "apz.overscroll.enabled",                APZOverscrollEnabled, bool, false);
-  DECL_GFX_PREF(Once, "apz.overscroll.snap_back_accel",        APZSnapBackAcceleration, float, 0.002f);
-  DECL_GFX_PREF(Live, "apz.overscroll.snap_back_init_vel",     APZSnapBackInitialVelocity, float, 1.0f);
+  DECL_GFX_PREF(Live, "apz.overscroll.fling_friction",         APZOverscrollFlingFriction, float, 0.02f);
+  DECL_GFX_PREF(Live, "apz.overscroll.fling_stopped_threshold", APZOverscrollFlingStoppedThreshold, float, 0.4f);
+  DECL_GFX_PREF(Live, "apz.overscroll.clamping",               APZOverscrollClamping, float, 0.5f);
+  DECL_GFX_PREF(Live, "apz.overscroll.z_effect",               APZOverscrollZEffect, float, 0.2f);
+  DECL_GFX_PREF(Live, "apz.overscroll.snap_back.spring_stiffness", APZOverscrollSnapBackSpringStiffness, float, 0.6f);
+  DECL_GFX_PREF(Live, "apz.overscroll.snap_back.spring_friction", APZOverscrollSnapBackSpringFriction, float, 0.1f);
+  DECL_GFX_PREF(Live, "apz.overscroll.snap_back.mass",         APZOverscrollSnapBackMass, float, 1000.0f);
   DECL_GFX_PREF(Live, "apz.pan_repaint_interval",              APZPanRepaintInterval, int32_t, 250);
+  DECL_GFX_PREF(Live, "apz.printtree",                         APZPrintTree, bool, false);
   DECL_GFX_PREF(Live, "apz.subframe.enabled",                  APZSubframeEnabled, bool, false);
+  DECL_GFX_PREF(Once, "apz.test.logging_enabled",              APZTestLoggingEnabled, bool, false);
   DECL_GFX_PREF(Live, "apz.touch_start_tolerance",             APZTouchStartTolerance, float, 1.0f/4.5f);
   DECL_GFX_PREF(Live, "apz.use_paint_duration",                APZUsePaintDuration, bool, true);
   DECL_GFX_PREF(Live, "apz.velocity_bias",                     APZVelocityBias, float, 1.0f);
@@ -155,6 +190,7 @@ private:
   DECL_GFX_PREF(Live, "gfx.gralloc.fence-with-readpixels",     GrallocFenceWithReadPixels, bool, false);
   DECL_GFX_PREF(Live, "gfx.layerscope.enabled",                LayerScopeEnabled, bool, false);
   DECL_GFX_PREF(Live, "gfx.layerscope.port",                   LayerScopePort, int32_t, 23456);
+  DECL_GFX_PREF(Live, "gfx.perf-warnings.enabled",             PerfWarnings, bool, false);
   DECL_GFX_PREF(Once, "gfx.work-around-driver-bugs",           WorkAroundDriverBugs, bool, true);
 
   DECL_GFX_PREF(Live, "gfx.draw-color-bars",                   CompositorDrawColorBars, bool, false);
@@ -166,8 +202,9 @@ private:
   DECL_GFX_PREF(Live, "layers.acceleration.draw-fps.print-histogram",  FPSPrintHistogram, bool, false);
   DECL_GFX_PREF(Live, "layers.acceleration.draw-fps.write-to-file", WriteFPSToFile, bool, false);
   DECL_GFX_PREF(Once, "layers.acceleration.force-enabled",     LayersAccelerationForceEnabled, bool, false);
-  DECL_GFX_PREF(Once, "layers.async-video.enabled",            AsyncVideoEnabled, bool, false);
-  DECL_GFX_PREF(Once, "layers.async-video-oop.enabled",        AsyncVideoOOPEnabled, bool, false);
+  DECL_GFX_PREF(Once, "layers.async-video.enabled",            AsyncVideoEnabled, bool, true);
+  DECL_GFX_PREF(Once, "layers.async-video-oop.enabled",        AsyncVideoOOPEnabled, bool, true);
+  DECL_GFX_PREF(Once, "layers.async-pan-zoom.enabled",         AsyncPanZoomEnabled, bool, false);
   DECL_GFX_PREF(Live, "layers.bench.enabled",                  LayersBenchEnabled, bool, false);
   DECL_GFX_PREF(Once, "layers.bufferrotation.enabled",         BufferRotationEnabled, bool, true);
 #ifdef MOZ_GFX_OPTIMIZE_MOBILE
@@ -198,6 +235,7 @@ private:
   DECL_GFX_PREF(Live, "layers.frame-counter",                  DrawFrameCounter, bool, false);
   DECL_GFX_PREF(Live, "layers.low-precision-buffer",           UseLowPrecisionBuffer, bool, false);
   DECL_GFX_PREF(Live, "layers.low-precision-resolution",       LowPrecisionResolution, float, 0.25f);
+  DECL_GFX_PREF(Live, "layers.low-precision-opacity",          LowPrecisionOpacity, float, 1.0f);
   DECL_GFX_PREF(Once, "layers.offmainthreadcomposition.enabled", LayersOffMainThreadCompositionEnabled, bool, false);
   DECL_GFX_PREF(Live, "layers.offmainthreadcomposition.frame-rate", LayersCompositionFrameRate, int32_t,-1);
   DECL_GFX_PREF(Once, "layers.offmainthreadcomposition.force-enabled", LayersOffMainThreadCompositionForceEnabled, bool, false);
@@ -207,6 +245,7 @@ private:
   DECL_GFX_PREF(Once, "layers.prefer-opengl",                  LayersPreferOpenGL, bool, false);
   DECL_GFX_PREF(Once, "layers.progressive-paint",              UseProgressiveTilePainting, bool, false);
   DECL_GFX_PREF(Once, "layers.scroll-graph",                   LayersScrollGraph, bool, false);
+  DECL_GFX_PREF(Once, "layers.uniformity-info",                UniformityInfo, bool, false);
 
   DECL_GFX_PREF(Once, "layout.css.touch_action.enabled",       TouchActionEnabled, bool, false);
   DECL_GFX_PREF(Once, "layout.frame_rate",                     LayoutFrameRate, int32_t, -1);
@@ -223,9 +262,11 @@ public:
   // Manage the singleton:
   static gfxPrefs& GetSingleton()
   {
+    MOZ_ASSERT(!sInstanceHasBeenDestroyed, "Should never recreate a gfxPrefs instance!");
     if (!sInstance) {
       sInstance = new gfxPrefs;
     }
+    MOZ_ASSERT(SingletonExists());
     return *sInstance;
   }
   static void DestroySingleton();
@@ -233,6 +274,7 @@ public:
 
 private:
   static gfxPrefs* sInstance;
+  static bool sInstanceHasBeenDestroyed;
 
 private:
   // Creating these to avoid having to include Preferences.h in the .h
@@ -244,6 +286,12 @@ private:
   static int32_t PrefGet(const char*, int32_t);
   static uint32_t PrefGet(const char*, uint32_t);
   static float PrefGet(const char*, float);
+  static void PrefSet(const char* aPref, bool aValue);
+  static void PrefSet(const char* aPref, int32_t aValue);
+  static void PrefSet(const char* aPref, uint32_t aValue);
+  static void PrefSet(const char* aPref, float aValue);
+
+  static void AssertMainThread();
 
   gfxPrefs();
   ~gfxPrefs();

@@ -36,7 +36,6 @@ class MediaEngineDefaultVideoSource : public nsITimerCallback,
 {
 public:
   MediaEngineDefaultVideoSource();
-  ~MediaEngineDefaultVideoSource();
 
   virtual void GetName(nsAString&);
   virtual void GetUUID(nsAString&);
@@ -46,6 +45,7 @@ public:
   virtual nsresult Deallocate();
   virtual nsresult Start(SourceMediaStream*, TrackID);
   virtual nsresult Stop(SourceMediaStream*, TrackID);
+  virtual void SetDirectListeners(bool aHasDirectListeners) {};
   virtual nsresult Snapshot(uint32_t aDuration, nsIDOMFile** aFile);
   virtual nsresult Config(bool aEchoOn, uint32_t aEcho,
                           bool aAgcOn, uint32_t aAGC,
@@ -65,6 +65,8 @@ public:
   NS_DECL_NSITIMERCALLBACK
 
 protected:
+  ~MediaEngineDefaultVideoSource();
+
   friend class MediaEngineDefault;
 
   TrackID mTrackID;
@@ -90,7 +92,6 @@ class MediaEngineDefaultAudioSource : public nsITimerCallback,
 {
 public:
   MediaEngineDefaultAudioSource();
-  ~MediaEngineDefaultAudioSource();
 
   virtual void GetName(nsAString&);
   virtual void GetUUID(nsAString&);
@@ -100,6 +101,7 @@ public:
   virtual nsresult Deallocate();
   virtual nsresult Start(SourceMediaStream*, TrackID);
   virtual nsresult Stop(SourceMediaStream*, TrackID);
+  virtual void SetDirectListeners(bool aHasDirectListeners) {};
   virtual nsresult Snapshot(uint32_t aDuration, nsIDOMFile** aFile);
   virtual nsresult Config(bool aEchoOn, uint32_t aEcho,
                           bool aAgcOn, uint32_t aAGC,
@@ -119,6 +121,8 @@ public:
   NS_DECL_NSITIMERCALLBACK
 
 protected:
+  ~MediaEngineDefaultAudioSource();
+
   TrackID mTrackID;
   nsCOMPtr<nsITimer> mTimer;
 
@@ -134,8 +138,10 @@ public:
   : mMutex("mozilla::MediaEngineDefault")
   {}
 
-  virtual void EnumerateVideoDevices(nsTArray<nsRefPtr<MediaEngineVideoSource> >*);
-  virtual void EnumerateAudioDevices(nsTArray<nsRefPtr<MediaEngineAudioSource> >*);
+  virtual void EnumerateVideoDevices(dom::MediaSourceEnum,
+                                     nsTArray<nsRefPtr<MediaEngineVideoSource> >*);
+  virtual void EnumerateAudioDevices(dom::MediaSourceEnum,
+                                     nsTArray<nsRefPtr<MediaEngineAudioSource> >*);
 
 private:
   ~MediaEngineDefault() {}

@@ -62,7 +62,7 @@ bool gTestsComplete = false;
 #error USE_FAKE_PCOBSERVER undefined
 #endif
 
-static int kDefaultTimeout = 5000;
+static int kDefaultTimeout = 7000;
 static bool fRtcpMux = true;
 
 static std::string callerName = "caller";
@@ -240,6 +240,9 @@ enum mediaPipelineFlags
 
 class TestObserver : public AFakePCObserver
 {
+protected:
+  ~TestObserver() {}
+
 public:
   TestObserver(sipcc::PeerConnectionImpl *peerConnection,
                const std::string &aName) :
@@ -265,8 +268,6 @@ public:
   NS_IMETHODIMP OnSetRemoteDescriptionSuccess(ER&);
   NS_IMETHODIMP OnSetLocalDescriptionError(uint32_t code, const char *msg, ER&);
   NS_IMETHODIMP OnSetRemoteDescriptionError(uint32_t code, const char *msg, ER&);
-  NS_IMETHODIMP NotifyConnection(ER&);
-  NS_IMETHODIMP NotifyClosedConnection(ER&);
   NS_IMETHODIMP NotifyDataChannel(nsIDOMDataChannel *channel, ER&);
   NS_IMETHODIMP OnStateChange(PCObserverStateType state_type, ER&, void*);
   NS_IMETHODIMP OnAddStream(nsIDOMMediaStream *stream, ER&);
@@ -359,20 +360,6 @@ TestObserver::OnSetRemoteDescriptionError(uint32_t code, const char *message, ER
 }
 
 NS_IMETHODIMP
-TestObserver::NotifyConnection(ER&)
-{
-  std::cout << name << ": NotifyConnection" << std::endl;
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-TestObserver::NotifyClosedConnection(ER&)
-{
-  std::cout << name << ": NotifyClosedConnection" << std::endl;
-  return NS_OK;
-}
-
-NS_IMETHODIMP
 TestObserver::NotifyDataChannel(nsIDOMDataChannel *channel, ER&)
 {
   std::cout << name << ": NotifyDataChannel" << std::endl;
@@ -383,7 +370,6 @@ NS_IMETHODIMP
 TestObserver::OnStateChange(PCObserverStateType state_type, ER&, void*)
 {
   nsresult rv;
-  PCImplReadyState gotready;
   PCImplIceConnectionState gotice;
   PCImplIceGatheringState goticegathering;
   PCImplSipccState gotsipcc;
@@ -393,14 +379,6 @@ TestObserver::OnStateChange(PCObserverStateType state_type, ER&, void*)
 
   switch (state_type)
   {
-  case PCObserverStateType::ReadyState:
-    MOZ_ASSERT(NS_IsMainThread());
-    rv = pc->ReadyState(&gotready);
-    NS_ENSURE_SUCCESS(rv, rv);
-    std::cout << "Ready State: "
-              << PCImplReadyStateValues::strings[int(gotready)].value
-              << std::endl;
-    break;
   case PCObserverStateType::IceConnectionState:
     MOZ_ASSERT(NS_IsMainThread());
     rv = pc->IceConnectionState(&gotice);
@@ -502,6 +480,12 @@ TestObserver::OnIceCandidate(uint16_t level,
 {
   std::cout << name << ": onIceCandidate [" << level << "/"
             << mid << "] " << candidate << std::endl;
+
+  // Check for duplicates.
+  for (auto it = candidates.begin(); it != candidates.end(); ++it) {
+    EXPECT_NE(*it, candidate) << "Duplicate candidate";
+  }
+
   candidates.push_back(candidate);
   return NS_OK;
 }
@@ -706,12 +690,13 @@ class ParsedSDP {
 // into it happen on the main thread.
 class PCDispatchWrapper : public nsSupportsWeakReference
 {
+ protected:
+  virtual ~PCDispatchWrapper() {}
+
  public:
   PCDispatchWrapper(sipcc::PeerConnectionImpl *peerConnection) {
     pc_ = peerConnection;
   }
-
-  virtual ~PCDispatchWrapper() {}
 
   NS_DECL_THREADSAFE_ISUPPORTS
 
@@ -1004,7 +989,7 @@ class SignalingAgent {
 
   void WaitForGather() {
     ASSERT_TRUE_WAIT(ice_gathering_state() == PCImplIceGatheringState::Complete,
-                     5000);
+                     kDefaultTimeout);
 
     std::cout << name << ": Init Complete" << std::endl;
   }
@@ -1013,7 +998,7 @@ class SignalingAgent {
     EXPECT_TRUE_WAIT(
         ice_gathering_state() == PCImplIceGatheringState::Complete ||
         ice_connection_state() == PCImplIceConnectionState::Failed,
-        5000);
+        kDefaultTimeout);
 
     if (ice_connection_state() == PCImplIceConnectionState::Failed) {
       std::cout << name << ": Init Failed" << std::endl;

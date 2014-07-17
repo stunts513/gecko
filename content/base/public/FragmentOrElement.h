@@ -31,8 +31,13 @@ class nsIControllers;
 class nsICSSDeclaration;
 class nsIDocument;
 class nsDOMStringMap;
-class nsINodeInfo;
 class nsIURI;
+
+namespace mozilla {
+namespace dom {
+class Element;
+}
+}
 
 /**
  * Class that implements the nsIDOMNodeList interface (a list of children of
@@ -73,6 +78,8 @@ public:
   }
 
 private:
+  ~nsChildContentList() {}
+
   // The node whose children make up the list (weak reference)
   nsINode* mNode;
 };
@@ -112,13 +119,12 @@ public:
   {
   }
 
-  ~nsNodeWeakReference();
-
   // nsISupports
   NS_DECL_ISUPPORTS
 
   // nsIWeakReference
   NS_DECL_NSIWEAKREFERENCE
+  virtual size_t SizeOfOnlyThis(mozilla::MallocSizeOf aMallocSizeOf) const;
 
   void NoticeNodeDestruction()
   {
@@ -126,6 +132,8 @@ public:
   }
 
 private:
+  ~nsNodeWeakReference();
+
   nsINode* mNode;
 };
 
@@ -149,6 +157,8 @@ public:
   NS_DECL_CYCLE_COLLECTION_CLASS(nsNodeSupportsWeakRefTearoff)
 
 private:
+  ~nsNodeSupportsWeakRefTearoff() {}
+
   nsCOMPtr<nsINode> mNode;
 };
 
@@ -165,9 +175,8 @@ class UndoManager;
 class FragmentOrElement : public nsIContent
 {
 public:
-  FragmentOrElement(already_AddRefed<nsINodeInfo>& aNodeInfo);
-  FragmentOrElement(already_AddRefed<nsINodeInfo>&& aNodeInfo);
-  virtual ~FragmentOrElement();
+  FragmentOrElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo);
+  FragmentOrElement(already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
 
@@ -222,7 +231,6 @@ public:
   virtual void DestroyContent() MOZ_OVERRIDE;
   virtual void SaveSubtreeState() MOZ_OVERRIDE;
 
-  virtual const nsAttrValue* DoGetClasses() const MOZ_OVERRIDE;
   NS_IMETHOD WalkContentStyleRules(nsRuleWalker* aRuleWalker) MOZ_OVERRIDE;
 
   nsIHTMLCollection* Children();
@@ -230,6 +238,14 @@ public:
   {
     return Children()->Length();
   }
+
+  /**
+   * Sets the IsElementInStyleScope flag on each element in the subtree rooted
+   * at this node, including any elements reachable through shadow trees.
+   *
+   * @param aInStyleScope The flag value to set.
+   */
+  void SetIsElementInStyleScopeFlagOnSubtree(bool aInStyleScope);
 
 public:
   /**
@@ -280,6 +296,8 @@ public:
                                   void* aData);
 
 protected:
+  virtual ~FragmentOrElement();
+
   /**
    * Copy attributes and state to another element
    * @param aDest the object to copy to
@@ -415,6 +433,14 @@ protected:
   {
     return static_cast<nsDOMSlots*>(GetExistingSlots());
   }
+
+  /**
+   * Calls SetIsElementInStyleScopeFlagOnSubtree for each shadow tree attached
+   * to this node, which is assumed to be an Element.
+   *
+   * @param aInStyleScope The IsElementInStyleScope flag value to set.
+   */
+  void SetIsElementInStyleScopeFlagOnShadowTree(bool aInStyleScope);
 
   friend class ::ContentUnbinder;
   /**

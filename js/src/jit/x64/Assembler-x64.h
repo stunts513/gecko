@@ -72,8 +72,10 @@ static MOZ_CONSTEXPR_VAR Register JSReturnReg_Data = JSReturnReg;
 static MOZ_CONSTEXPR_VAR Register ReturnReg = rax;
 static MOZ_CONSTEXPR_VAR Register ScratchReg = r11;
 static MOZ_CONSTEXPR_VAR Register HeapReg = r15;
-static MOZ_CONSTEXPR_VAR FloatRegister ReturnFloatReg = xmm0;
-static MOZ_CONSTEXPR_VAR FloatRegister ScratchFloatReg = xmm15;
+static MOZ_CONSTEXPR_VAR FloatRegister ReturnFloat32Reg = xmm0;
+static MOZ_CONSTEXPR_VAR FloatRegister ScratchFloat32Reg = xmm15;
+static MOZ_CONSTEXPR_VAR FloatRegister ReturnDoubleReg = xmm0;
+static MOZ_CONSTEXPR_VAR FloatRegister ScratchDoubleReg = xmm15;
 
 // Avoid rbp, which is the FramePointer, which is unavailable in some modes.
 static MOZ_CONSTEXPR_VAR Register ArgumentsRectifierReg = r8;
@@ -182,9 +184,6 @@ static MOZ_CONSTEXPR_VAR Register PreBarrierReg = rdx;
 static const uint32_t StackAlignment = 16;
 static const bool StackKeptAligned = false;
 static const uint32_t CodeAlignment = 8;
-static const uint32_t NativeFrameSize = sizeof(void*);
-static const uint32_t AlignmentAtPrologue = sizeof(void*);
-static const uint32_t AlignmentMidPrologue = AlignmentAtPrologue;
 
 static const Scale ScalePointer = TimesEight;
 
@@ -404,6 +403,24 @@ class Assembler : public AssemblerX86Shared
     void andq(Imm32 imm, Register dest) {
         masm.andq_ir(imm.value, dest.code());
     }
+    void andq(const Operand &src, Register dest) {
+        switch (src.kind()) {
+          case Operand::REG:
+            masm.andq_rr(src.reg(), dest.code());
+            break;
+          case Operand::MEM_REG_DISP:
+            masm.andq_mr(src.disp(), src.base(), dest.code());
+            break;
+          case Operand::MEM_SCALE:
+            masm.andq_mr(src.disp(), src.base(), src.index(), src.scale(), dest.code());
+            break;
+          case Operand::MEM_ADDRESS32:
+            masm.andq_mr(src.address(), dest.code());
+            break;
+          default:
+            MOZ_ASSUME_UNREACHABLE("unexpected operand kind");
+        }
+    }
 
     void addq(Imm32 imm, Register dest) {
         masm.addq_ir(imm.value, dest.code());
@@ -528,7 +545,7 @@ class Assembler : public AssemblerX86Shared
     }
     void mov(AsmJSImmPtr imm, Register dest) {
         masm.movq_i64r(-1, dest.code());
-        enoughMemory_ &= append(AsmJSAbsoluteLink(CodeOffsetLabel(masm.currentOffset()), imm.kind()));
+        append(AsmJSAbsoluteLink(CodeOffsetLabel(masm.currentOffset()), imm.kind()));
     }
     void mov(const Operand &src, Register dest) {
         movq(src, dest);
@@ -683,11 +700,11 @@ class Assembler : public AssemblerX86Shared
         CodeOffsetLabel offset(size());
         JmpSrc src = enabled ? masm.call() : masm.cmp_eax();
         addPendingJump(src, ImmPtr(target->raw()), Relocation::JITCODE);
-        JS_ASSERT(size() - offset.offset() == ToggledCallSize());
+        JS_ASSERT(size() - offset.offset() == ToggledCallSize(nullptr));
         return offset;
     }
 
-    static size_t ToggledCallSize() {
+    static size_t ToggledCallSize(uint8_t *code) {
         // Size of a call instruction.
         return 5;
     }

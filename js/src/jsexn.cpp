@@ -45,6 +45,24 @@ using mozilla::PodZero;
 static void
 exn_finalize(FreeOp *fop, JSObject *obj);
 
+bool
+Error(JSContext *cx, unsigned argc, Value *vp);
+
+static bool
+exn_toSource(JSContext *cx, unsigned argc, Value *vp);
+
+static bool
+exn_toString(JSContext *cx, unsigned argc, Value *vp);
+
+static const JSFunctionSpec exception_methods[] = {
+#if JS_HAS_TOSOURCE
+    JS_FN(js_toSource_str, exn_toSource, 0, 0),
+#endif
+    JS_FN(js_toString_str, exn_toString, 0, 0),
+    JS_FS_END
+};
+
+
 const Class ErrorObject::class_ = {
     js_Error_str,
     JSCLASS_IMPLEMENTS_BARRIERS |
@@ -60,7 +78,14 @@ const Class ErrorObject::class_ = {
     exn_finalize,
     nullptr,                 /* call        */
     nullptr,                 /* hasInstance */
-    nullptr                  /* construct   */
+    nullptr,                 /* construct   */
+    nullptr,                 /* trace       */
+    {
+        ErrorObject::createConstructor,
+        ErrorObject::createProto,
+        nullptr,
+        exception_methods
+    }
 };
 
 JSErrorReport *
@@ -233,7 +258,7 @@ js::ComputeStackString(JSContext *cx)
             const char *cfilename = i.scriptFilename();
             if (!cfilename)
                 cfilename = "";
-            if (!sb.appendInflated(cfilename, strlen(cfilename)))
+            if (!sb.append(cfilename, strlen(cfilename)))
                 return nullptr;
 
             uint32_t column = 0;
@@ -290,7 +315,7 @@ js_ErrorFromException(JSContext *cx, HandleObject objArg)
     return obj->as<ErrorObject>().getOrCreateErrorReport(cx);
 }
 
-static bool
+bool
 Error(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
@@ -506,14 +531,6 @@ exn_toSource(JSContext *cx, unsigned argc, Value *vp)
 }
 #endif
 
-static const JSFunctionSpec exception_methods[] = {
-#if JS_HAS_TOSOURCE
-    JS_FN(js_toSource_str,   exn_toSource,           0,0),
-#endif
-    JS_FN(js_toString_str,   exn_toString,           0,0),
-    JS_FS_END
-};
-
 /* JSProto_ ordering for exceptions shall match JSEXN_ constants. */
 JS_STATIC_ASSERT(JSEXN_ERR == 0);
 JS_STATIC_ASSERT(JSProto_Error + JSEXN_INTERNALERR  == JSProto_InternalError);
@@ -524,23 +541,21 @@ JS_STATIC_ASSERT(JSProto_Error + JSEXN_SYNTAXERR    == JSProto_SyntaxError);
 JS_STATIC_ASSERT(JSProto_Error + JSEXN_TYPEERR      == JSProto_TypeError);
 JS_STATIC_ASSERT(JSProto_Error + JSEXN_URIERR       == JSProto_URIError);
 
-/* static */ ErrorObject *
-ErrorObject::createProto(JSContext *cx, JS::Handle<GlobalObject*> global, JSExnType type,
-                         JS::HandleObject proto)
+/* static */ JSObject *
+ErrorObject::createProto(JSContext *cx, JSProtoKey key)
 {
-    RootedObject errorProto(cx);
-    errorProto = global->createBlankPrototypeInheriting(cx, &ErrorObject::class_, *proto);
+    RootedObject errorProto(cx, GenericCreatePrototype<&ErrorObject::class_>(cx, key));
     if (!errorProto)
         return nullptr;
 
     Rooted<ErrorObject*> err(cx, &errorProto->as<ErrorObject>());
     RootedString emptyStr(cx, cx->names().empty);
+    JSExnType type = ExnTypeFromProtoKey(key);
     if (!ErrorObject::init(cx, err, type, nullptr, emptyStr, emptyStr, 0, 0, emptyStr))
         return nullptr;
 
     // The various prototypes also have .name in addition to the normal error
     // instance properties.
-    JSProtoKey key = GetExceptionProtoKey(type);
     RootedPropertyName name(cx, ClassName(key, cx));
     RootedValue nameValue(cx, StringValue(name));
     if (!JSObject::defineProperty(cx, err, cx->names().name, nameValue,
@@ -549,76 +564,23 @@ ErrorObject::createProto(JSContext *cx, JS::Handle<GlobalObject*> global, JSExnT
         return nullptr;
     }
 
-    // Create the corresponding constructor.
-    RootedFunction ctor(cx, global->createConstructor(cx, Error, name, 1,
-                                                      JSFunction::ExtendedFinalizeKind));
-    if (!ctor)
-        return nullptr;
-    ctor->setExtendedSlot(0, Int32Value(int32_t(type)));
-
-    if (!LinkConstructorAndPrototype(cx, ctor, err))
-        return nullptr;
-
-    if (!GlobalObject::initBuiltinConstructor(cx, global, key, ctor, err))
-        return nullptr;
-
-    return err;
-}
-
-JSObject *
-js_InitExceptionClasses(JSContext *cx, HandleObject obj)
-{
-    JS_ASSERT(obj->is<GlobalObject>());
-    JS_ASSERT(obj->isNative());
-
-    Rooted<GlobalObject*> global(cx, &obj->as<GlobalObject>());
-
-    RootedObject objProto(cx, global->getOrCreateObjectPrototype(cx));
-    if (!objProto)
-        return nullptr;
-
-    /* Initialize the base Error class first. */
-    RootedObject errorProto(cx, ErrorObject::createProto(cx, global, JSEXN_ERR, objProto));
-    if (!errorProto)
-        return nullptr;
-
-    /* |Error.prototype| alone has method properties. */
-    if (!DefinePropertiesAndBrand(cx, errorProto, nullptr, exception_methods))
-        return nullptr;
-
-    /* Define all remaining *Error constructors. */
-    for (int i = JSEXN_ERR + 1; i < JSEXN_LIMIT; i++) {
-        if (!ErrorObject::createProto(cx, global, JSExnType(i), errorProto))
-            return nullptr;
-    }
-
     return errorProto;
 }
 
-const JSErrorFormatString*
-js_GetLocalizedErrorMessage(ExclusiveContext *cx, void *userRef, const char *locale,
-                            const unsigned errorNumber)
+/* static */ JSObject *
+ErrorObject::createConstructor(JSContext *cx, JSProtoKey key)
 {
-    const JSErrorFormatString *errorString = nullptr;
+    RootedObject ctor(cx);
+    ctor = GenericCreateConstructor<Error, 1, JSFunction::ExtendedFinalizeKind>(cx, key);
+    if (!ctor)
+        return nullptr;
 
-    // The locale callbacks might not be thread safe, so don't call them if
-    // we're not on the main thread. When used with XPConnect,
-    // |localeGetErrorMessage| will be nullptr anyways.
-    if (cx->isJSContext() &&
-        cx->asJSContext()->runtime()->localeCallbacks &&
-        cx->asJSContext()->runtime()->localeCallbacks->localeGetErrorMessage)
-    {
-        JSLocaleCallbacks *callbacks = cx->asJSContext()->runtime()->localeCallbacks;
-        errorString = callbacks->localeGetErrorMessage(userRef, locale, errorNumber);
-    }
-
-    if (!errorString)
-        errorString = js_GetErrorMessage(userRef, locale, errorNumber);
-    return errorString;
+    ctor->as<JSFunction>().setExtendedSlot(0, Int32Value(ExnTypeFromProtoKey(key)));
+    return ctor;
 }
 
-JS_FRIEND_API(const jschar*)
-js::GetErrorTypeName(JSRuntime* rt, int16_t exnType)
+JS_FRIEND_API(JSFlatString *)
+js::GetErrorTypeName(JSRuntime *rt, int16_t exnType)
 {
     /*
      * JSEXN_INTERNALERR returns null to prevent that "InternalError: "
@@ -630,7 +592,7 @@ js::GetErrorTypeName(JSRuntime* rt, int16_t exnType)
         return nullptr;
     }
     JSProtoKey key = GetExceptionProtoKey(JSExnType(exnType));
-    return ClassName(key, rt)->chars();
+    return ClassName(key, rt);
 }
 
 bool
@@ -644,11 +606,9 @@ js_ErrorToException(JSContext *cx, const char *message, JSErrorReport *reportp,
 
     // Find the exception index associated with this error.
     JSErrNum errorNumber = static_cast<JSErrNum>(reportp->errorNumber);
-    const JSErrorFormatString *errorString;
-    if (!callback || callback == js_GetErrorMessage)
-        errorString = js_GetLocalizedErrorMessage(cx, nullptr, nullptr, errorNumber);
-    else
-        errorString = callback(userRef, nullptr, errorNumber);
+    if (!callback)
+        callback = js_GetErrorMessage;
+    const JSErrorFormatString *errorString = callback(userRef, errorNumber);
     JSExnType exnType = errorString ? static_cast<JSExnType>(errorString->exnType) : JSEXN_NONE;
     MOZ_ASSERT(exnType < JSEXN_LIMIT);
 
@@ -786,6 +746,7 @@ js_ReportUncaughtException(JSContext *cx)
     // value is "".
     const char *filename_str = "filename";
     JSAutoByteString filename;
+    AutoStableStringChars strChars(cx);
     if (!reportp && exnObject && IsDuckTypedErrorObject(cx, exnObject, &filename_str))
     {
         // Temporary value for pulling properties off of duck-typed objects.
@@ -856,8 +817,8 @@ js_ReportUncaughtException(JSContext *cx)
             // done for duck-typed error objects.
             //
             // If only this stuff could get specced one day...
-            if (JSFlatString *flat = str->ensureFlat(cx))
-                report.ucmessage = flat->chars();
+            if (str->ensureFlat(cx) && strChars.initTwoByte(cx, str))
+                report.ucmessage = strChars.twoByteChars();
         }
     }
 
@@ -885,10 +846,8 @@ js_ReportUncaughtException(JSContext *cx)
 }
 
 JSObject *
-js_CopyErrorObject(JSContext *cx, Handle<ErrorObject*> err, HandleObject scope)
+js_CopyErrorObject(JSContext *cx, Handle<ErrorObject*> err)
 {
-    assertSameCompartment(cx, scope);
-
     js::ScopedJSFreePtr<JSErrorReport> copyReport;
     if (JSErrorReport *errorReport = err->getErrorReport()) {
         copyReport = CopyErrorReport(cx, errorReport);
@@ -915,7 +874,7 @@ js_CopyErrorObject(JSContext *cx, Handle<ErrorObject*> err, HandleObject scope)
 }
 
 JS_PUBLIC_API(bool)
-JS::CreateTypeError(JSContext *cx, HandleString stack, HandleString fileName,
+JS::CreateError(JSContext *cx, JSExnType type, HandleString stack, HandleString fileName,
                     uint32_t lineNumber, uint32_t columnNumber, JSErrorReport *report,
                     HandleString message, MutableHandleValue rval)
 {
@@ -925,7 +884,7 @@ JS::CreateTypeError(JSContext *cx, HandleString stack, HandleString fileName,
         rep = CopyErrorReport(cx, report);
 
     RootedObject obj(cx,
-        js::ErrorObject::create(cx, JSEXN_TYPEERR, stack, fileName,
+        js::ErrorObject::create(cx, type, stack, fileName,
                                 lineNumber, columnNumber, &rep, message));
     if (!obj)
         return false;

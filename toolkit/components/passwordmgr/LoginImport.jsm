@@ -1,4 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim: set ts=2 et sw=2 tw=80 filetype=javascript: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -165,10 +165,7 @@ this.LoginImport.prototype = {
           let id = row.getResultByName("id");
           let hostname = row.getResultByName("hostname");
 
-          this.store.data.disabledHosts.push({
-            id: this.store.data.nextId++,
-            hostname: hostname,
-          });
+          this.store.data.disabledHosts.push(hostname);
         } catch (ex) {
           Cu.reportError("Error importing disabled host: " + ex);
         }

@@ -14,9 +14,8 @@ class nsStandaloneNativeMenu : public nsMenuGroupOwnerX, public nsIStandaloneNat
 {
 public:
   nsStandaloneNativeMenu();
-  virtual ~nsStandaloneNativeMenu();
 
-  NS_DECL_ISUPPORTS  
+  NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_NSISTANDALONENATIVEMENU
 
   // nsMenuObjectX
@@ -26,6 +25,8 @@ public:
   nsMenuX * GetMenuXObject() { return mMenu; }
 
 protected:
+  virtual ~nsStandaloneNativeMenu();
+
   nsMenuX * mMenu;
 };
 

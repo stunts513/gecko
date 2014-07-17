@@ -1,4 +1,4 @@
-# -*- Mode: javascript; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
+# -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -495,7 +495,10 @@ var gPluginHandler = {
       if (this.getPluginUI(plugin, "submitURLOptIn").checked)
         keyVals.PluginContentURL = plugin.ownerDocument.URL;
     }
-    this.CrashSubmit.submit(pluginDumpID, { extraExtraKeyVals: keyVals });
+
+    let pluginProcessType = Services.crashmanager.PROCESS_TYPE_PLUGIN;
+    this.CrashSubmit.submit(pluginDumpID, { processType: pluginProcessType,
+                                            extraExtraKeyVals: keyVals });
     if (browserDumpID)
       this.CrashSubmit.submit(browserDumpID);
   },

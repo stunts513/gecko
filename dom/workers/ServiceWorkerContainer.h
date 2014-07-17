@@ -29,7 +29,7 @@ public:
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(ServiceWorkerContainer, DOMEventTargetHelper)
 
   IMPL_EVENT_HANDLER(updatefound)
-  IMPL_EVENT_HANDLER(currentchange)
+  IMPL_EVENT_HANDLER(controllerchange)
   IMPL_EVENT_HANDLER(reloadpage)
   IMPL_EVENT_HANDLER(error)
 
@@ -37,6 +37,7 @@ public:
     : mWindow(aWindow)
   {
     SetIsDOMBinding();
+    StartListeningForEvents();
   }
 
   nsPIDOMWindow*
@@ -63,17 +64,30 @@ public:
   GetWaiting();
 
   already_AddRefed<ServiceWorker>
-  GetCurrent();
+  GetActive();
+
+  already_AddRefed<ServiceWorker>
+  GetController();
 
   already_AddRefed<Promise>
   GetAll(ErrorResult& aRv);
 
   already_AddRefed<Promise>
-  WhenReady(ErrorResult& aRv);
+  Ready();
+
+  nsIURI*
+  GetDocumentURI() const
+  {
+    return mWindow->GetDocumentURI();
+  }
 
   // Testing only.
   already_AddRefed<Promise>
   ClearAllServiceWorkerData(ErrorResult& aRv);
+
+  // Testing only.
+  void
+  GetScopeForUrl(const nsAString& aUrl, nsString& aScope, ErrorResult& aRv);
 
   // Testing only.
   void
@@ -82,7 +96,15 @@ public:
                                        ErrorResult& aRv);
 private:
   ~ServiceWorkerContainer()
-  { }
+  {
+    StopListeningForEvents();
+  }
+
+  void
+  StartListeningForEvents();
+
+  void
+  StopListeningForEvents();
 
   nsCOMPtr<nsPIDOMWindow> mWindow;
 };

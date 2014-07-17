@@ -60,8 +60,7 @@
 
 struct nsHTMLReflowState;
 class nsHTMLReflowCommand;
-
-struct gfxMatrix;
+class gfxMatrix;
 class nsIAtom;
 class nsPresContext;
 class nsIPresShell;
@@ -409,6 +408,8 @@ public:
   typedef mozilla::layout::FrameChildListIterator ChildListIterator;
   typedef mozilla::layout::FrameChildListArrayIterator ChildListArrayIterator;
   typedef mozilla::gfx::Matrix Matrix;
+  typedef mozilla::Sides Sides;
+  typedef mozilla::LogicalSides LogicalSides;
 
   NS_DECL_QUERYFRAME_TARGET(nsIFrame)
 
@@ -882,27 +883,6 @@ public:
   }
 
   /**
-   * Apply the result of GetSkipSides() on this frame to an nsMargin by
-   * setting to zero any sides that are skipped.
-   *
-   * @param aMargin The margin to apply the result of GetSkipSides() to.
-   * @param aReflowState An optional reflow state parameter, which is used if
-   *        ApplySkipSides() is being called in the middle of reflow.
-   *
-   * @note (See also bug 743402, comment 11) GetSkipSides() and its sister
-   *       method, ApplySkipSides() checks to see if this frame has a previous
-   *       or next continuation to determine if a side should be skipped.
-   *       Unfortunately, this only works after reflow has been completed. In
-   *       lieu of this, during reflow, an nsHTMLReflowState parameter can be
-   *       passed in, indicating that it should be used to determine if sides
-   *       should be skipped during reflow.
-   */
-  void ApplySkipSides(nsMargin& aMargin,
-                      const nsHTMLReflowState* aReflowState = nullptr) const;
-  void ApplyLogicalSkipSides(mozilla::LogicalMargin& aMargin,
-                             const nsHTMLReflowState* aReflowState = nullptr) const;
-
-  /**
    * Like the frame's rect (see |GetRect|), which is the border rect,
    * other rectangles of the frame, in app units, relative to the parent.
    */
@@ -939,10 +919,10 @@ public:
    * Return whether any radii are nonzero.
    */
   static bool ComputeBorderRadii(const nsStyleCorners& aBorderRadius,
-                                   const nsSize& aFrameSize,
-                                   const nsSize& aBorderArea,
-                                   int aSkipSides,
-                                   nscoord aRadii[8]);
+                                 const nsSize& aFrameSize,
+                                 const nsSize& aBorderArea,
+                                 Sides aSkipSides,
+                                 nscoord aRadii[8]);
 
   /*
    * Given a set of border radii for one box (e.g., border box), convert
@@ -968,7 +948,7 @@ public:
    */
   virtual bool GetBorderRadii(const nsSize& aFrameSize,
                               const nsSize& aBorderArea,
-                              int aSkipSides,
+                              Sides aSkipSides,
                               nscoord aRadii[8]) const;
   bool GetBorderRadii(nscoord aRadii[8]) const;
 
@@ -980,7 +960,7 @@ public:
    * the frame (its top border edge).  Only valid when Reflow is not
    * needed.
    */
-  virtual nscoord GetBaseline() const = 0;
+  virtual nscoord GetLogicalBaseline(mozilla::WritingMode aWritingMode) const = 0;
 
   /**
    * Get the position of the baseline on which the caret needs to be placed,
@@ -989,7 +969,7 @@ public:
    * caret positioning.
    */
   virtual nscoord GetCaretBaseline() const {
-    return GetBaseline();
+    return GetLogicalBaseline(GetWritingMode());
   }
 
   /**
@@ -2325,29 +2305,23 @@ public:
   bool ClearOverflowRects();
 
   /**
-   * Determine whether borders should not be painted on certain sides of the
-   * frame.
+   * Determine whether borders, padding, margins etc should NOT be applied
+   * on certain sides of the frame.
+   * @see mozilla::Sides in gfx/2d/BaseMargin.h
+   * @see mozilla::LogicalSides in layout/generic/WritingModes.h
    *
-   * @note (See also bug 743402, comment 11) GetSkipSides() and its sister
-   *       method, ApplySkipSides() checks to see if this frame has a previous
-   *       or next continuation to determine if a side should be skipped.
+   * @note (See also bug 743402, comment 11) GetSkipSides() checks to see
+   *       if this frame has a previous or next continuation to determine
+   *       if a side should be skipped.
    *       Unfortunately, this only works after reflow has been completed. In
    *       lieu of this, during reflow, an nsHTMLReflowState parameter can be
    *       passed in, indicating that it should be used to determine if sides
    *       should be skipped during reflow.
    */
-#define LOGICAL_SIDE_B_START 1
-#define LOGICAL_SIDE_I_START 2
-#define LOGICAL_SIDE_B_END   4
-#define LOGICAL_SIDE_I_END   8
-#define LOGICAL_SIDES_I_BOTH (LOGICAL_SIDE_I_START | LOGICAL_SIDE_I_END)
-#define LOGICAL_SIDES_B_BOTH (LOGICAL_SIDE_B_START | LOGICAL_SIDE_B_END)
-#define LOGICAL_SIDES_ALL (LOGICAL_SIDE_I_START | LOGICAL_SIDE_I_END | \
-                           LOGICAL_SIDE_B_START | LOGICAL_SIDE_B_END)
-  int GetSkipSides(const nsHTMLReflowState* aReflowState = nullptr) const;
-  virtual int
+  Sides GetSkipSides(const nsHTMLReflowState* aReflowState = nullptr) const;
+  virtual LogicalSides
   GetLogicalSkipSides(const nsHTMLReflowState* aReflowState = nullptr) const {
-    return 0;
+    return LogicalSides();
   }
 
   /**
@@ -2653,7 +2627,7 @@ NS_PTR_TO_INT32(frame->Properties().Get(nsIFrame::ParagraphDepthProperty()))
   // convenience.
   virtual void SetBounds(nsBoxLayoutState& aBoxLayoutState, const nsRect& aRect,
                          bool aRemoveOverflowAreas = false) = 0;
-  NS_HIDDEN_(nsresult) Layout(nsBoxLayoutState& aBoxLayoutState);
+  nsresult Layout(nsBoxLayoutState& aBoxLayoutState);
   // Box methods.  Note that these do NOT just get the CSS border, padding,
   // etc.  They also talk to nsITheme.
   virtual nsresult GetBorderAndPadding(nsMargin& aBorderAndPadding);
@@ -2662,7 +2636,7 @@ NS_PTR_TO_INT32(frame->Properties().Get(nsIFrame::ParagraphDepthProperty()))
   virtual nsresult GetMargin(nsMargin& aMargin)=0;
   virtual void SetLayoutManager(nsBoxLayout* aLayout) { }
   virtual nsBoxLayout* GetLayoutManager() { return nullptr; }
-  NS_HIDDEN_(nsresult) GetClientRect(nsRect& aContentRect);
+  nsresult GetClientRect(nsRect& aContentRect);
 
   // For nsSprocketLayout
   virtual Valignment GetVAlign() const = 0;
@@ -2671,7 +2645,7 @@ NS_PTR_TO_INT32(frame->Properties().Get(nsIFrame::ParagraphDepthProperty()))
   bool IsHorizontal() const { return (mState & NS_STATE_IS_HORIZONTAL) != 0; }
   bool IsNormalDirection() const { return (mState & NS_STATE_IS_DIRECTION_NORMAL) != 0; }
 
-  NS_HIDDEN_(nsresult) Redraw(nsBoxLayoutState& aState);
+  nsresult Redraw(nsBoxLayoutState& aState);
   virtual nsresult RelayoutChildAtOrdinal(nsBoxLayoutState& aState, nsIFrame* aChild)=0;
   // XXX take this out after we've branched
   virtual bool GetMouseThrough() const { return false; }

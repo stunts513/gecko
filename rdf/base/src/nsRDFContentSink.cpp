@@ -102,7 +102,6 @@ class RDFContentSinkImpl : public nsIRDFContentSink,
 {
 public:
     RDFContentSinkImpl();
-    virtual ~RDFContentSinkImpl();
 
     // nsISupports
     NS_DECL_ISUPPORTS
@@ -146,6 +145,8 @@ public:
     } ContainerInfo;
 
 protected:
+    virtual ~RDFContentSinkImpl();
+
     // Text management
     void ParseText(nsIRDFNode **aResult);
 
@@ -397,7 +398,6 @@ NS_IMETHODIMP
 RDFContentSinkImpl::HandleStartElement(const char16_t *aName, 
                                        const char16_t **aAtts, 
                                        uint32_t aAttsCount, 
-                                       int32_t aIndex, 
                                        uint32_t aLineNumber)
 {
   FlushText();

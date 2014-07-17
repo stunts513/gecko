@@ -15,7 +15,6 @@ const require = Cu.import("resource://gre/modules/devtools/Loader.jsm", {}).devt
 const Editor  = require("devtools/sourceeditor/editor");
 const {Promise: promise} = Cu.import("resource://gre/modules/Promise.jsm", {});
 const {CssLogic} = require("devtools/styleinspector/css-logic");
-const AutoCompleter = require("devtools/sourceeditor/autocomplete");
 
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/FileUtils.jsm");
@@ -95,22 +94,17 @@ function StyleSheetEditor(styleSheet, win, file, isNew, walker) {
   this._onMediaRulesChanged = this._onMediaRulesChanged.bind(this)
   this.checkLinkedFileForChanges = this.checkLinkedFileForChanges.bind(this);
   this.markLinkedFileBroken = this.markLinkedFileBroken.bind(this);
-
-  this.mediaRules = [];
-  if (this.styleSheet.getMediaRules) {
-    this.styleSheet.getMediaRules().then(this._onMediaRulesChanged);
-  }
-  this.styleSheet.on("media-rules-changed", this._onMediaRulesChanged);
+  this.saveToFile = this.saveToFile.bind(this);
+  this.updateStyleSheet = this.updateStyleSheet.bind(this);
 
   this._focusOnSourceEditorReady = false;
-
-  let relatedSheet = this.styleSheet.relatedStyleSheet;
-  if (relatedSheet) {
-    relatedSheet.on("property-change", this._onPropertyChange);
-  }
-  this.styleSheet.on("property-change", this._onPropertyChange);
+  this.cssSheet.on("property-change", this._onPropertyChange);
   this.styleSheet.on("error", this._onError);
-
+  this.mediaRules = [];
+  if (this.cssSheet.getMediaRules) {
+    this.cssSheet.getMediaRules().then(this._onMediaRulesChanged);
+  }
+  this.cssSheet.on("media-rules-changed", this._onMediaRulesChanged);
   this.savedFile = file;
   this.linkCSSFile();
 }
@@ -129,6 +123,17 @@ StyleSheetEditor.prototype = {
    */
   get isNew() {
     return this._isNew;
+  },
+
+  /**
+   * The style sheet or the generated style sheet for this source if it's an
+   * original source.
+   */
+  get cssSheet() {
+    if (this.styleSheet.isOriginalSource) {
+      return this.styleSheet.relatedStyleSheet;
+    }
+    return this.styleSheet;
   },
 
   get savedFile() {
@@ -222,7 +227,8 @@ StyleSheetEditor.prototype = {
   fetchSource: function(callback) {
     return this.styleSheet.getText().then((longStr) => {
       longStr.string().then((source) => {
-        this._state.text = prettifyCSS(source);
+        let ruleCount = this.styleSheet.ruleCount;
+        this._state.text = CssLogic.prettifyCSS(source, ruleCount);
         this.sourceLoaded = true;
 
         if (callback) {
@@ -343,23 +349,18 @@ StyleSheetEditor.prototype = {
       autoCloseBrackets: "{}()[]",
       extraKeys: this._getKeyBindings(),
       contextMenu: "sourceEditorContextMenu",
-      autocomplete: Services.prefs.getBoolPref(AUTOCOMPLETION_PREF)
+      autocomplete: Services.prefs.getBoolPref(AUTOCOMPLETION_PREF),
+      autocompleteOpts: { walker: this.walker }
     };
-    let sourceEditor = new Editor(config);
+    let sourceEditor = this._sourceEditor = new Editor(config);
 
     sourceEditor.on("dirty-change", this._onPropertyChange);
 
     return sourceEditor.appendTo(inputElement).then(() => {
-      sourceEditor.setupAutoCompletion({ walker: this.walker });
-
-      sourceEditor.on("save", () => {
-        this.saveToFile();
-      });
+      sourceEditor.on("save", this.saveToFile);
 
       if (this.styleSheet.update) {
-        sourceEditor.on("change", () => {
-          this.updateStyleSheet();
-        });
+        sourceEditor.on("change", this.updateStyleSheet);
       }
 
       this.sourceEditor = sourceEditor;
@@ -497,7 +498,7 @@ StyleSheetEditor.prototype = {
       converter.charset = "UTF-8";
       let istream = converter.convertToInputStream(this._state.text);
 
-      NetUtil.asyncCopy(istream, ostream, function onStreamCopied(status) {
+      NetUtil.asyncCopy(istream, ostream, (status) => {
         if (!Components.isSuccessCode(status)) {
           if (callback) {
             callback(null);
@@ -512,7 +513,7 @@ StyleSheetEditor.prototype = {
         if (callback) {
           callback(returnFile);
         }
-      }.bind(this));
+      });
     };
 
     let defaultName;
@@ -530,7 +531,9 @@ StyleSheetEditor.prototype = {
     this._friendlyName = null;
     this.savedFile = returnFile;
 
-    this.sourceEditor.setClean();
+    if (this.sourceEditor) {
+      this.sourceEditor.setClean();
+    }
 
     this.emit("property-change");
 
@@ -625,80 +628,16 @@ StyleSheetEditor.prototype = {
    * Clean up for this editor.
    */
   destroy: function() {
-    if (this.sourceEditor) {
-      this.sourceEditor.destroy();
+    if (this._sourceEditor) {
+      this._sourceEditor.off("dirty-change", this._onPropertyChange);
+      this._sourceEditor.off("save", this.saveToFile);
+      this._sourceEditor.off("change", this.updateStyleSheet);
+      this._sourceEditor.destroy();
     }
-    this.styleSheet.off("media-rules-changed", this._onMediaRulesChanged);
-    this.styleSheet.off("property-change", this._onPropertyChange);
+    this.cssSheet.off("property-change", this._onPropertyChange);
+    this.cssSheet.off("media-rules-changed", this._onMediaRulesChanged);
     this.styleSheet.off("error", this._onError);
   }
-}
-
-
-const TAB_CHARS = "\t";
-
-const CURRENT_OS = Cc["@mozilla.org/xre/app-info;1"].getService(Ci.nsIXULRuntime).OS;
-const LINE_SEPARATOR = CURRENT_OS === "WINNT" ? "\r\n" : "\n";
-
-/**
- * Prettify minified CSS text.
- * This prettifies CSS code where there is no indentation in usual places while
- * keeping original indentation as-is elsewhere.
- *
- * @param string text
- *        The CSS source to prettify.
- * @return string
- *         Prettified CSS source
- */
-function prettifyCSS(text)
-{
-  // remove initial and terminating HTML comments and surrounding whitespace
-  text = text.replace(/(?:^\s*<!--[\r\n]*)|(?:\s*-->\s*$)/g, "");
-
-  let parts = [];    // indented parts
-  let partStart = 0; // start offset of currently parsed part
-  let indent = "";
-  let indentLevel = 0;
-
-  for (let i = 0; i < text.length; i++) {
-    let c = text[i];
-    let shouldIndent = false;
-
-    switch (c) {
-      case "}":
-        if (i - partStart > 1) {
-          // there's more than just } on the line, add line
-          parts.push(indent + text.substring(partStart, i));
-          partStart = i;
-        }
-        indent = TAB_CHARS.repeat(--indentLevel);
-        /* fallthrough */
-      case ";":
-      case "{":
-        shouldIndent = true;
-        break;
-    }
-
-    if (shouldIndent) {
-      let la = text[i+1]; // one-character lookahead
-      if (!/\n/.test(la) || /^\s+$/.test(text.substring(i+1, text.length))) {
-        // following character should be a new line, but isn't,
-        // or it's whitespace at the end of the file
-        parts.push(indent + text.substring(partStart, i + 1));
-        if (c == "}") {
-          parts.push(""); // for extra line separator
-        }
-        partStart = i + 1;
-      } else {
-        return text; // assume it is not minified, early exit
-      }
-    }
-
-    if (c == "{") {
-      indent = TAB_CHARS.repeat(++indentLevel);
-    }
-  }
-  return parts.join(LINE_SEPARATOR);
 }
 
 /**

@@ -1,4 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim: set ts=2 et sw=2 tw=80 filetype=javascript: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -500,11 +500,13 @@ this.DownloadIntegration = {
     }
     let hash;
     let sigInfo;
+    let channelRedirects;
     try {
       hash = aDownload.saver.getSha256Hash();
       sigInfo = aDownload.saver.getSignatureInfo();
+      channelRedirects = aDownload.saver.getRedirects();
     } catch (ex) {
-      // Bail if DownloadSaver doesn't have a hash.
+      // Bail if DownloadSaver doesn't have a hash or signature info.
       return Promise.resolve(false);
     }
     if (!hash || !sigInfo) {
@@ -520,7 +522,9 @@ this.DownloadIntegration = {
       referrerURI: aReferrer,
       fileSize: aDownload.currentBytes,
       sha256Hash: hash,
-      signatureInfo: sigInfo },
+      suggestedFileName: OS.Path.basename(aDownload.target.path),
+      signatureInfo: sigInfo,
+      redirects: channelRedirects },
       function onComplete(aShouldBlock, aRv) {
         deferred.resolve(aShouldBlock);
       });
@@ -607,6 +611,18 @@ this.DownloadIntegration = {
         }
       }
 #endif
+
+      // Now that the file is completely downloaded, make it accessible by other
+      // users on this system.  On Unix, the umask of the process is respected.
+      // This call has no effect on Windows.
+      try {
+        yield OS.File.setPermissions(aDownload.target.path,
+                                     { unixMode: 0o666 });
+      } catch (ex) {
+        // Errors with making the permissions less restrictive should be
+        // reported, but should not prevent the download from completing.
+        Cu.reportError(ex);
+      }
 
       gDownloadPlatform.downloadDone(NetUtil.newURI(aDownload.source.url),
                                      new FileUtils.File(aDownload.target.path),

@@ -140,6 +140,20 @@ GfxInfo::GetAdapterDeviceID2(nsAString & aAdapterDeviceID)
   return NS_ERROR_FAILURE;
 }
 
+/* readonly attribute DOMString adapterSubsysID; */
+NS_IMETHODIMP
+GfxInfo::GetAdapterSubsysID(nsAString & aAdapterSubsysID)
+{
+  return NS_ERROR_FAILURE;
+}
+
+/* readonly attribute DOMString adapterSubsysID2; */
+NS_IMETHODIMP
+GfxInfo::GetAdapterSubsysID2(nsAString & aAdapterSubsysID)
+{
+  return NS_ERROR_FAILURE;
+}
+
 /* readonly attribute boolean isGPU2Active; */
 NS_IMETHODIMP
 GfxInfo::GetIsGPU2Active(bool* aIsGPU2Active)
@@ -166,7 +180,7 @@ GfxInfo::GetFeatureStatusImpl(int32_t /*aFeature*/,
                               OperatingSystem* /*aOS*/ /* = nullptr */)
 {
   NS_ENSURE_ARG_POINTER(aStatus);
-  *aStatus = nsIGfxInfo::FEATURE_NO_INFO;
+  *aStatus = nsIGfxInfo::FEATURE_STATUS_OK;
 
   return NS_OK;
 }

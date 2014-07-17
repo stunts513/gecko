@@ -65,13 +65,12 @@ public:
   NS_DECL_NSIOBSERVER
 
   nsExternalHelperAppService();
-  virtual ~nsExternalHelperAppService();
 
   /**
    * Initializes internal state. Will be called automatically when
    * this service is first instantiated.
    */
-  NS_HIDDEN_(nsresult) Init();
+  nsresult Init();
  
   /**
    * Given a mimetype and an extension, looks up a mime info from the OS.
@@ -109,10 +108,12 @@ public:
   virtual nsresult GetFileTokenForPath(const char16_t * platformAppPath,
                                        nsIFile ** aFile);
 
-  virtual NS_HIDDEN_(nsresult) OSProtocolHandlerExists(const char *aScheme,
+  virtual nsresult OSProtocolHandlerExists(const char *aScheme,
                                                        bool *aExists) = 0;
 
 protected:
+  virtual ~nsExternalHelperAppService();
+
   /**
    * Searches the "extra" array of MIMEInfo objects for an object
    * with a specific type. If found, it will modify the passed-in
@@ -121,7 +122,7 @@ protected:
    * @param aContentType The type to search for.
    * @param aMIMEInfo    [inout] The mime info, if found
    */
-  NS_HIDDEN_(nsresult) FillMIMEInfoForMimeTypeFromExtras(
+  nsresult FillMIMEInfoForMimeTypeFromExtras(
     const nsACString& aContentType, nsIMIMEInfo * aMIMEInfo);
   /**
    * Searches the "extra" array of MIMEInfo objects for an object
@@ -131,7 +132,7 @@ protected:
    *
    * @see FillMIMEInfoForMimeTypeFromExtras
    */
-  NS_HIDDEN_(nsresult) FillMIMEInfoForExtensionFromExtras(
+  nsresult FillMIMEInfoForExtensionFromExtras(
     const nsACString& aExtension, nsIMIMEInfo * aMIMEInfo);
 
   /**
@@ -140,7 +141,7 @@ protected:
    * @param aMIMEType [out] The found MIME type.
    * @return true if the extension was found, false otherwise.
    */
-  NS_HIDDEN_(bool) GetTypeFromExtras(const nsACString& aExtension,
+  bool GetTypeFromExtras(const nsACString& aExtension,
                                        nsACString& aMIMEType);
 
 #ifdef PR_LOGGING
@@ -226,14 +227,14 @@ public:
                        const nsAString& aFilename,
                        uint32_t aReason, bool aForceSave);
 
-  ~nsExternalAppHandler();
-
   /**
    * Clean up after the request was diverted to the parent process.
    */
   void DidDivertRequest(nsIRequest *request);
 
 protected:
+  ~nsExternalAppHandler();
+
   nsCOMPtr<nsIFile> mTempFile;
   nsCOMPtr<nsIURI> mSourceUrl;
   nsString mTempFileExtension;
@@ -328,6 +329,10 @@ protected:
    * empty.
    */
   nsCOMPtr<nsIArray> mSignatureInfo;
+  /**
+   * Stores the redirect information associated with the channel.
+   */
+  nsCOMPtr<nsIArray> mRedirects;
   /**
    * Creates the temporary file for the download and an output stream for it.
    * Upon successful return, both mTempFile and mSaver will be valid.

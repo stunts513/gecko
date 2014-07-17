@@ -33,15 +33,20 @@ AsyncTransactionTracker::WaitComplete()
 
   MonitorAutoLock mon(mCompletedMonitor);
   int count = 0;
-  while (!mCompleted) {
+  const int maxCount = 5;
+  while (!mCompleted && (count < maxCount)) {
     if (!NS_SUCCEEDED(mCompletedMonitor.Wait(PR_MillisecondsToInterval(10000)))) {
       NS_WARNING("Failed to wait Monitor");
       return;
     }
     if (count > 1) {
-      NS_WARNING("Waiting async transaction complete.");
+      printf_stderr("Waiting async transaction complete.\n");
     }
     count++;
+  }
+
+  if (!mCompleted) {
+    printf_stderr("Timeout of waiting transaction complete.");
   }
 }
 
@@ -89,9 +94,13 @@ AsyncTransactionTrackersHolder::~AsyncTransactionTrackersHolder()
   }
 
   {
-    MOZ_ASSERT(sHolderLock);
-    MutexAutoLock lock(*sHolderLock);
+    if (sHolderLock) {
+      sHolderLock->Lock();
+    }
     sTrackersHolders.erase(mSerial);
+    if (sHolderLock) {
+      sHolderLock->Unlock();
+    }
   }
   MOZ_COUNT_DTOR(AsyncTransactionTrackersHolder);
 }
@@ -170,13 +179,18 @@ AsyncTransactionTrackersHolder::SetReleaseFenceHandle(FenceHandle& aReleaseFence
 void
 AsyncTransactionTrackersHolder::ClearAllAsyncTransactionTrackers()
 {
-  MutexAutoLock lock(*sHolderLock);
+  if (sHolderLock) {
+    sHolderLock->Lock();
+  }
   std::map<uint64_t, RefPtr<AsyncTransactionTracker> >::iterator it;
   for (it = mAsyncTransactionTrackeres.begin();
        it != mAsyncTransactionTrackeres.end(); it++) {
     it->second->NotifyCancel();
   }
   mAsyncTransactionTrackeres.clear();
+  if (sHolderLock) {
+    sHolderLock->Unlock();
+  }
 }
 
 void

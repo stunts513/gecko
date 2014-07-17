@@ -21,11 +21,12 @@
 
 using namespace js;
 
-using mozilla::NumberEqualsInt32;
+using mozilla::ArrayLength;
 using mozilla::Forward;
 using mozilla::IsNaN;
 using mozilla::Move;
-using mozilla::ArrayLength;
+using mozilla::NumberEqualsInt32;
+
 using JS::DoubleNaNValue;
 using JS::ForOfIterator;
 
@@ -797,8 +798,8 @@ HashableValue::setValue(JSContext *cx, HandleValue v)
         value = v;
     }
 
-    JS_ASSERT(value.isUndefined() || value.isNull() || value.isBoolean() ||
-              value.isNumber() || value.isString() || value.isObject());
+    JS_ASSERT(value.isUndefined() || value.isNull() || value.isBoolean() || value.isNumber() ||
+              value.isString() || value.isSymbol() || value.isObject());
     return true;
 }
 
@@ -1051,7 +1052,7 @@ InitClass(JSContext *cx, Handle<GlobalObject*> global, const Class *clasp, JSPro
     Rooted<JSFunction*> ctor(cx, global->createConstructor(cx, construct, ClassName(key, cx), 1));
     if (!ctor ||
         !LinkConstructorAndPrototype(cx, ctor, proto) ||
-        !DefinePropertiesAndBrand(cx, proto, properties, methods) ||
+        !DefinePropertiesAndFunctions(cx, proto, properties, methods) ||
         !GlobalObject::initBuiltinConstructor(cx, global, key, ctor, proto))
     {
         return nullptr;
@@ -1131,23 +1132,27 @@ class OrderedHashTableRef : public gc::BufferableRef
 };
 #endif
 
-static void
-WriteBarrierPost(JSRuntime *rt, ValueMap *map, const HashableValue &key)
+inline static void
+WriteBarrierPost(JSRuntime *rt, ValueMap *map, const Value &key)
 {
 #ifdef JSGC_GENERATIONAL
     typedef OrderedHashMap<Value, Value, UnbarrieredHashPolicy, RuntimeAllocPolicy> UnbarrieredMap;
-    rt->gc.storeBuffer.putGeneric(OrderedHashTableRef<UnbarrieredMap>(
-                reinterpret_cast<UnbarrieredMap *>(map), key.get()));
+    if (MOZ_UNLIKELY(key.isObject() && IsInsideNursery(&key.toObject()))) {
+        rt->gc.storeBuffer.putGeneric(OrderedHashTableRef<UnbarrieredMap>(
+                    reinterpret_cast<UnbarrieredMap *>(map), key));
+    }
 #endif
 }
 
-static void
-WriteBarrierPost(JSRuntime *rt, ValueSet *set, const HashableValue &key)
+inline static void
+WriteBarrierPost(JSRuntime *rt, ValueSet *set, const Value &key)
 {
 #ifdef JSGC_GENERATIONAL
     typedef OrderedHashSet<Value, UnbarrieredHashPolicy, RuntimeAllocPolicy> UnbarrieredSet;
-    rt->gc.storeBuffer.putGeneric(OrderedHashTableRef<UnbarrieredSet>(
-                reinterpret_cast<UnbarrieredSet *>(set), key.get()));
+    if (MOZ_UNLIKELY(key.isObject() && IsInsideNursery(&key.toObject()))) {
+        rt->gc.storeBuffer.putGeneric(OrderedHashTableRef<UnbarrieredSet>(
+                    reinterpret_cast<UnbarrieredSet *>(set), key));
+    }
 #endif
 }
 
@@ -1166,9 +1171,8 @@ MapObject::construct(JSContext *cx, unsigned argc, Value *vp)
         return false;
 
     ValueMap *map = cx->new_<ValueMap>(cx->runtime());
-    if (!map)
-        return false;
-    if (!map->init()) {
+    if (!map || !map->init()) {
+        js_delete(map);
         js_ReportOutOfMemory(cx);
         return false;
     }
@@ -1213,7 +1217,7 @@ MapObject::construct(JSContext *cx, unsigned argc, Value *vp)
                 js_ReportOutOfMemory(cx);
                 return false;
             }
-            WriteBarrierPost(cx->runtime(), map, hkey);
+            WriteBarrierPost(cx->runtime(), map, key);
         }
     }
 
@@ -1310,8 +1314,8 @@ MapObject::set_impl(JSContext *cx, CallArgs args)
         js_ReportOutOfMemory(cx);
         return false;
     }
-    WriteBarrierPost(cx->runtime(), &map, key);
-    args.rval().setUndefined();
+    WriteBarrierPost(cx->runtime(), &map, key.get());
+    args.rval().set(args.thisv());
     return true;
 }
 
@@ -1676,9 +1680,8 @@ SetObject::construct(JSContext *cx, unsigned argc, Value *vp)
         return false;
 
     ValueSet *set = cx->new_<ValueSet>(cx->runtime());
-    if (!set)
-        return false;
-    if (!set->init()) {
+    if (!set || !set->init()) {
+        js_delete(set);
         js_ReportOutOfMemory(cx);
         return false;
     }
@@ -1703,7 +1706,7 @@ SetObject::construct(JSContext *cx, unsigned argc, Value *vp)
                 js_ReportOutOfMemory(cx);
                 return false;
             }
-            WriteBarrierPost(cx->runtime(), set, key);
+            WriteBarrierPost(cx->runtime(), set, keyVal);
         }
     }
 
@@ -1772,8 +1775,8 @@ SetObject::add_impl(JSContext *cx, CallArgs args)
         js_ReportOutOfMemory(cx);
         return false;
     }
-    WriteBarrierPost(cx->runtime(), &set, key);
-    args.rval().setUndefined();
+    WriteBarrierPost(cx->runtime(), &set, key.get());
+    args.rval().set(args.thisv());
     return true;
 }
 

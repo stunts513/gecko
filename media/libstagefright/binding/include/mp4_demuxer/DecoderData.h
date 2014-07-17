@@ -67,11 +67,14 @@ public:
   int32_t display_width;
   int32_t display_height;
 
-  mozilla::Vector<uint8_t> annex_b;
+  mozilla::Vector<uint8_t> extra_data; // Unparsed AVCDecoderConfig payload.
+  mozilla::Vector<uint8_t> annex_b;    // Parsed version for sample prepend.
 
   void Update(stagefright::sp<stagefright::MetaData>& aMetaData, const char* aMimeType);
   bool IsValid();
 };
+
+typedef int64_t Microseconds;
 
 class MP4Sample
 {
@@ -79,11 +82,12 @@ public:
   MP4Sample();
   ~MP4Sample();
   void Update();
+  void Pad(size_t aPaddingBytes);
 
   stagefright::MediaBuffer* mMediaBuffer;
 
-  int64_t composition_timestamp;
-  int64_t duration;
+  Microseconds composition_timestamp;
+  Microseconds duration;
   int64_t byte_offset;
   bool is_sync_point;
 

@@ -225,7 +225,6 @@
 
 #if defined(MOZ_MEMORY_LINUX) && !defined(MOZ_MEMORY_ANDROID)
 #define	_GNU_SOURCE /* For mremap(2). */
-#define	issetugid() 0
 #if 0 /* Enable in order to test decommit code on Linux. */
 #  define MALLOC_DECOMMIT
 #endif
@@ -247,6 +246,7 @@
 #define __crtInitCritSecAndSpinCount InitializeCriticalSectionAndSpinCount
 #include <io.h>
 #include <windows.h>
+#include <intrin.h>
 
 #pragma warning( disable: 4267 4996 4146 )
 
@@ -265,7 +265,6 @@ static unsigned long tlsIndex = 0xffffffff;
 
 #define	__thread
 #define	_pthread_self() __threadid()
-#define	issetugid() 0
 
 /* use MSVC intrinsics */
 #pragma intrinsic(_BitScanForward)
@@ -1558,8 +1557,11 @@ void	(*_malloc_message)(const char *p1, const char *p2, const char *p3,
 #define assert(e)
 #endif
 
-#include <mozilla/Assertions.h>
-#include <mozilla/Attributes.h>
+#include "mozilla/Assertions.h"
+#include "mozilla/Attributes.h"
+#include "mozilla/TaggedAnonymousMemory.h"
+// Note: MozTaggedAnonymousMmap() could call an LD_PRELOADed mmap
+// instead of the one defined here; use only MozTagAnonymousMemory().
 
 /* RELEASE_ASSERT calls jemalloc_crash() instead of calling MOZ_CRASH()
  * directly because we want crashing to add a frame to the stack.  This makes
@@ -1978,6 +1980,7 @@ pages_decommit(void *addr, size_t size)
 	if (mmap(addr, size, PROT_NONE, MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1,
 	    0) == MAP_FAILED)
 		abort();
+	MozTagAnonymousMemory(addr, size, "jemalloc-decommitted");
 #endif
 }
 
@@ -1992,6 +1995,7 @@ pages_commit(void *addr, size_t size)
 	if (mmap(addr, size, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_PRIVATE |
 	    MAP_ANON, -1, 0) == MAP_FAILED)
 		abort();
+	MozTagAnonymousMemory(addr, size, "jemalloc");
 #  endif
 }
 
@@ -2362,6 +2366,8 @@ pages_map_align(size_t size, int pfd, size_t alignment)
 
 	if (ret == MAP_FAILED)
 		ret = NULL;
+	else
+		MozTagAnonymousMemory(ret, size, "jemalloc");
 	return (ret);
 }
 #endif
@@ -2409,7 +2415,7 @@ pages_map(void *addr, size_t size, int pfd)
 
 	if (ret == MAP_FAILED) {
 		ret = NULL;
-        }
+	}
 #if defined(__ia64__)
         /* 
          * If the allocated memory doesn't have its upper 17 bits clear, consider it 
@@ -2437,6 +2443,9 @@ pages_map(void *addr, size_t size, int pfd)
 				abort();
 		}
 		ret = NULL;
+	}
+	if (ret != NULL) {
+		MozTagAnonymousMemory(ret, size, "jemalloc");
 	}
 
 #if defined(__ia64__)
@@ -5669,8 +5678,7 @@ malloc_init_hard(void)
 			}
 			break;
 		case 1:
-			if (issetugid() == 0 && (opts =
-			    getenv("MALLOC_OPTIONS")) != NULL) {
+			if ((opts = getenv("MALLOC_OPTIONS")) != NULL) {
 				/*
 				 * Do nothing; opts is already initialized to
 				 * the value of the MALLOC_OPTIONS environment
@@ -6842,7 +6850,7 @@ _expand(void *ptr, size_t newsize)
 }
 
 size_t
-_msize(const void *ptr)
+_msize(void *ptr)
 {
 
 	return malloc_usable_size_impl(ptr);

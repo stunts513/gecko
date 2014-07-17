@@ -9,6 +9,7 @@
 #include <stddef.h>                     // for size_t
 #include <stdint.h>                     // for uint32_t, uint64_t
 #include "CompositableTransactionParent.h"
+#include "CompositorParent.h"
 #include "mozilla/Assertions.h"         // for MOZ_ASSERT_HELPER2
 #include "mozilla/Attributes.h"         // for MOZ_OVERRIDE
 #include "mozilla/ipc/ProtocolUtils.h"
@@ -88,7 +89,7 @@ public:
   // Shutdown step 2
   virtual bool RecvStop() MOZ_OVERRIDE;
 
-  MessageLoop * GetMessageLoop();
+  virtual MessageLoop* GetMessageLoop() const MOZ_OVERRIDE;
 
 
   // ISurfaceAllocator
@@ -151,6 +152,10 @@ private:
    * Map of all living ImageBridgeParent instances
    */
   static std::map<base::ProcessId, ImageBridgeParent*> sImageBridges;
+
+  static MessageLoop* sMainLoop;
+
+  nsRefPtr<CompositorThreadHolder> mCompositorThreadHolder;
 };
 
 } // layers

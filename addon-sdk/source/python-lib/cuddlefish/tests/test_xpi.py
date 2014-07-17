@@ -148,12 +148,12 @@ class SmallXPI(unittest.TestCase):
             os.path.join("sdk", "core", "promise.js"),
             os.path.join("sdk", "net", "url.js"),
             os.path.join("sdk", "util", "object.js"),
-            os.path.join("sdk", "util", "array.js")
+            os.path.join("sdk", "util", "array.js"),
+            os.path.join("sdk", "preferences", "service.js")
             ]])
 
         missing = set(expected) - set(used_files)
         extra = set(used_files) - set(expected)
-
         self.failUnlessEqual(list(missing), [])
         self.failUnlessEqual(list(extra), [])
         used_deps = m.get_used_packages()
@@ -190,6 +190,8 @@ class SmallXPI(unittest.TestCase):
                     "resources/addon-sdk/lib/sdk/util/object.js",
                     "resources/addon-sdk/lib/sdk/util/array.js",
                     "resources/addon-sdk/lib/sdk/net/url.js",
+                    "resources/addon-sdk/lib/sdk/preferences/",
+                    "resources/addon-sdk/lib/sdk/preferences/service.js",
                     "resources/three/",
                     "resources/three/lib/",
                     "resources/three/lib/main.js",
@@ -241,91 +243,6 @@ class SmallXPI(unittest.TestCase):
             },
             "uft8_value": "\u00e9"
           }'''))
-
-    def test_scantests(self):
-        target_cfg = self.get_pkg("three")
-        package_path = [self.get_linker_files_dir("three-deps")]
-        pkg_cfg = packaging.build_config(self.root, target_cfg,
-                                         packagepath=package_path)
-
-        deps = packaging.get_deps_for_targets(pkg_cfg,
-                                              [target_cfg.name, "addon-sdk"])
-        m = manifest.build_manifest(target_cfg, pkg_cfg, deps, scan_tests=True)
-        self.failUnlessEqual(sorted(m.get_all_test_modules()),
-                             sorted(["three/tests/test-one", "three/tests/test-two"]))
-        # the current __init__.py code omits limit_to=used_files for 'cfx
-        # test', so all test files are included in the XPI. But the test
-        # runner will only execute the tests that m.get_all_test_modules()
-        # tells us about (which are put into the .allTestModules property of
-        # harness-options.json).
-        used_deps = m.get_used_packages()
-
-        build = packaging.generate_build_for_target(pkg_cfg, target_cfg.name,
-                                                    used_deps,
-                                                    include_tests=True)
-        options = {'main': target_cfg.main}
-        options.update(build)
-        basedir = self.make_basedir()
-        xpi_name = os.path.join(basedir, "contents.xpi")
-        xpi.build_xpi(template_root_dir=xpi_template_path,
-                      manifest=fake_manifest,
-                      xpi_path=xpi_name,
-                      harness_options=options,
-                      limit_to=None)
-        x = zipfile.ZipFile(xpi_name, "r")
-        names = x.namelist()
-        self.failUnless("resources/addon-sdk/lib/sdk/deprecated/unit-test.js" in names, names)
-        self.failUnless("resources/addon-sdk/lib/sdk/deprecated/unit-test-finder.js" in names, names)
-        self.failUnless("resources/addon-sdk/lib/sdk/test/harness.js" in names, names)
-        self.failUnless("resources/addon-sdk/lib/sdk/test/runner.js" in names, names)
-        # all files are copied into the XPI, even the things that don't look
-        # like tests.
-        self.failUnless("resources/three/tests/test-one.js" in names, names)
-        self.failUnless("resources/three/tests/test-two.js" in names, names)
-        self.failUnless("resources/three/tests/nontest.js" in names, names)
-
-    def test_scantests_filter(self):
-        target_cfg = self.get_pkg("three")
-        package_path = [self.get_linker_files_dir("three-deps")]
-        pkg_cfg = packaging.build_config(self.root, target_cfg,
-                                         packagepath=package_path)
-        deps = packaging.get_deps_for_targets(pkg_cfg,
-                                              [target_cfg.name, "addon-sdk"])
-        FILTER = ".*one.*"
-        m = manifest.build_manifest(target_cfg, pkg_cfg, deps, scan_tests=True,
-                                    test_filter_re=FILTER)
-        self.failUnlessEqual(sorted(m.get_all_test_modules()),
-                             sorted(["three/tests/test-one"]))
-        # the current __init__.py code omits limit_to=used_files for 'cfx
-        # test', so all test files are included in the XPI. But the test
-        # runner will only execute the tests that m.get_all_test_modules()
-        # tells us about (which are put into the .allTestModules property of
-        # harness-options.json).
-        used_deps = m.get_used_packages()
-
-        build = packaging.generate_build_for_target(pkg_cfg, target_cfg.name,
-                                                    used_deps,
-                                                    include_tests=True)
-        options = {'main': target_cfg.main}
-        options.update(build)
-        basedir = self.make_basedir()
-        xpi_name = os.path.join(basedir, "contents.xpi")
-        xpi.build_xpi(template_root_dir=xpi_template_path,
-                      manifest=fake_manifest,
-                      xpi_path=xpi_name,
-                      harness_options=options,
-                      limit_to=None)
-        x = zipfile.ZipFile(xpi_name, "r")
-        names = x.namelist()
-        self.failUnless("resources/addon-sdk/lib/sdk/deprecated/unit-test.js" in names, names)
-        self.failUnless("resources/addon-sdk/lib/sdk/deprecated/unit-test-finder.js" in names, names)
-        self.failUnless("resources/addon-sdk/lib/sdk/test/harness.js" in names, names)
-        self.failUnless("resources/addon-sdk/lib/sdk/test/runner.js" in names, names)
-        # get_all_test_modules() respects the filter. But all files are still
-        # copied into the XPI.
-        self.failUnless("resources/three/tests/test-one.js" in names, names)
-        self.failUnless("resources/three/tests/test-two.js" in names, names)
-        self.failUnless("resources/three/tests/nontest.js" in names, names)
 
 
 def document_dir(name):

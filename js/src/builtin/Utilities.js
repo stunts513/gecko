@@ -28,8 +28,13 @@
 // Remove unsafe builtin functions.
 Object.defineProperty = null; // See bug 988416.
 
-// Cache builtin functions so using them doesn't require cloning the whole object they're 
+// Cache builtin functions so using them doesn't require cloning the whole object they're
 // installed on.
+//
+// WARNING: Do not make std_ references to builtin constructors (like Array and
+// Object) below. Setting `var std_Array = Array;`, for instance, would cause
+// the entire Array constructor, including its prototype and methods, to be
+// cloned into content compartments.
 var std_isFinite = isFinite;
 var std_isNaN = isNaN;
 var std_Array_indexOf = ArrayIndexOf;
@@ -50,6 +55,7 @@ var std_Function_apply = Function.prototype.apply;
 var std_Math_floor = Math.floor;
 var std_Math_max = Math.max;
 var std_Math_min = Math.min;
+var std_Math_abs = Math.abs;
 var std_Math_imul = Math.imul;
 var std_Math_log2 = Math.log2;
 var std_Number_valueOf = Number.prototype.valueOf;
@@ -57,6 +63,7 @@ var std_Number_POSITIVE_INFINITY = Number.POSITIVE_INFINITY;
 var std_Object_create = Object.create;
 var std_Object_getOwnPropertyNames = Object.getOwnPropertyNames;
 var std_Object_hasOwnProperty = Object.prototype.hasOwnProperty;
+var std_Object_getPrototypeOf = Object.getPrototypeOf;
 var std_RegExp_test = RegExp.prototype.test;
 var std_String_fromCharCode = String.fromCharCode;
 var std_String_charCodeAt = String.prototype.charCodeAt;
@@ -136,22 +143,6 @@ function CheckObjectCoercible(v) {
     if (v === undefined || v === null)
         ThrowError(JSMSG_CANT_CONVERT_TO, ToString(v), "object");
 }
-
-
-/********** Various utility functions **********/
-
-
-/** Returns true iff Type(v) is Object; see ES5 8.6. */
-function IsObject(v) {
-    // Watch out for |typeof null === "object"| as the most obvious pitfall.
-    // But also be careful of SpiderMonkey's objects that emulate undefined
-    // (i.e. |document.all|), which have bogus |typeof| behavior.  Detect
-    // these objects using strict equality, which said bogosity doesn't affect.
-    return (typeof v === "object" && v !== null) ||
-           typeof v === "function" ||
-           (typeof v === "undefined" && v !== undefined);
-}
-
 
 /********** Testing code **********/
 

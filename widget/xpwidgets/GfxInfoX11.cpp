@@ -318,7 +318,7 @@ GfxInfo::GetFeatureStatusImpl(int32_t aFeature,
           !strcmp(mRenderer.get(), "GeForce 9400/PCI/SSE2") &&
           !strcmp(mVersion.get(), "3.2.0 NVIDIA 190.42"))
       {
-        *aStatus = nsIGfxInfo::FEATURE_NO_INFO;
+        *aStatus = nsIGfxInfo::FEATURE_STATUS_OK;
         return NS_OK;
       }
 
@@ -508,6 +508,20 @@ GfxInfo::GetAdapterDeviceID(nsAString & aAdapterDeviceID)
 /* readonly attribute DOMString adapterDeviceID2; */
 NS_IMETHODIMP
 GfxInfo::GetAdapterDeviceID2(nsAString & aAdapterDeviceID)
+{
+  return NS_ERROR_FAILURE;
+}
+
+/* readonly attribute DOMString adapterSubsysID; */
+NS_IMETHODIMP
+GfxInfo::GetAdapterSubsysID(nsAString & aAdapterSubsysID)
+{
+  return NS_ERROR_FAILURE;
+}
+
+/* readonly attribute DOMString adapterSubsysID2; */
+NS_IMETHODIMP
+GfxInfo::GetAdapterSubsysID2(nsAString & aAdapterSubsysID)
 {
   return NS_ERROR_FAILURE;
 }

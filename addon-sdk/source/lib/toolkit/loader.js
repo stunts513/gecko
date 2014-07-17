@@ -283,17 +283,31 @@ const load = iced(function load(loader, module) {
     }
   });
 
-  let sandbox = sandboxes[module.uri] = Sandbox({
-    name: module.uri,
-    prototype: create(globals, descriptors),
-    wantXrays: false,
-    wantGlobalProperties: module.id == "sdk/indexed-db" ? ["indexedDB"] : [],
-    invisibleToDebugger: loader.invisibleToDebugger,
-    metadata: {
-      addonID: loader.id,
-      URI: module.uri
-    }
-  });
+  let sandbox;
+  if (loader.sharedGlobalSandbox &&
+      loader.sharedGlobalBlacklist.indexOf(module.id) == -1) {
+    // Create a new object in this sandbox, that will be used as
+    // the scope object for this particular module
+    sandbox = new loader.sharedGlobalSandbox.Object();
+    // Inject all expected globals in the scope object
+    getOwnPropertyNames(globals).forEach(function(name) {
+      descriptors[name] = getOwnPropertyDescriptor(globals, name)
+    });
+    define(sandbox, descriptors);
+  } else {
+    sandbox = Sandbox({
+      name: module.uri,
+      prototype: create(globals, descriptors),
+      wantXrays: false,
+      wantGlobalProperties: module.id == "sdk/indexed-db" ? ["indexedDB"] : [],
+      invisibleToDebugger: loader.invisibleToDebugger,
+      metadata: {
+        addonID: loader.id,
+        URI: module.uri
+      }
+    });
+  }
+  sandboxes[module.uri] = sandbox;
 
   try {
     evaluate(sandbox, module.uri);
@@ -384,13 +398,12 @@ exports.resolve = resolve;
 // algorithm.
 // `id` should already be resolved relatively at this point.
 // http://nodejs.org/api/modules.html#modules_all_together
-const nodeResolve = iced(function nodeResolve(id, requirer, { manifest, rootURI }) {
+const nodeResolve = iced(function nodeResolve(id, requirer, { rootURI }) {
   // Resolve again
   id = exports.resolve(id, requirer);
 
   // we assume that extensions are correct, i.e., a directory doesnt't have '.js'
   // and a js file isn't named 'file.json.js'
-
   let fullId = join(rootURI, id);
 
   let resolvedPath;
@@ -400,7 +413,7 @@ const nodeResolve = iced(function nodeResolve(id, requirer, { manifest, rootURI 
     return stripBase(rootURI, resolvedPath);
   // If manifest has dependencies, attempt to look up node modules
   // in the `dependencies` list
-  else if (manifest.dependencies) {
+  else {
     let dirs = getNodeModulePaths(dirname(join(rootURI, requirer))).map(dir => join(dir, id));
     for (let i = 0; i < dirs.length; i++) {
       if (resolvedPath = loadAsFile(dirs[i]))
@@ -533,7 +546,6 @@ const Require = iced(function Require(loader, requirer) {
 
     // TODO should get native Firefox modules before doing node-style lookups
     // to save on loading time
-
     if (isNative) {
       // If a requireMap is available from `generateMap`, use that to
       // immediately resolve the node-style mapping.
@@ -693,7 +705,8 @@ const Loader = iced(function Loader(options) {
   });
 
   let {
-    modules, globals, resolve, paths, rootURI, manifest, requireMap, isNative
+    modules, globals, resolve, paths, rootURI, manifest, requireMap, isNative,
+    metadata, sharedGlobal, sharedGlobalBlacklist
   } = override({
     paths: {},
     modules: {},
@@ -701,8 +714,10 @@ const Loader = iced(function Loader(options) {
       console: console
     },
     resolve: options.isNative ?
-      exports.nodeResolve :
+      // Make the returned resolve function have the same signature
+      (id, requirer) => exports.nodeResolve(id, requirer, { rootURI: rootURI }) :
       exports.resolve,
+    sharedGlobalBlacklist: ["sdk/indexed-db"]
   }, options);
 
   // We create an identity object that will be dispatched on an unload
@@ -739,6 +754,24 @@ const Loader = iced(function Loader(options) {
     return result;
   }, {});
 
+  let sharedGlobalSandbox;
+  if (sharedGlobal) {
+    // Create the unique sandbox we will be using for all modules,
+    // so that we prevent creating a new comportment per module.
+    // The side effect is that all modules will share the same
+    // global objects.
+    sharedGlobalSandbox = Sandbox({
+      name: "Addon-SDK",
+      wantXrays: false,
+      wantGlobalProperties: [],
+      invisibleToDebugger: options.invisibleToDebugger || false,
+      metadata: {
+        addonID: options.id,
+        URI: "Addon-SDK"
+      }
+    });
+  }
+
   // Loader object is just a representation of a environment
   // state. We freeze it and mark make it's properties non-enumerable
   // as they are pure implementation detail that no one should rely upon.
@@ -748,6 +781,9 @@ const Loader = iced(function Loader(options) {
     mapping: { enumerable: false, value: mapping },
     // Map of module objects indexed by module URIs.
     modules: { enumerable: false, value: modules },
+    metadata: { enumerable: false, value: metadata },
+    sharedGlobalSandbox: { enumerable: false, value: sharedGlobalSandbox },
+    sharedGlobalBlacklist: { enumerable: false, value: sharedGlobalBlacklist },
     // Map of module sandboxes indexed by module URIs.
     sandboxes: { enumerable: false, value: {} },
     resolve: { enumerable: false, value: resolve },

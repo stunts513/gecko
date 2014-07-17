@@ -31,7 +31,6 @@
 #include "nsThreadUtils.h"              // for nsRunnable
 #include "nsXULAppAPI.h"                // for XRE_GetProcessType
 #include "nscore.h"                     // for NS_IMETHOD
-#include "VBOArena.h"                   // for gl::VBOArena
 #ifdef MOZ_WIDGET_GONK
 #include <ui/GraphicBuffer.h>
 #endif
@@ -167,8 +166,10 @@ public:
   CompositorOGL(nsIWidget *aWidget, int aSurfaceWidth = -1, int aSurfaceHeight = -1,
                 bool aUseExternalSurfaceSize = false);
 
+protected:
   virtual ~CompositorOGL();
 
+public:
   virtual TemporaryRef<DataTextureSource>
   CreateDataTextureSource(TextureFlags aFlags = TextureFlags::NO_FLAGS) MOZ_OVERRIDE;
 
@@ -302,11 +303,6 @@ private:
    */
   GLuint mQuadVBO;
 
-  /**
-   * When we can't use mQuadVBO, we allocate VBOs from this arena instead.
-   */
-  gl::VBOArena mVBOs;
-
   bool mHasBGRA;
 
   /**
@@ -352,9 +348,6 @@ private:
                             GLuint aSourceFrameBuffer,
                             GLuint *aFBO, GLuint *aTexture);
 
-  void BindQuadVBO();
-  void QuadVBOVerticesAttrib(GLuint aAttribIndex);
-  void QuadVBOTexCoordsAttrib(GLuint aAttribIndex);
   void BindAndDrawQuads(ShaderProgramOGL *aProg,
                         int aQuads,
                         const gfx::Rect* aLayerRect,

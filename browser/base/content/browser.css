@@ -557,7 +557,8 @@ window[chromehidden~="toolbar"] toolbar:not(.toolbar-primary):not(.chromeclass-m
 #identity-popup-content-box.unknownIdentity > #identity-popup-content-host ,
 #identity-popup-content-box.unknownIdentity > #identity-popup-content-owner ,
 #identity-popup-content-box.verifiedIdentity > #identity-popup-connectedToLabel2 ,
-#identity-popup-content-box.verifiedDomain > #identity-popup-connectedToLabel2 {
+#identity-popup-content-box.verifiedDomain > #identity-popup-connectedToLabel2 ,
+#identity-popup-content-box.verifiedDomain > #identity-popup-runByLabel {
   display: none;
 }
 
@@ -954,30 +955,28 @@ chatbox:-moz-full-screen-ancestor > .chat-titlebar {
   opacity: 1.0;
 }
 
-#BMB_bookmarksPopup[arrowposition="after_start"] {
+#BMB_bookmarksPopup[animate="cancel"] {
+  transform: none;
+}
+
+#BMB_bookmarksPopup[arrowposition="after_start"]:-moz-locale-dir(ltr),
+#BMB_bookmarksPopup[arrowposition="after_end"]:-moz-locale-dir(rtl) {
   transform-origin: 20px top;
 }
 
-#BMB_bookmarksPopup[arrowposition="after_end"] {
+#BMB_bookmarksPopup[arrowposition="after_end"]:-moz-locale-dir(ltr),
+#BMB_bookmarksPopup[arrowposition="after_start"]:-moz-locale-dir(rtl) {
   transform-origin: calc(100% - 20px) top;
 }
 
-#BMB_bookmarksPopup[arrowposition="before_start"] {
+#BMB_bookmarksPopup[arrowposition="before_start"]:-moz-locale-dir(ltr),
+#BMB_bookmarksPopup[arrowposition="before_end"]:-moz-locale-dir(rtl) {
   transform-origin: 20px bottom;
 }
 
-#BMB_bookmarksPopup[arrowposition="before_end"] {
+#BMB_bookmarksPopup[arrowposition="before_end"]:-moz-locale-dir(ltr),
+#BMB_bookmarksPopup[arrowposition="before_start"]:-moz-locale-dir(rtl) {
   transform-origin: calc(100% - 20px) bottom;
-}
-
-#BMB_bookmarksPopup[arrowposition="after_start"][animate="cancel"],
-#BMB_bookmarksPopup[arrowposition="before_end"][animate="cancel"] {
-  transform: none;
-}
-
-#BMB_bookmarksPopup[arrowposition="after_end"][animate="cancel"],
-#BMB_bookmarksPopup[arrowposition="before_start"][animate="cancel"] {
-  transform: none;
 }
 
 %endif
@@ -1040,10 +1039,27 @@ toolbarpaletteitem[dragover] {
   border-right-color: transparent;
 }
 
+#customization-palette-container {
+  display: flex;
+  flex-direction: column;
+}
+
 #customization-palette:not([hidden]) {
   display: block;
+  flex: 1 1 auto;
   overflow: auto;
   min-height: 3em;
+}
+
+#customization-footer-spacer,
+#customization-spacer {
+  flex: 1 1 auto;
+}
+
+#customization-footer {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
 }
 
 #customization-toolbar-visibility-button > .box-inherit > .button-menu-dropmarker {

@@ -15,8 +15,6 @@
 #include "nsIApplicationCacheChannel.h"
 #include "nsIApplicationCacheService.h"
 #include "nsICache.h"
-#include "nsICacheService.h"
-#include "nsICacheSession.h"
 #include "nsICachingChannel.h"
 #include "nsIContent.h"
 #include "mozilla/dom/Element.h"
@@ -143,6 +141,8 @@ public:
     nsresult Begin();
 
 private:
+
+    ~nsManifestCheck() {}
 
     static NS_METHOD ReadManifest(nsIInputStream *aInputStream,
                                   void *aClosure,
@@ -1992,6 +1992,20 @@ bool
 nsOfflineCacheUpdate::IsForGroupID(const nsCSubstring &groupID)
 {
     return mGroupID == groupID;
+}
+
+bool
+nsOfflineCacheUpdate::IsForProfile(nsIFile* aCustomProfileDir)
+{
+    if (!mCustomProfileDir && !aCustomProfileDir)
+        return true;
+    if (!mCustomProfileDir || !aCustomProfileDir)
+        return false;
+
+    bool equals;
+    nsresult rv = mCustomProfileDir->Equals(aCustomProfileDir, &equals);
+
+    return NS_SUCCEEDED(rv) && equals;
 }
 
 nsresult

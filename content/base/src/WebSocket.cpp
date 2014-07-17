@@ -11,13 +11,13 @@
 #include "jsfriendapi.h"
 #include "js/OldDebugAPI.h"
 #include "mozilla/DOMEventTargetHelper.h"
+#include "mozilla/dom/ScriptSettings.h"
 #include "nsIScriptGlobalObject.h"
 #include "nsIDOMWindow.h"
 #include "nsIDocument.h"
 #include "nsXPCOM.h"
 #include "nsIXPConnect.h"
 #include "nsContentUtils.h"
-#include "nsCxPusher.h"
 #include "nsError.h"
 #include "nsIScriptObjectPrincipal.h"
 #include "nsIURL.h"
@@ -29,7 +29,7 @@
 #include "nsIPrompt.h"
 #include "nsIStringBundle.h"
 #include "nsIConsoleService.h"
-#include "nsIDOMCloseEvent.h"
+#include "mozilla/dom/CloseEvent.h"
 #include "nsICryptoHash.h"
 #include "nsJSUtils.h"
 #include "nsIScriptError.h"
@@ -42,7 +42,6 @@
 #include "nsWrapperCacheInlines.h"
 #include "nsIObserverService.h"
 #include "nsIWebSocketChannel.h"
-#include "GeneratedEvents.h"
 
 namespace mozilla {
 namespace dom {
@@ -559,7 +558,7 @@ WebSocket::Constructor(const GlobalObject& aGlobal,
   }
 
   nsRefPtr<WebSocket> webSocket = new WebSocket(ownerWindow);
-  nsresult rv = webSocket->Init(aGlobal.GetContext(), principal,
+  nsresult rv = webSocket->Init(aGlobal.Context(), principal,
                                 aUrl, protocolArray);
   if (NS_FAILED(rv)) {
     aRv.Throw(rv);
@@ -865,15 +864,11 @@ WebSocket::CreateAndDispatchMessageEvent(const nsACString& aData,
   if (NS_FAILED(rv))
     return NS_OK;
 
-  // Get the JSContext
-  nsCOMPtr<nsIScriptGlobalObject> sgo = do_QueryInterface(GetOwner());
-  NS_ENSURE_TRUE(sgo, NS_ERROR_FAILURE);
-
-  nsIScriptContext* scriptContext = sgo->GetContext();
-  NS_ENSURE_TRUE(scriptContext, NS_ERROR_FAILURE);
-
-  AutoPushJSContext cx(scriptContext->GetNativeContext());
-  NS_ENSURE_TRUE(cx, NS_ERROR_FAILURE);
+  AutoJSAPI jsapi;
+  if (NS_WARN_IF(!jsapi.Init(GetOwner()))) {
+    return NS_ERROR_FAILURE;
+  }
+  JSContext* cx = jsapi.cx();
 
   // Create appropriate JS object for message
   JS::Rooted<JS::Value> jsData(cx);
@@ -932,19 +927,15 @@ WebSocket::CreateAndDispatchCloseEvent(bool aWasClean,
     return NS_OK;
   }
 
-  // create an event that uses the CloseEvent interface,
-  // which does not bubble, is not cancelable, and has no default action
+  CloseEventInit init;
+  init.mBubbles = false;
+  init.mCancelable = false;
+  init.mWasClean = aWasClean;
+  init.mCode = aCode;
+  init.mReason = aReason;
 
-  nsCOMPtr<nsIDOMEvent> event;
-  rv = NS_NewDOMCloseEvent(getter_AddRefs(event), this, nullptr, nullptr);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  nsCOMPtr<nsIDOMCloseEvent> closeEvent = do_QueryInterface(event);
-  rv = closeEvent->InitCloseEvent(NS_LITERAL_STRING("close"),
-                                  false, false,
-                                  aWasClean, aCode, aReason);
-  NS_ENSURE_SUCCESS(rv, rv);
-
+  nsRefPtr<CloseEvent> event =
+    CloseEvent::Constructor(this, NS_LITERAL_STRING("close"), init);
   event->SetTrusted(true);
 
   return DispatchDOMEvent(nullptr, event, nullptr, nullptr);

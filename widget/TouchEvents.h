@@ -155,6 +155,9 @@ public:
 class WidgetTouchEvent : public WidgetInputEvent
 {
 public:
+  typedef nsTArray<nsRefPtr<mozilla::dom::Touch>> TouchArray;
+  typedef nsAutoTArray<nsRefPtr<mozilla::dom::Touch>, 10> AutoTouchArray;
+
   virtual WidgetTouchEvent* AsTouchEvent() MOZ_OVERRIDE { return this; }
 
   WidgetTouchEvent()
@@ -167,6 +170,7 @@ public:
   {
     modifiers = aOther.modifiers;
     time = aOther.time;
+    timeStamp = aOther.timeStamp;
     touches.AppendElements(aOther.touches);
     mFlags.mCancelable = message != NS_TOUCH_CANCEL;
     MOZ_COUNT_CTOR(WidgetTouchEvent);
@@ -195,7 +199,7 @@ public:
     return result;
   }
 
-  nsTArray<nsRefPtr<mozilla::dom::Touch>> touches;
+  TouchArray touches;
 
   void AssignTouchEventData(const WidgetTouchEvent& aEvent, bool aCopyTargets)
   {

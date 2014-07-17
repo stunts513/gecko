@@ -23,6 +23,7 @@
 #include "nsIDocument.h"
 #include "nsISupportsPrimitives.h"
 #include "nsIInterfaceRequestorUtils.h"
+#include "nsNetUtil.h"
 #include "mozilla/Types.h"
 #include "mozilla/PeerIdentity.h"
 #include "mozilla/dom/ContentChild.h"
@@ -41,12 +42,11 @@
 #include "nsDOMFile.h"
 #include "nsGlobalWindow.h"
 
-#include "mozilla/Preferences.h"
-
 /* Using WebRTC backend on Desktops (Mac, Windows, Linux), otherwise default */
 #include "MediaEngineDefault.h"
 #if defined(MOZ_WEBRTC)
 #include "MediaEngineWebRTC.h"
+#include "browser_logging/WebRtcLog.h"
 #endif
 
 #ifdef MOZ_B2G
@@ -62,12 +62,12 @@
 // XXX Workaround for bug 986974 to maintain the existing broken semantics
 template<>
 struct nsIMediaDevice::COMTypeInfo<mozilla::VideoDevice, void> {
-  static const nsIID kIID NS_HIDDEN;
+  static const nsIID kIID;
 };
 const nsIID nsIMediaDevice::COMTypeInfo<mozilla::VideoDevice, void>::kIID = NS_IMEDIADEVICE_IID;
 template<>
 struct nsIMediaDevice::COMTypeInfo<mozilla::AudioDevice, void> {
-  static const nsIID kIID NS_HIDDEN;
+  static const nsIID kIID;
 };
 const nsIID nsIMediaDevice::COMTypeInfo<mozilla::AudioDevice, void>::kIID = NS_IMEDIADEVICE_IID;
 
@@ -310,6 +310,9 @@ VideoDevice::VideoDevice(MediaEngineVideoSource* aSource)
     mHasFacingMode = true;
     mFacingMode = dom::VideoFacingModeEnum::User;
   }
+
+  // dom::MediaSourceEnum::Camera;
+  mMediaSource = aSource->GetMediaSource();
 }
 
 AudioDevice::AudioDevice(MediaEngineAudioSource* aSource)
@@ -358,6 +361,15 @@ MediaDevice::GetFacingMode(nsAString& aFacingMode)
   } else {
     aFacingMode.Truncate(0);
   }
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+MediaDevice::GetMediaSource(nsAString& aMediaSource)
+{
+
+  aMediaSource.Assign(NS_ConvertUTF8toUTF16(
+    dom::MediaSourceEnumValues::strings[uint32_t(mMediaSource)].value));
   return NS_OK;
 }
 
@@ -714,13 +726,18 @@ static bool SatisfyConstraintSet(const MediaEngineVideoSource *,
                                  const MediaTrackConstraintSet &aConstraints,
                                  nsIMediaDevice &aCandidate)
 {
+  nsString s;
   if (aConstraints.mFacingMode.WasPassed()) {
-    nsString s;
     aCandidate.GetFacingMode(s);
     if (!s.EqualsASCII(dom::VideoFacingModeEnumValues::strings[
         uint32_t(aConstraints.mFacingMode.Value())].value)) {
       return false;
     }
+  }
+  aCandidate.GetMediaSource(s);
+  if (!s.EqualsASCII(dom::MediaSourceEnumValues::strings[
+      uint32_t(aConstraints.mMediaSource)].value)) {
+    return false;
   }
   // TODO: Add more video-specific constraints
   return true;
@@ -742,7 +759,7 @@ template<class SourceType, class ConstraintsType>
 static SourceSet *
   GetSources(MediaEngine *engine,
              ConstraintsType &aConstraints,
-             void (MediaEngine::* aEnumerate)(nsTArray<nsRefPtr<SourceType> >*),
+             void (MediaEngine::* aEnumerate)(dom::MediaSourceEnum, nsTArray<nsRefPtr<SourceType> >*),
              const char* media_device_name = nullptr)
 {
   ScopedDeletePtr<SourceSet> result(new SourceSet);
@@ -753,7 +770,7 @@ static SourceSet *
   SourceSet candidateSet;
   {
     nsTArray<nsRefPtr<SourceType> > sources;
-    (engine->*aEnumerate)(&sources);
+    (engine->*aEnumerate)(aConstraints.mMediaSource, &sources);
     /**
       * We're allowing multiple tabs to access the same camera for parity
       * with Chrome.  See bug 811757 for some of the issues surrounding
@@ -1018,8 +1035,8 @@ public:
     MOZ_ASSERT(mError);
     if (mConstraints.mPicture || IsOn(mConstraints.mVideo)) {
       VideoTrackConstraintsN constraints(GetInvariant(mConstraints.mVideo));
-      ScopedDeletePtr<SourceSet> sources (GetSources(backend, constraints,
-          &MediaEngine::EnumerateVideoDevices));
+      ScopedDeletePtr<SourceSet> sources(GetSources(backend, constraints,
+                               &MediaEngine::EnumerateVideoDevices));
 
       if (!sources->Length()) {
         Fail(NS_LITERAL_STRING("NO_DEVICES_FOUND"));
@@ -1180,8 +1197,8 @@ public:
     if (IsOn(mConstraints.mVideo)) {
       VideoTrackConstraintsN constraints(GetInvariant(mConstraints.mVideo));
       ScopedDeletePtr<SourceSet> s(GetSources(backend, constraints,
-          &MediaEngine::EnumerateVideoDevices,
-          mLoopbackVideoDevice.get()));
+              &MediaEngine::EnumerateVideoDevices,
+              mLoopbackVideoDevice.get()));
       final->MoveElementsFrom(*s);
     }
     if (IsOn(mConstraints.mAudio)) {
@@ -1191,6 +1208,7 @@ public:
           mLoopbackAudioDevice.get()));
       final->MoveElementsFrom(*s);
     }
+
     NS_DispatchToMainThread(new DeviceSuccessCallbackRunnable(mWindowId,
                                                               mSuccess, mError,
                                                               final.forget()));
@@ -1379,12 +1397,13 @@ MediaManager::GetUserMedia(bool aPrivileged,
       }
       uint32_t permission;
       nsCOMPtr<nsIDocument> doc = aWindow->GetExtantDoc();
-      pm->TestPermission(doc->NodePrincipal(), &permission);
-      if (permission == nsIPopupWindowManager::DENY_POPUP) {
-        nsGlobalWindow::FirePopupBlockedEvent(
-          doc, aWindow, nullptr, EmptyString(), EmptyString()
-        );
-        return NS_OK;
+      if (doc) {
+        pm->TestPermission(doc->NodePrincipal(), &permission);
+        if (permission == nsIPopupWindowManager::DENY_POPUP) {
+          aWindow->FirePopupBlockedEvent(doc, nullptr, EmptyString(),
+                                         EmptyString());
+          return NS_OK;
+        }
       }
     }
   }
@@ -1464,6 +1483,15 @@ MediaManager::GetUserMedia(bool aPrivileged,
       onError.forget(), windowID, listener, mPrefs);
   }
 
+  // deny screensharing request if support is disabled
+  if (c.mVideo.IsMediaTrackConstraints() &&
+      !Preferences::GetBool("media.getusermedia.screensharing.enabled", false)) {
+    auto& tc = c.mVideo.GetAsMediaTrackConstraints();
+    if (tc.mMediaSource != dom::MediaSourceEnum::Camera) {
+      return runnable->Denied(NS_LITERAL_STRING("PERMISSION_DENIED"));
+    }
+  }
+
 #ifdef MOZ_B2G_CAMERA
   if (mCameraManager == nullptr) {
     mCameraManager = nsDOMCameraManager::CreateInstance(aWindow);
@@ -1477,13 +1505,25 @@ MediaManager::GetUserMedia(bool aPrivileged,
     return NS_OK;
   }
 #endif
+  nsIURI* docURI = aWindow->GetDocumentURI();
+
+  bool isLoop = false;
+  nsCOMPtr<nsIURI> loopURI;
+  nsresult rv = NS_NewURI(getter_AddRefs(loopURI), "about:loopconversation");
+  NS_ENSURE_SUCCESS(rv, rv);
+  rv = docURI->EqualsExceptRef(loopURI, &isLoop);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  if (isLoop) {
+    aPrivileged = true;
+  }
+
   // XXX No full support for picture in Desktop yet (needs proper UI)
   if (aPrivileged ||
       (c.mFake && !Preferences::GetBool("media.navigator.permission.fake"))) {
     mMediaThread->Dispatch(runnable, NS_DISPATCH_NORMAL);
   } else {
     bool isHTTPS = false;
-    nsIURI* docURI = aWindow->GetDocumentURI();
     if (docURI) {
       docURI->SchemeIs("https", &isHTTPS);
     }
@@ -1499,14 +1539,6 @@ MediaManager::GetUserMedia(bool aPrivileged,
       rv = permManager->TestExactPermissionFromPrincipal(
         aWindow->GetExtantDoc()->NodePrincipal(), "microphone", &audioPerm);
       NS_ENSURE_SUCCESS(rv, rv);
-      if (audioPerm == nsIPermissionManager::PROMPT_ACTION) {
-        audioPerm = nsIPermissionManager::UNKNOWN_ACTION;
-      }
-      if (audioPerm == nsIPermissionManager::ALLOW_ACTION) {
-        if (!isHTTPS) {
-          audioPerm = nsIPermissionManager::UNKNOWN_ACTION;
-        }
-      }
     }
 
     uint32_t videoPerm = nsIPermissionManager::UNKNOWN_ACTION;
@@ -1514,33 +1546,11 @@ MediaManager::GetUserMedia(bool aPrivileged,
       rv = permManager->TestExactPermissionFromPrincipal(
         aWindow->GetExtantDoc()->NodePrincipal(), "camera", &videoPerm);
       NS_ENSURE_SUCCESS(rv, rv);
-      if (videoPerm == nsIPermissionManager::PROMPT_ACTION) {
-        videoPerm = nsIPermissionManager::UNKNOWN_ACTION;
-      }
-      if (videoPerm == nsIPermissionManager::ALLOW_ACTION) {
-        if (!isHTTPS) {
-          videoPerm = nsIPermissionManager::UNKNOWN_ACTION;
-        }
-      }
     }
 
-    if ((!IsOn(c.mAudio) || audioPerm != nsIPermissionManager::UNKNOWN_ACTION) &&
-        (!IsOn(c.mVideo) || videoPerm != nsIPermissionManager::UNKNOWN_ACTION)) {
-      // All permissions we were about to request already have a saved value.
-      if (IsOn(c.mAudio) && audioPerm == nsIPermissionManager::DENY_ACTION) {
-        c.mAudio.SetAsBoolean() = false;
-        runnable->SetContraints(c);
-      }
-      if (IsOn(c.mVideo) && videoPerm == nsIPermissionManager::DENY_ACTION) {
-        c.mVideo.SetAsBoolean() = false;
-        runnable->SetContraints(c);
-      }
-
-      if (!IsOn(c.mAudio) && !IsOn(c.mVideo)) {
-        return runnable->Denied(NS_LITERAL_STRING("PERMISSION_DENIED"));
-      }
-
-      return mMediaThread->Dispatch(runnable, NS_DISPATCH_NORMAL);
+    if ((!IsOn(c.mAudio) || audioPerm == nsIPermissionManager::DENY_ACTION) &&
+        (!IsOn(c.mVideo) || videoPerm == nsIPermissionManager::DENY_ACTION)) {
+      return runnable->Denied(NS_LITERAL_STRING("PERMISSION_DENIED"));
     }
 
     // Ask for user permission, and dispatch runnable (or not) when a response
@@ -1576,6 +1586,10 @@ MediaManager::GetUserMedia(bool aPrivileged,
                                                                 callID, c, isHTTPS);
     obs->NotifyObservers(req, "getUserMedia:request", nullptr);
   }
+
+#ifdef MOZ_WEBRTC
+  EnableWebRtcLog();
+#endif
 
   return NS_OK;
 }
@@ -1777,7 +1791,13 @@ MediaManager::Observe(nsISupports* aSubject, const char* aTopic,
       mActiveCallbacks.Clear();
       mCallIds.Clear();
       LOG(("Releasing MediaManager singleton and thread"));
+      // Note: won't be released immediately as the Observer has a ref to us
       sSingleton = nullptr;
+      if (mMediaThread) {
+        mMediaThread->Shutdown();
+        mMediaThread = nullptr;
+      }
+      mBackend = nullptr;
     }
 
     return NS_OK;
@@ -2039,6 +2059,19 @@ GetUserMediaCallbackMediaStreamListener::NotifyFinished(MediaStreamGraph* aGraph
   mFinished = true;
   Invalidate(); // we know it's been activated
   NS_DispatchToMainThread(new GetUserMediaListenerRemove(mWindowID, this));
+}
+
+// Called from the MediaStreamGraph thread
+void
+GetUserMediaCallbackMediaStreamListener::NotifyDirectListeners(MediaStreamGraph* aGraph,
+                                                               bool aHasListeners)
+{
+  nsRefPtr<MediaOperationRunnable> runnable;
+  runnable = new MediaOperationRunnable(MEDIA_DIRECT_LISTENERS,
+                                        this, nullptr, nullptr,
+                                        mAudioSource, mVideoSource,
+                                        aHasListeners, mWindowID, nullptr);
+  mMediaThread->Dispatch(runnable, NS_DISPATCH_NORMAL);
 }
 
 // Called from the MediaStreamGraph thread

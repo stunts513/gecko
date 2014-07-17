@@ -172,7 +172,7 @@ class Simulator
         // Known bad pc value to ensure that the simulator does not execute
         // without being properly setup.
         bad_lr = -1,
-        // A pc value used to signal the simulator to stop execution.  Generally
+        // A pc value used to signal the simulator to stop execution. Generally
         // the lr is set to this value on transition from native C code to
         // simulated execution, so that the simulator can "return" to the native
         // C code.
@@ -263,6 +263,13 @@ class Simulator
     static void FlushICache(void *start, size_t size);
 
     static int64_t StopSimAt;
+
+    // For testing the MoveResolver code, a MoveResolver is set up, and
+    // the VFP registers are loaded with pre-determined values,
+    // then the sequence of code is simulated.  In order to test this with the
+    // simulator, the callee-saved registers can't be trashed. This flag
+    // disables that feature.
+    bool skipCalleeSavedRegsCheck;
 
     // Runtime call support.
     static void *RedirectNativeFunction(void *nativeFunction, ABIFunctionType type);

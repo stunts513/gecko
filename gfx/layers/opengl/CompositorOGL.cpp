@@ -15,7 +15,6 @@
 #include "gfx2DGlue.h"                  // for ThebesFilter
 #include "gfx3DMatrix.h"                // for gfx3DMatrix
 #include "gfxCrashReporterUtils.h"      // for ScopedGfxFeatureReporter
-#include "gfxImageSurface.h"            // for gfxImageSurface
 #include "gfxMatrix.h"                  // for gfxMatrix
 #include "GraphicsFilter.h"             // for GraphicsFilter
 #include "gfxPlatform.h"                // for gfxPlatform
@@ -49,14 +48,16 @@
 #include "TexturePoolOGL.h"
 #endif
 
+#ifdef XP_MACOSX
+#include "nsCocoaFeatures.h"
+#endif
+
 #include "GeckoProfiler.h"
 
 #if defined(MOZ_WIDGET_GONK) && ANDROID_VERSION >= 17
 #include "libdisplay/GonkDisplay.h"     // for GonkDisplay
 #include <ui/Fence.h>
 #endif
-
-#define BUFFER_OFFSET(i) ((char *)nullptr + (i))
 
 namespace mozilla {
 
@@ -66,10 +67,6 @@ using namespace gfx;
 namespace layers {
 
 using namespace mozilla::gl;
-
-static inline IntSize ns2gfxSize(const nsIntSize& s) {
-  return IntSize(s.width, s.height);
-}
 
 static void
 BindMaskForProgram(ShaderProgramOGL* aProgram, TextureSourceOGL* aSourceMask,
@@ -114,6 +111,15 @@ CompositorOGL::CreateContext()
   }
 #endif
 
+  // Allow to create offscreen GL context for main Layer Manager
+  if (!context && PR_GetEnv("MOZ_LAYERS_PREFER_OFFSCREEN")) {
+    SurfaceCaps caps = SurfaceCaps::ForRGB();
+    caps.preserve = false;
+    caps.bpp16 = gfxPlatform::GetPlatform()->GetOffscreenFormat() == gfxImageFormat::RGB16_565;
+    context = GLContextProvider::CreateOffscreen(gfxIntSize(mSurfaceSize.width,
+                                                            mSurfaceSize.height), caps);
+  }
+
   if (!context)
     context = gl::GLContextProvider::CreateForWindow(mWidget);
 
@@ -127,10 +133,6 @@ CompositorOGL::CreateContext()
 void
 CompositorOGL::Destroy()
 {
-  if (gl() && gl()->MakeCurrent()) {
-    mVBOs.Flush(gl());
-  }
-
   if (mTexturePool) {
     mTexturePool->Clear();
     mTexturePool = nullptr;
@@ -179,7 +181,9 @@ CompositorOGL::CleanupResources()
 bool
 CompositorOGL::Initialize()
 {
-  ScopedGfxFeatureReporter reporter("GL Layers", true);
+  bool force = gfxPrefs::LayersAccelerationForceEnabled();
+
+  ScopedGfxFeatureReporter reporter("GL Layers", force);
 
   // Do not allow double initialization
   NS_ABORT_IF_FALSE(mGLContext == nullptr, "Don't reinitialize CompositorOGL");
@@ -312,16 +316,27 @@ CompositorOGL::Initialize()
     0.0f, 0.0f, 0.0f, 0.0f,
     1.0f, 0.0f, 0.0f, 0.0f,
     0.0f, 1.0f, 0.0f, 0.0f,
+    1.0f, 0.0f, 0.0f, 0.0f,
+    0.0f, 1.0f, 0.0f, 0.0f,
     1.0f, 1.0f, 0.0f, 0.0f,
+
     0.0f, 0.0f, 0.0f, 1.0f,
     1.0f, 0.0f, 0.0f, 1.0f,
     0.0f, 1.0f, 0.0f, 1.0f,
+    1.0f, 0.0f, 0.0f, 1.0f,
+    0.0f, 1.0f, 0.0f, 1.0f,
     1.0f, 1.0f, 0.0f, 1.0f,
+
     0.0f, 0.0f, 0.0f, 2.0f,
     1.0f, 0.0f, 0.0f, 2.0f,
     0.0f, 1.0f, 0.0f, 2.0f,
+    1.0f, 0.0f, 0.0f, 2.0f,
+    0.0f, 1.0f, 0.0f, 2.0f,
     1.0f, 1.0f, 0.0f, 2.0f,
+
     0.0f, 0.0f, 0.0f, 3.0f,
+    1.0f, 0.0f, 0.0f, 3.0f,
+    0.0f, 1.0f, 0.0f, 3.0f,
     1.0f, 0.0f, 0.0f, 3.0f,
     0.0f, 1.0f, 0.0f, 3.0f,
     1.0f, 1.0f, 0.0f, 3.0f,
@@ -389,11 +404,13 @@ SetRects(int n,
   aTextureRects[n] = Rect(tx0, ty0, tx1 - tx0, ty1 - ty0);
 }
 
+#ifdef DEBUG
 static inline bool
 FuzzyEqual(float a, float b)
 {
   return fabs(a - b) < 0.0001f;
 }
+#endif
 
 static int
 DecomposeIntoNoRepeatRects(const Rect& aRect,
@@ -564,9 +581,15 @@ CompositorOGL::PrepareViewport(const gfx::IntSize& aSize,
   // Matrix to transform (0, 0, aWidth, aHeight) to viewport space (-1.0, 1.0,
   // 2, 2) and flip the contents.
   Matrix viewMatrix;
-  viewMatrix.Translate(-1.0, 1.0);
-  viewMatrix.Scale(2.0f / float(aSize.width), 2.0f / float(aSize.height));
-  viewMatrix.Scale(1.0f, -1.0f);
+  if (mGLContext->IsOffscreen()) {
+    // In case of rendering via GL Offscreen context, disable Y-Flipping
+    viewMatrix.Translate(-1.0, -1.0);
+    viewMatrix.Scale(2.0f / float(aSize.width), 2.0f / float(aSize.height));
+  } else {
+    viewMatrix.Translate(-1.0, 1.0);
+    viewMatrix.Scale(2.0f / float(aSize.width), 2.0f / float(aSize.height));
+    viewMatrix.Scale(1.0f, -1.0f);
+  }
 
   viewMatrix = aWorldTransform * viewMatrix;
 
@@ -678,12 +701,10 @@ CompositorOGL::BeginFrame(const nsIntRegion& aInvalidRegion,
                           Rect *aClipRectOut,
                           Rect *aRenderBoundsOut)
 {
-  PROFILER_LABEL("CompositorOGL", "BeginFrame");
+  PROFILER_LABEL("CompositorOGL", "BeginFrame",
+    js::ProfileEntry::Category::GRAPHICS);
+
   MOZ_ASSERT(!mFrameInProgress, "frame still in progress (should have called EndFrame or AbortFrame");
-
-  LayerScope::BeginFrame(mGLContext, PR_Now());
-
-  mVBOs.Reset();
 
   mFrameInProgress = true;
   gfx::Rect rect;
@@ -744,10 +765,11 @@ CompositorOGL::BeginFrame(const nsIntRegion& aInvalidRegion,
     origin.y = -mRenderOffset.y;
   }
 
-  mCurrentRenderTarget = CompositingRenderTargetOGL::RenderTargetForWindow(this,
-                            origin,
-                            IntSize(width, height),
-                            aTransform);
+  mCurrentRenderTarget =
+    CompositingRenderTargetOGL::RenderTargetForWindow(this,
+                                                      origin,
+                                                      IntSize(width, height),
+                                                      aTransform);
   mCurrentRenderTarget->BindRenderTarget();
 #ifdef DEBUG
   mWindowRenderTarget = mCurrentRenderTarget;
@@ -778,6 +800,17 @@ CompositorOGL::CreateFBOWithTexture(const IntRect& aRect, bool aCopyFromSource,
                                     GLuint aSourceFrameBuffer,
                                     GLuint *aFBO, GLuint *aTexture)
 {
+  // we're about to create a framebuffer backed by textures to use as an intermediate
+  // surface. What to do if its size (as given by aRect) would exceed the
+  // maximum texture size supported by the GL? The present code chooses the compromise
+  // of just clamping the framebuffer's size to the max supported size.
+  // This gives us a lower resolution rendering of the intermediate surface (children layers).
+  // See bug 827170 for a discussion.
+  IntRect clampedRect = aRect;
+  int32_t maxTexSize = GetMaxTextureSize();
+  clampedRect.width = std::min(clampedRect.width, maxTexSize);
+  clampedRect.height = std::min(clampedRect.height, maxTexSize);
+
   GLuint tex, fbo;
 
   mGLContext->fActiveTexture(LOCAL_GL_TEXTURE0);
@@ -806,25 +839,25 @@ CompositorOGL::CreateFBOWithTexture(const IntRect& aRect, bool aCopyFromSource,
       mGLContext->fCopyTexImage2D(mFBOTextureTarget,
                                   0,
                                   LOCAL_GL_RGBA,
-                                  aRect.x, FlipY(aRect.y + aRect.height),
-                                  aRect.width, aRect.height,
+                                  clampedRect.x, FlipY(clampedRect.y + clampedRect.height),
+                                  clampedRect.width, clampedRect.height,
                                   0);
     } else {
       // Curses, incompatible formats.  Take a slow path.
 
       // RGBA
-      size_t bufferSize = aRect.width * aRect.height * 4;
+      size_t bufferSize = clampedRect.width * clampedRect.height * 4;
       nsAutoArrayPtr<uint8_t> buf(new uint8_t[bufferSize]);
 
-      mGLContext->fReadPixels(aRect.x, aRect.y,
-                              aRect.width, aRect.height,
+      mGLContext->fReadPixels(clampedRect.x, clampedRect.y,
+                              clampedRect.width, clampedRect.height,
                               LOCAL_GL_RGBA,
                               LOCAL_GL_UNSIGNED_BYTE,
                               buf);
       mGLContext->fTexImage2D(mFBOTextureTarget,
                               0,
                               LOCAL_GL_RGBA,
-                              aRect.width, aRect.height,
+                              clampedRect.width, clampedRect.height,
                               0,
                               LOCAL_GL_RGBA,
                               LOCAL_GL_UNSIGNED_BYTE,
@@ -841,7 +874,7 @@ CompositorOGL::CreateFBOWithTexture(const IntRect& aRect, bool aCopyFromSource,
     mGLContext->fTexImage2D(mFBOTextureTarget,
                             0,
                             LOCAL_GL_RGBA,
-                            aRect.width, aRect.height,
+                            clampedRect.width, clampedRect.height,
                             0,
                             LOCAL_GL_RGBA,
                             LOCAL_GL_UNSIGNED_BYTE,
@@ -978,11 +1011,16 @@ CompositorOGL::DrawQuad(const Rect& aRect,
                         Float aOpacity,
                         const gfx::Matrix4x4 &aTransform)
 {
-  PROFILER_LABEL("CompositorOGL", "DrawQuad");
+  PROFILER_LABEL("CompositorOGL", "DrawQuad",
+    js::ProfileEntry::Category::GRAPHICS);
+
   MOZ_ASSERT(mFrameInProgress, "frame not started");
 
   IntRect intClipRect;
   aClipRect.ToIntRect(&intClipRect);
+  if (!mTarget) {
+    intClipRect.MoveBy(mRenderOffset.x, mRenderOffset.y);
+  }
 
   gl()->fScissor(intClipRect.x, FlipY(intClipRect.y + intClipRect.height),
                  intClipRect.width, intClipRect.height);
@@ -1222,6 +1260,19 @@ CompositorOGL::DrawQuad(const Rect& aRect,
       // Pass 2.
       gl()->fBlendFuncSeparate(LOCAL_GL_ONE, LOCAL_GL_ONE,
                                LOCAL_GL_ONE, LOCAL_GL_ONE);
+
+#ifdef XP_MACOSX
+      if (gl()->WorkAroundDriverBugs() &&
+          gl()->Vendor() == GLVendor::NVIDIA &&
+          !nsCocoaFeatures::OnMavericksOrLater()) {
+        // Bug 987497: With some GPUs the nvidia driver on 10.8 and below
+        // won't pick up the TexturePass2 uniform change below if we don't do
+        // something to force it. Re-activating the shader seems to be one way
+        // of achieving that.
+        program->Activate();
+      }
+#endif
+
       program->SetTexturePass2(true);
       BindAndDrawQuadWithTextureRect(program,
                                      aRect,
@@ -1249,7 +1300,9 @@ CompositorOGL::DrawQuad(const Rect& aRect,
 void
 CompositorOGL::EndFrame()
 {
-  PROFILER_LABEL("CompositorOGL", "EndFrame");
+  PROFILER_LABEL("CompositorOGL", "EndFrame",
+    js::ProfileEntry::Category::GRAPHICS);
+
   MOZ_ASSERT(mCurrentRenderTarget == mWindowRenderTarget, "Rendering target not properly restored");
 
 #ifdef MOZ_DUMP_PAINTING
@@ -1268,8 +1321,6 @@ CompositorOGL::EndFrame()
 #endif
 
   mFrameInProgress = false;
-
-  LayerScope::EndFrame(mGLContext);
 
   if (mTarget) {
     CopyToTarget(mTarget, mTargetBounds.TopLeft(), mCurrentRenderTarget->GetTransform());
@@ -1425,6 +1476,10 @@ CompositorOGL::CopyToTarget(DrawTarget* aTarget, const nsIntPoint& aTopLeft, con
 
   RefPtr<DataSourceSurface> source =
         Factory::CreateDataSourceSurface(rect.Size(), gfx::SurfaceFormat::B8G8R8A8);
+  if (!source) {
+    NS_WARNING("Failed to create SourceSurface.");
+    return;
+  }
 
   ReadPixelsIntoDataSurface(mGLContext, source);
 
@@ -1504,25 +1559,6 @@ CompositorOGL::MakeCurrent(MakeCurrentFlags aFlags) {
 }
 
 void
-CompositorOGL::BindQuadVBO() {
-  mGLContext->fBindBuffer(LOCAL_GL_ARRAY_BUFFER, mQuadVBO);
-}
-
-void
-CompositorOGL::QuadVBOVerticesAttrib(GLuint aAttribIndex) {
-  mGLContext->fVertexAttribPointer(aAttribIndex, 4,
-                                   LOCAL_GL_FLOAT, LOCAL_GL_FALSE, 0,
-                                   (GLvoid*) 0);
-}
-
-void
-CompositorOGL::QuadVBOTexCoordsAttrib(GLuint aAttribIndex) {
-  mGLContext->fVertexAttribPointer(aAttribIndex, 4,
-                                   LOCAL_GL_FLOAT, LOCAL_GL_FALSE, 0,
-                                   (GLvoid*) 0);
-}
-
-void
 CompositorOGL::BindAndDrawQuads(ShaderProgramOGL *aProg,
                                 int aQuads,
                                 const Rect* aLayerRects,
@@ -1530,23 +1566,22 @@ CompositorOGL::BindAndDrawQuads(ShaderProgramOGL *aProg,
 {
   NS_ASSERTION(aProg->HasInitialized(), "Shader program not correctly initialized");
 
+  const GLuint coordAttribIndex = 0;
+
+  mGLContext->fBindBuffer(LOCAL_GL_ARRAY_BUFFER, mQuadVBO);
+  mGLContext->fVertexAttribPointer(coordAttribIndex, 4,
+                                   LOCAL_GL_FLOAT, LOCAL_GL_FALSE, 0,
+                                   (GLvoid*) 0);
+  mGLContext->fEnableVertexAttribArray(coordAttribIndex);
+
   aProg->SetLayerRects(aLayerRects);
-
-  GLuint vertAttribIndex = aProg->AttribLocation(ShaderProgramOGL::VertexCoordAttrib);
-  GLuint texCoordAttribIndex = aProg->AttribLocation(ShaderProgramOGL::TexCoordAttrib);
-
-  BindQuadVBO();
-  QuadVBOVerticesAttrib(vertAttribIndex);
-
-  if (texCoordAttribIndex != GLuint(-1)) {
-    QuadVBOTexCoordsAttrib(texCoordAttribIndex);
-    mGLContext->fEnableVertexAttribArray(texCoordAttribIndex);
-
+  if (aProg->GetTextureCount() > 0) {
     aProg->SetTextureRects(aTextureRects);
   }
 
-  mGLContext->fEnableVertexAttribArray(vertAttribIndex);
-  mGLContext->fDrawArrays(LOCAL_GL_TRIANGLE_STRIP, 0, 4 * aQuads);
+  // We are using GL_TRIANGLES here because the Mac Intel drivers fail to properly
+  // process uniform arrays with GL_TRIANGLE_STRIP. Go figure.
+  mGLContext->fDrawArrays(LOCAL_GL_TRIANGLES, 0, 6 * aQuads);
 }
 
 GLuint

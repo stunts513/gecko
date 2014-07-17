@@ -26,10 +26,11 @@ MIRGenerator::MIRGenerator(CompileCompartment *compartment, const JitCompileOpti
     graph_(graph),
     abortReason_(AbortReason_NoAbort),
     error_(false),
+    pauseBuild_(nullptr),
     cancelBuild_(false),
     maxAsmJSStackArgBytes_(0),
     performsCall_(false),
-    performsAsmJSCall_(false),
+    needsInitialStackAlignment_(false),
     minAsmJSHeapLength_(AsmJSAllocationGranularity),
     modifiesFrameArguments_(false),
     options(options)
@@ -82,9 +83,6 @@ MIRGraph::removeBlocksAfter(MBasicBlock *start)
         if (block->id() <= start->id())
             continue;
 
-        // removeBlock will not remove the resumepoints, since
-        // it can be shared with outer blocks. So remove them now.
-        block->discardAllResumePoints();
         removeBlock(block);
     }
 }
@@ -92,9 +90,7 @@ MIRGraph::removeBlocksAfter(MBasicBlock *start)
 void
 MIRGraph::removeBlock(MBasicBlock *block)
 {
-    // Remove a block from the graph. It will also cleanup the block,
-    // except for removing the resumepoints, since multiple blocks can
-    // share the same resumepoints and we cannot distinguish between them.
+    // Remove a block from the graph. It will also cleanup the block.
 
     if (block == osrBlock_)
         osrBlock_ = nullptr;
@@ -109,6 +105,7 @@ MIRGraph::removeBlock(MBasicBlock *block)
         }
     }
 
+    block->discardAllResumePoints();
     block->discardAllInstructions();
 
     // Note: phis are disconnected from the rest of the graph, but are not
@@ -120,6 +117,15 @@ MIRGraph::removeBlock(MBasicBlock *block)
     block->markAsDead();
     blocks_.remove(block);
     numBlocks_--;
+}
+
+void
+MIRGraph::removeBlockIncludingPhis(MBasicBlock *block)
+{
+    // removeBlock doesn't clear phis because of IonBuilder constraints. Here,
+    // we want to totally clear everything.
+    removeBlock(block);
+    block->discardAllPhis();
 }
 
 void
@@ -284,10 +290,8 @@ MBasicBlock::MBasicBlock(MIRGraph &graph, CompileInfo &info, const BytecodeSite 
     info_(info),
     predecessors_(graph.alloc()),
     stackPosition_(info_.firstStackSlot()),
-    lastIns_(nullptr),
     pc_(site.pc()),
     lir_(nullptr),
-    start_(nullptr),
     entryResumePoint_(nullptr),
     successorWithPhis_(nullptr),
     positionInPhiSuccessor_(0),
@@ -669,9 +673,7 @@ MBasicBlock::peek(int32_t depth)
 void
 MBasicBlock::discardLastIns()
 {
-    JS_ASSERT(lastIns_);
-    discard(lastIns_);
-    lastIns_ = nullptr;
+    discard(lastIns());
 }
 
 void
@@ -695,7 +697,9 @@ MBasicBlock::moveBefore(MInstruction *at, MInstruction *ins)
 
     // Insert into new block, which may be distinct.
     // Uses and operands are untouched.
-    at->block()->insertBefore(at, ins);
+    ins->setBlock(at->block());
+    at->block()->instructions_.insertBefore(at, ins);
+    ins->setTrackedSite(at->trackedSite());
 }
 
 static inline void
@@ -754,12 +758,19 @@ MBasicBlock::discardDefAt(MDefinitionIterator &old)
 void
 MBasicBlock::discardAllInstructions()
 {
-    for (MInstructionIterator iter = begin(); iter != end(); ) {
+    MInstructionIterator iter = begin();
+    discardAllInstructionsStartingAt(iter);
+
+}
+
+void
+MBasicBlock::discardAllInstructionsStartingAt(MInstructionIterator &iter)
+{
+    while (iter != end()) {
         for (size_t i = 0, e = iter->numOperands(); i < e; i++)
             iter->discardOperand(i);
         iter = instructions_.removeAt(iter);
     }
-    lastIns_ = nullptr;
 }
 
 void
@@ -791,6 +802,8 @@ MBasicBlock::discardAllResumePoints(bool discardEntry)
             iter = resumePoints_.removeAt(iter);
         }
     }
+    if (discardEntry)
+        clearEntryResumePoint();
 }
 
 void
@@ -816,7 +829,7 @@ MBasicBlock::insertAfter(MInstruction *at, MInstruction *ins)
 void
 MBasicBlock::add(MInstruction *ins)
 {
-    JS_ASSERT(!lastIns_);
+    JS_ASSERT(!hasLastIns());
     ins->setBlock(this);
     graph().allocDefinitionId(ins);
     instructions_.pushBack(ins);
@@ -826,10 +839,9 @@ MBasicBlock::add(MInstruction *ins)
 void
 MBasicBlock::end(MControlInstruction *ins)
 {
-    JS_ASSERT(!lastIns_); // Existing control instructions should be removed first.
+    JS_ASSERT(!hasLastIns()); // Existing control instructions should be removed first.
     JS_ASSERT(ins);
     add(ins);
-    lastIns_ = ins;
 }
 
 void
@@ -869,7 +881,7 @@ MBasicBlock::addPredecessorPopN(TempAllocator &alloc, MBasicBlock *pred, uint32_
     JS_ASSERT(predecessors_.length() > 0);
 
     // Predecessors must be finished, and at the correct stack depth.
-    JS_ASSERT(pred->lastIns_);
+    JS_ASSERT(pred->hasLastIns());
     JS_ASSERT(pred->stackPosition_ == stackPosition_ + popped);
 
     for (uint32_t i = 0; i < stackPosition_; i++) {
@@ -918,7 +930,7 @@ bool
 MBasicBlock::addPredecessorWithoutPhis(MBasicBlock *pred)
 {
     // Predecessors must be finished.
-    JS_ASSERT(pred && pred->lastIns_);
+    JS_ASSERT(pred && pred->hasLastIns());
     return predecessors_.append(pred);
 }
 
@@ -926,6 +938,20 @@ bool
 MBasicBlock::addImmediatelyDominatedBlock(MBasicBlock *child)
 {
     return immediatelyDominated_.append(child);
+}
+
+void
+MBasicBlock::removeImmediatelyDominatedBlock(MBasicBlock *child)
+{
+    for (size_t i = 0; ; ++i) {
+        MOZ_ASSERT(i < immediatelyDominated_.length(),
+                   "Dominated block to remove not present");
+        if (immediatelyDominated_[i] == child) {
+            immediatelyDominated_[i] = immediatelyDominated_.back();
+            immediatelyDominated_.popBack();
+            return;
+        }
+    }
 }
 
 void
@@ -939,29 +965,12 @@ MBasicBlock::assertUsesAreNotWithin(MUseIterator use, MUseIterator end)
 #endif
 }
 
-bool
-MBasicBlock::dominates(const MBasicBlock *other) const
-{
-    uint32_t high = domIndex() + numDominated();
-    uint32_t low  = domIndex();
-    return other->domIndex() >= low && other->domIndex() <= high;
-}
-
-void
-MBasicBlock::setUnreachable()
-{
-    unreachable_ = true;
-    size_t numDom = numImmediatelyDominatedBlocks();
-    for (size_t d = 0; d < numDom; d++)
-        getImmediatelyDominatedBlock(d)->unreachable_ = true;
-}
-
 AbortReason
 MBasicBlock::setBackedge(MBasicBlock *pred)
 {
     // Predecessors must be finished, and at the correct stack depth.
-    JS_ASSERT(lastIns_);
-    JS_ASSERT(pred->lastIns_);
+    JS_ASSERT(hasLastIns());
+    JS_ASSERT(pred->hasLastIns());
     JS_ASSERT(pred->stackDepth() == entryResumePoint()->stackDepth());
 
     // We must be a pending loop header
@@ -992,8 +1001,8 @@ bool
 MBasicBlock::setBackedgeAsmJS(MBasicBlock *pred)
 {
     // Predecessors must be finished, and at the correct stack depth.
-    JS_ASSERT(lastIns_);
-    JS_ASSERT(pred->lastIns_);
+    JS_ASSERT(hasLastIns());
+    JS_ASSERT(pred->hasLastIns());
     JS_ASSERT(stackDepth() == pred->stackDepth());
 
     // We must be a pending loop header
@@ -1150,7 +1159,7 @@ MBasicBlock::inheritPhis(MBasicBlock *header)
     for (size_t slot = 0; slot < stackDepth; slot++) {
         MDefinition *exitDef = getSlot(slot);
         MDefinition *loopDef = headerRp->getOperand(slot);
-        if (!loopDef->isPhi()) {
+        if (loopDef->block() != header) {
             MOZ_ASSERT(loopDef->block()->id() < header->id());
             MOZ_ASSERT(loopDef == exitDef);
             continue;
@@ -1186,7 +1195,7 @@ MBasicBlock::inheritPhisFromBackedge(MBasicBlock *backedge, bool *hadTypeChange)
 
         // Get the value of the loop header.
         MDefinition *loopDef = entryResumePoint()->getOperand(slot);
-        if (!loopDef->isPhi()) {
+        if (loopDef->block() != this) {
             // If we are finishing a pending loop header, then we need to ensure
             // that all operands are phis. This is usualy the case, except for
             // object/arrays build with generators, in which case we share the

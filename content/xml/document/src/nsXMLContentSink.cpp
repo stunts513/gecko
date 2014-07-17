@@ -20,7 +20,7 @@
 #include "DocumentType.h"
 #include "nsHTMLParts.h"
 #include "nsCRT.h"
-#include "nsCSSStyleSheet.h"
+#include "mozilla/CSSStyleSheet.h"
 #include "mozilla/css/Loader.h"
 #include "nsGkAtoms.h"
 #include "nsContentUtils.h"
@@ -60,8 +60,10 @@
 #include "mozilla/dom/CDATASection.h"
 #include "mozilla/dom/Comment.h"
 #include "mozilla/dom/Element.h"
+#include "mozilla/dom/HTMLTemplateElement.h"
 #include "mozilla/dom/ProcessingInstruction.h"
 
+using namespace mozilla;
 using namespace mozilla::dom;
 
 // XXX Open Issues:
@@ -413,7 +415,7 @@ nsXMLContentSink::OnTransformDone(nsresult aResult,
 }
 
 NS_IMETHODIMP
-nsXMLContentSink::StyleSheetLoaded(nsCSSStyleSheet* aSheet,
+nsXMLContentSink::StyleSheetLoaded(CSSStyleSheet* aSheet,
                                    bool aWasAlternate,
                                    nsresult aStatus)
 {
@@ -452,7 +454,7 @@ nsXMLContentSink::SetParser(nsParserBase* aParser)
 
 nsresult
 nsXMLContentSink::CreateElement(const char16_t** aAtts, uint32_t aAttsCount,
-                                nsINodeInfo* aNodeInfo, uint32_t aLineNumber,
+                                mozilla::dom::NodeInfo* aNodeInfo, uint32_t aLineNumber,
                                 nsIContent** aResult, bool* aAppendContent,
                                 FromParser aFromParser)
 {
@@ -462,8 +464,8 @@ nsXMLContentSink::CreateElement(const char16_t** aAtts, uint32_t aAttsCount,
   *aAppendContent = true;
   nsresult rv = NS_OK;
 
-  nsCOMPtr<nsINodeInfo> ni = aNodeInfo;
-  nsCOMPtr<Element> content;
+  nsRefPtr<mozilla::dom::NodeInfo> ni = aNodeInfo;
+  nsRefPtr<Element> content;
   rv = NS_NewElement(getter_AddRefs(content), ni.forget(), aFromParser);
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -522,7 +524,7 @@ nsXMLContentSink::CloseElement(nsIContent* aContent)
 {
   NS_ASSERTION(aContent, "missing element to close");
 
-  nsINodeInfo *nodeInfo = aContent->NodeInfo();
+  mozilla::dom::NodeInfo *nodeInfo = aContent->NodeInfo();
 
   // Some HTML nodes need DoneAddingChildren() called to initialize
   // properly (eg form state restoration).
@@ -605,7 +607,8 @@ nsXMLContentSink::CloseElement(nsIContent* aContent)
       nsAutoString relVal;
       aContent->GetAttr(kNameSpaceID_None, nsGkAtoms::rel, relVal);
       if (!relVal.IsEmpty()) {
-        uint32_t linkTypes = nsStyleLinkElement::ParseLinkTypes(relVal);
+        uint32_t linkTypes =
+          nsStyleLinkElement::ParseLinkTypes(relVal, aContent->NodePrincipal());
         bool hasPrefetch = linkTypes & nsStyleLinkElement::ePREFETCH;
         if (hasPrefetch || (linkTypes & nsStyleLinkElement::eNEXT)) {
           nsAutoString hrefVal;
@@ -848,7 +851,17 @@ nsXMLContentSink::PushContent(nsIContent *aContent)
   StackNode *sn = mContentStack.AppendElement();
   NS_ENSURE_TRUE(sn, NS_ERROR_OUT_OF_MEMORY);
 
-  sn->mContent = aContent;
+  nsIContent* contentToPush = aContent;
+
+  // When an XML parser would append a node to a template element, it
+  // must instead append it to the template element's template contents.
+  if (contentToPush->IsHTML(nsGkAtoms::_template)) {
+    HTMLTemplateElement* templateElement =
+      static_cast<HTMLTemplateElement*>(contentToPush);
+    contentToPush = templateElement->Content();
+  }
+
+  sn->mContent = contentToPush;
   sn->mNumFlushed = 0;
   return NS_OK;
 }
@@ -937,10 +950,9 @@ NS_IMETHODIMP
 nsXMLContentSink::HandleStartElement(const char16_t *aName,
                                      const char16_t **aAtts,
                                      uint32_t aAttsCount,
-                                     int32_t aIndex,
                                      uint32_t aLineNumber)
 {
-  return HandleStartElement(aName, aAtts, aAttsCount, aIndex, aLineNumber,
+  return HandleStartElement(aName, aAtts, aAttsCount, aLineNumber,
                             true);
 }
 
@@ -948,11 +960,9 @@ nsresult
 nsXMLContentSink::HandleStartElement(const char16_t *aName,
                                      const char16_t **aAtts,
                                      uint32_t aAttsCount,
-                                     int32_t aIndex,
                                      uint32_t aLineNumber,
                                      bool aInterruptable)
 {
-  NS_PRECONDITION(aIndex >= -1, "Bogus aIndex");
   NS_PRECONDITION(aAttsCount % 2 == 0, "incorrect aAttsCount");
   // Adjust aAttsCount so it's the actual number of attributes
   aAttsCount /= 2;
@@ -980,7 +990,7 @@ nsXMLContentSink::HandleStartElement(const char16_t *aName,
     return NS_OK;
   }
   
-  nsCOMPtr<nsINodeInfo> nodeInfo;
+  nsRefPtr<mozilla::dom::NodeInfo> nodeInfo;
   nodeInfo = mNodeInfoManager->GetNodeInfo(localName, prefix, nameSpaceID,
                                            nsIDOMNode::ELEMENT_NODE);
 
@@ -997,17 +1007,6 @@ nsXMLContentSink::HandleStartElement(const char16_t *aName,
   
   result = PushContent(content);
   NS_ENSURE_SUCCESS(result, result);
-
-  // Set the ID attribute atom on the node info object for this node
-  // This must occur before the attributes are added so the name
-  // of the id attribute is known.
-  if (aIndex != -1 && NS_SUCCEEDED(result)) {
-    nsCOMPtr<nsIAtom> IDAttr = do_GetAtom(aAtts[aIndex]);
-
-    if (IDAttr) {
-      nodeInfo->SetIDAttributeAtom(IDAttr);
-    }
-  }
 
   // Set the attributes on the new content element
   result = AddAttributes(aAtts, content);
@@ -1090,8 +1089,13 @@ nsXMLContentSink::HandleEndElement(const char16_t *aName,
   nsContentUtils::SplitExpatName(aName, getter_AddRefs(debugNameSpacePrefix),
                                  getter_AddRefs(debugTagAtom),
                                  &debugNameSpaceID);
-  NS_ASSERTION(content->NodeInfo()->Equals(debugTagAtom, debugNameSpaceID),
-               "Wrong element being closed");
+  // Check if we are closing a template element because template
+  // elements do not get pushed on the stack, the template
+  // element content is pushed instead.
+  bool isTemplateElement = debugTagAtom == nsGkAtoms::_template &&
+                           debugNameSpaceID == kNameSpaceID_XHTML;
+  NS_ASSERTION(content->NodeInfo()->Equals(debugTagAtom, debugNameSpaceID) ||
+               isTemplateElement, "Wrong element being closed");
 #endif  
 
   result = CloseElement(content);
@@ -1384,7 +1388,7 @@ nsXMLContentSink::ReportError(const char16_t* aErrorText,
   parsererror.Append((char16_t)0xFFFF);
   parsererror.AppendLiteral("parsererror");
   
-  rv = HandleStartElement(parsererror.get(), noAtts, 0, -1, (uint32_t)-1,
+  rv = HandleStartElement(parsererror.get(), noAtts, 0, (uint32_t)-1,
                           false);
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -1395,7 +1399,7 @@ nsXMLContentSink::ReportError(const char16_t* aErrorText,
   sourcetext.Append((char16_t)0xFFFF);
   sourcetext.AppendLiteral("sourcetext");
 
-  rv = HandleStartElement(sourcetext.get(), noAtts, 0, -1, (uint32_t)-1,
+  rv = HandleStartElement(sourcetext.get(), noAtts, 0, (uint32_t)-1,
                           false);
   NS_ENSURE_SUCCESS(rv, rv);
   
@@ -1594,7 +1598,7 @@ nsXMLContentSink::UpdateChildCounts()
 }
 
 bool
-nsXMLContentSink::IsMonolithicContainer(nsINodeInfo* aNodeInfo)
+nsXMLContentSink::IsMonolithicContainer(mozilla::dom::NodeInfo* aNodeInfo)
 {
   return ((aNodeInfo->NamespaceID() == kNameSpaceID_XHTML &&
           (aNodeInfo->NameAtom() == nsGkAtoms::tr ||

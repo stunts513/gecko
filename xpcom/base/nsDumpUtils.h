@@ -26,7 +26,7 @@
 #define LOG(...)
 #endif
 
-#if defined(XP_LINUX) || defined(__FreeBSD__) || defined(XP_MACOSX) // {
+#ifdef XP_UNIX // {
 
 /**
  * Abstract base class for something which watches an fd and takes action when
@@ -40,17 +40,17 @@ protected:
   MessageLoopForIO::FileDescriptorWatcher mReadWatcher;
   int mFd;
 
+  virtual ~FdWatcher()
+  {
+    // StopWatching should have run.
+    MOZ_ASSERT(mFd == -1);
+  }
+
 public:
   FdWatcher()
     : mFd(-1)
   {
     MOZ_ASSERT(NS_IsMainThread());
-  }
-
-  virtual ~FdWatcher()
-  {
-    // StopWatching should have run.
-    MOZ_ASSERT(mFd == -1);
   }
 
   /**
@@ -178,7 +178,7 @@ private:
   SignalInfoArray mSignalInfo;
 };
 
-#endif // XP_LINUX }
+#endif // XP_UNIX }
 
 
 class nsDumpUtils

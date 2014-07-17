@@ -32,6 +32,9 @@ namespace mozilla {
 // to get a picture of how the various coordinate systems relate to each other.
 struct ParentLayerPixel {};
 
+template<> struct IsPixel<ParentLayerPixel> : TrueType {};
+
+typedef gfx::MarginTyped<ParentLayerPixel> ParentLayerMargin;
 typedef gfx::PointTyped<ParentLayerPixel> ParentLayerPoint;
 typedef gfx::RectTyped<ParentLayerPixel> ParentLayerRect;
 typedef gfx::SizeTyped<ParentLayerPixel> ParentLayerSize;
@@ -81,6 +84,7 @@ public:
     , mTransformScale(1)
     , mDevPixelsPerCSSPixel(1)
     , mMayHaveTouchListeners(false)
+    , mMayHaveTouchCaret(false)
     , mIsRoot(false)
     , mHasScrollgrab(false)
     , mScrollId(NULL_SCROLL_ID)
@@ -113,6 +117,7 @@ public:
            mCumulativeResolution == aOther.mCumulativeResolution &&
            mDevPixelsPerCSSPixel == aOther.mDevPixelsPerCSSPixel &&
            mMayHaveTouchListeners == aOther.mMayHaveTouchListeners &&
+           mMayHaveTouchCaret == aOther.mMayHaveTouchCaret &&
            mPresShellId == aOther.mPresShellId &&
            mIsRoot == aOther.mIsRoot &&
            mScrollId == aOther.mScrollId &&
@@ -187,7 +192,9 @@ public:
   // into its composition bounds.
   CSSToScreenScale CalculateIntrinsicScale() const
   {
-    return CSSToScreenScale(float(mCompositionBounds.width) / float(mViewport.width));
+    return CSSToScreenScale(
+        std::max(mCompositionBounds.width / mViewport.width,
+                 mCompositionBounds.height / mViewport.height));
   }
 
   // Return the scale factor for converting from CSS pixels (for this layer)
@@ -253,7 +260,7 @@ public:
   // This value is valid for nested scrollable layers as well, and is still
   // relative to the layer tree origin. This value is provided by Gecko at
   // layout/paint time.
-  ParentLayerIntRect mCompositionBounds;
+  ParentLayerRect mCompositionBounds;
 
   // ---------------------------------------------------------------------------
   // The following metrics are all in CSS pixels. They are not in any uniform
@@ -342,13 +349,23 @@ public:
   // Whether or not this frame may have touch listeners.
   bool mMayHaveTouchListeners;
 
+  // Whether or not this frame may have touch caret.
+  bool mMayHaveTouchCaret;
+
   // Whether or not this is the root scroll frame for the root content document.
   bool mIsRoot;
 
-  // Whether or not this frame is for an element marked 'scrollgrab'.
-  bool mHasScrollgrab;
-
 public:
+  void SetHasScrollgrab(bool aHasScrollgrab)
+  {
+    mHasScrollgrab = aHasScrollgrab;
+  }
+
+  bool GetHasScrollgrab() const
+  {
+    return mHasScrollgrab;
+  }
+
   void SetScrollOffset(const CSSPoint& aScrollOffset)
   {
     mScrollOffset = aScrollOffset;
@@ -450,6 +467,9 @@ public:
 private:
   // New fields from now on should be made private and old fields should
   // be refactored to be private.
+
+  // Whether or not this frame is for an element marked 'scrollgrab'.
+  bool mHasScrollgrab;
 
   // A unique ID assigned to each scrollable frame.
   ViewID mScrollId;

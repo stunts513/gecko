@@ -103,10 +103,6 @@ LOCAL_INCLUDES += [
     'google-breakpad/src',
 ]
 
-# Suppress warnings in third-party code.
-if CONFIG['_MSC_VER']:
-    CXXFLAGS += [
-        '-wd4005', # macro redefinition
-    ]
+include('/toolkit/crashreporter/crashreporter.mozbuild')
 
 FAIL_ON_WARNINGS = True

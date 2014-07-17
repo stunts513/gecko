@@ -88,8 +88,11 @@ USING_BLUETOOTH_NAMESPACE
  * turn off Bluetooth.
  */
 #define TIMEOUT_FORCE_TO_DISABLE_BT 5
-
 #define BT_LAZY_THREAD_TIMEOUT_MS 3000
+
+// Set Class of Device value bit
+#define SET_AUDIO_BIT(cod) (cod |= 0x200000)
+#define SET_RENDERING_BIT(cod) (cod |= 0x40000)
 
 #ifdef MOZ_WIDGET_GONK
 class Bluedroid
@@ -821,15 +824,17 @@ HasAudioService(uint32_t aCodValue)
   return ((aCodValue & 0x200000) == 0x200000);
 }
 
-static bool
-ContainsIcon(const InfallibleTArray<BluetoothNamedValue>& aProperties)
+static int
+FindProperty(const InfallibleTArray<BluetoothNamedValue>& aProperties,
+             const char* aPropertyType)
 {
-  for (uint8_t i = 0; i < aProperties.Length(); i++) {
-    if (aProperties[i].name().EqualsLiteral("Icon")) {
-      return true;
+  for (int i = 0; i < aProperties.Length(); ++i) {
+    if (aProperties[i].name().EqualsASCII(aPropertyType)) {
+      return i;
     }
   }
-  return false;
+
+  return -1;
 }
 
 static bool
@@ -1766,7 +1771,7 @@ EventFilter(DBusConnection* aConn, DBusMessage* aMsg, void* aData)
         BluetoothNamedValue(NS_LITERAL_STRING("Path"),
                             GetObjectPathFromAddress(signalPath, address)));
 
-      if (!ContainsIcon(properties)) {
+      if (FindProperty(properties, "Icon") < 0) {
         for (uint32_t i = 0; i < properties.Length(); i++) {
           // It is possible that property Icon missed due to CoD of major
           // class is TOY but service class is "Audio", we need to assign
@@ -1781,6 +1786,40 @@ EventFilter(DBusConnection* aConn, DBusMessage* aMsg, void* aData)
             }
             break;
           }
+        }
+      }
+
+      if (FindProperty(properties, "Class") < 0) {
+        // Check whether the properties array contains CoD. If it doesn't,
+        // fallback to restore CoD value. This usually happens due to NFC
+        // directly triggers pairing that makes bluez not update CoD value.
+        uint32_t cod = 0;
+        int uuidIndex = FindProperty(properties, "UUIDs");
+        if (uuidIndex >= 0) {
+          BluetoothNamedValue& deviceProperty = properties[uuidIndex];
+          const InfallibleTArray<nsString>& uuids =
+            deviceProperty.value().get_ArrayOfnsString();
+
+          for (uint32_t i = 0; i < uuids.Length(); ++i) {
+            BluetoothServiceClass serviceClass =
+              BluetoothUuidHelper::GetBluetoothServiceClass(uuids[i]);
+            if (serviceClass == BluetoothServiceClass::HANDSFREE ||
+                serviceClass == BluetoothServiceClass::HEADSET) {
+              BT_LOGD("Restore CoD value, set Audio bit");
+              SET_AUDIO_BIT(cod);
+            } else if (serviceClass == BluetoothServiceClass::A2DP_SINK) {
+              BT_LOGD("Restore CoD value, set A2DP_SINK bit");
+              SET_RENDERING_BIT(cod);
+            }
+          }
+
+          // Add both CoD and Icon information anyway, 'audio-card' refers to
+          // 'Audio' device.
+          properties.AppendElement(
+            BluetoothNamedValue(NS_LITERAL_STRING("Class"), cod));
+          properties.AppendElement(
+            BluetoothNamedValue(NS_LITERAL_STRING("Icon"),
+              NS_LITERAL_STRING("audio-card")));
         }
       }
     }
@@ -2688,7 +2727,7 @@ public:
     // Icon as audio-card. This is for PTS test TC_AG_COD_BV_02_I.
     // As HFP specification defined that
     // service class is "Audio" can be considered as HFP AG.
-    if (!ContainsIcon(devicePropertiesArray)) {
+    if (FindProperty(devicePropertiesArray, "Icon") < 0) {
       for (uint32_t j = 0; j < devicePropertiesArray.Length(); ++j) {
         BluetoothNamedValue& deviceProperty = devicePropertiesArray[j];
         if (deviceProperty.name().EqualsLiteral("Class")) {
@@ -2699,6 +2738,40 @@ public:
           }
           break;
         }
+      }
+    }
+
+    // Check whether the properties array contains CoD. If it doesn't, fallback to restore
+    // CoD value. This usually happens due to NFC directly triggers pairing that
+    // makes bluez not update CoD value.
+    if (FindProperty(devicePropertiesArray, "Class") < 0) {
+      uint32_t cod = 0;
+      int uuidIndex = FindProperty(devicePropertiesArray, "UUIDs");
+      if (uuidIndex >= 0) {
+        BluetoothNamedValue& deviceProperty = devicePropertiesArray[uuidIndex];
+        const InfallibleTArray<nsString>& uuids =
+          deviceProperty.value().get_ArrayOfnsString();
+
+        for (uint32_t i = 0; i < uuids.Length(); ++i) {
+          BluetoothServiceClass serviceClass =
+            BluetoothUuidHelper::GetBluetoothServiceClass(uuids[i]);
+          if (serviceClass == BluetoothServiceClass::HANDSFREE ||
+              serviceClass == BluetoothServiceClass::HEADSET) {
+            BT_LOGD("Restore CoD value, set Audio bit");
+            SET_AUDIO_BIT(cod);
+          } else if (serviceClass == BluetoothServiceClass::A2DP_SINK) {
+            BT_LOGD("Restore CoD value, set A2DP_SINK bit");
+            SET_RENDERING_BIT(cod);
+          }
+        }
+
+        // Add both CoD and Icon information anyway, 'audio-card' refers to
+        // 'Audio' device.
+        devicePropertiesArray.AppendElement(
+          BluetoothNamedValue(NS_LITERAL_STRING("Class"), cod));
+        devicePropertiesArray.AppendElement(
+          BluetoothNamedValue(NS_LITERAL_STRING("Icon"),
+            NS_LITERAL_STRING("audio-card")));
       }
     }
 
@@ -3436,14 +3509,13 @@ BluetoothDBusService::ToggleCalls(BluetoothReplyRunnable* aRunnable)
 class OnUpdateSdpRecordsRunnable : public nsRunnable
 {
 public:
-  OnUpdateSdpRecordsRunnable(const nsAString& aObjectPath,
+  OnUpdateSdpRecordsRunnable(const nsAString& aDeviceAddress,
                              BluetoothProfileManagerBase* aManager)
-    : mManager(aManager)
+    : mDeviceAddress(aDeviceAddress)
+    , mManager(aManager)
   {
-    MOZ_ASSERT(!aObjectPath.IsEmpty());
+    MOZ_ASSERT(!aDeviceAddress.IsEmpty());
     MOZ_ASSERT(aManager);
-
-    mDeviceAddress = GetAddressFromObjectPath(aObjectPath);
   }
 
   nsresult
@@ -3454,6 +3526,12 @@ public:
     mManager->OnUpdateSdpRecords(mDeviceAddress);
 
     return NS_OK;
+  }
+
+  void
+  GetDeviceAddress(nsAString& aRetDeviceAddress)
+  {
+    aRetDeviceAddress = mDeviceAddress;
   }
 
 private:
@@ -3641,31 +3719,74 @@ public:
     MOZ_ASSERT(sDBusConnection);
     MOZ_ASSERT(!sAdapterPath.IsEmpty());
 
-    const nsString objectPath =
-      GetObjectPathFromAddress(sAdapterPath, mDeviceAddress);
+    // We first guess that the device doesn't exist at all. So we use BlueZ
+    // API "CreateDevice" to create an object path for the BluetoothDevice
+    // object. "CreateDevice" will connect to the remote device and retrieve
+    // SDP records of the target.
+    NS_ConvertUTF16toUTF8 address(mDeviceAddress);
+    const char* cAddress = address.get();
 
     // I choose to use raw pointer here because this is going to be passed as an
     // argument into SendWithReply() at once.
     OnUpdateSdpRecordsRunnable* callbackRunnable =
-      new OnUpdateSdpRecordsRunnable(objectPath, mBluetoothProfileManager);
+      new OnUpdateSdpRecordsRunnable(mDeviceAddress, mBluetoothProfileManager);
 
-    sDBusConnection->SendWithReply(DiscoverServicesCallback,
-                                   (void*)callbackRunnable, -1,
-                                   BLUEZ_DBUS_BASE_IFC,
-                                   NS_ConvertUTF16toUTF8(objectPath).get(),
-                                   DBUS_DEVICE_IFACE,
-                                   "DiscoverServices",
-                                   DBUS_TYPE_STRING, &EmptyCString(),
-                                   DBUS_TYPE_INVALID);
+    sDBusConnection->SendWithReply(
+      CreateDeviceCallback, callbackRunnable, -1,
+      BLUEZ_DBUS_BASE_IFC,
+      NS_ConvertUTF16toUTF8(sAdapterPath).get(),
+      DBUS_ADAPTER_IFACE,
+      "CreateDevice",
+      DBUS_TYPE_STRING, &cAddress,
+      DBUS_TYPE_INVALID);
   }
 
 protected:
+  static void CreateDeviceCallback(DBusMessage* aMsg, void* aData)
+  {
+    MOZ_ASSERT(!NS_IsMainThread()); // I/O thread
+
+    nsAutoString errorString;
+    OnUpdateSdpRecordsRunnable* r =
+      static_cast<OnUpdateSdpRecordsRunnable*>(aData);
+
+    if (IsDBusMessageError(aMsg, nullptr, errorString)) {
+      // If the device already exists it comes here. If we want to refresh its
+      // SDP records then we have to do "DiscoverServices"
+      BT_LOGR("%s", NS_ConvertUTF16toUTF8(errorString).get());
+
+      nsString deviceAddress;
+      r->GetDeviceAddress(deviceAddress);
+
+      const nsString objectPath =
+        GetObjectPathFromAddress(sAdapterPath, deviceAddress);
+
+      sDBusConnection->SendWithReply(DiscoverServicesCallback,
+                                     aData, -1,
+                                     BLUEZ_DBUS_BASE_IFC,
+                                     NS_ConvertUTF16toUTF8(objectPath).get(),
+                                     DBUS_DEVICE_IFACE,
+                                     "DiscoverServices",
+                                     DBUS_TYPE_STRING, &EmptyCString(),
+                                     DBUS_TYPE_INVALID);
+      return;
+    }
+
+    NS_DispatchToMainThread(r);
+  }
+
   static void DiscoverServicesCallback(DBusMessage* aMsg, void* aData)
   {
     MOZ_ASSERT(!NS_IsMainThread()); // I/O thread
 
-    nsRefPtr<OnUpdateSdpRecordsRunnable> r(
-      static_cast<OnUpdateSdpRecordsRunnable*>(aData));
+    nsAutoString errorStr;
+
+    if (IsDBusMessageError(aMsg, nullptr, errorStr)) {
+      BT_LOGR("%s", NS_ConvertUTF16toUTF8(errorStr).get());
+    }
+
+    OnUpdateSdpRecordsRunnable* r =
+      static_cast<OnUpdateSdpRecordsRunnable*>(aData);
     NS_DispatchToMainThread(r);
   }
 
@@ -3680,8 +3801,7 @@ BluetoothDBusService::UpdateSdpRecords(const nsAString& aDeviceAddress,
 {
   MOZ_ASSERT(NS_IsMainThread());
 
-  Task* task = new UpdateSdpRecordsTask(aDeviceAddress, aManager);
-  DispatchToDBusThread(task);
+  DispatchToDBusThread(new UpdateSdpRecordsTask(aDeviceAddress, aManager));
 
   return true;
 }

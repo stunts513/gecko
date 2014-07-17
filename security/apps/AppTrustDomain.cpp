@@ -13,6 +13,7 @@
 #include "pkix/pkix.h"
 #include "mozilla/ArrayUtils.h"
 #include "nsIX509CertDB.h"
+#include "nsNSSCertificate.h"
 #include "prerror.h"
 #include "secerr.h"
 
@@ -31,8 +32,9 @@ extern PRLogModuleInfo* gPIPNSSLog;
 
 namespace mozilla { namespace psm {
 
-AppTrustDomain::AppTrustDomain(void* pinArg)
-  : mPinArg(pinArg)
+AppTrustDomain::AppTrustDomain(ScopedCERTCertList& certChain, void* pinArg)
+  : mCertChain(certChain)
+  , mPinArg(pinArg)
 {
 }
 
@@ -86,9 +88,9 @@ AppTrustDomain::SetTrustedRoot(AppTrustedRoot trustedRoot)
 }
 
 SECStatus
-AppTrustDomain::FindPotentialIssuers(const SECItem* encodedIssuerName,
-                                     PRTime time,
-                             /*out*/ mozilla::pkix::ScopedCERTCertList& results)
+AppTrustDomain::FindIssuer(const SECItem& encodedIssuerName,
+                           IssuerChecker& checker, PRTime time)
+
 {
   MOZ_ASSERT(mTrustedRoot);
   if (!mTrustedRoot) {
@@ -96,22 +98,46 @@ AppTrustDomain::FindPotentialIssuers(const SECItem* encodedIssuerName,
     return SECFailure;
   }
 
-  results = CERT_CreateSubjectCertList(nullptr, CERT_GetDefaultCertDB(),
-                                       encodedIssuerName, time, true);
+  // TODO(bug 1035418): If/when mozilla::pkix relaxes the restriction that
+  // FindIssuer must only pass certificates with a matching subject name to
+  // checker.Check, we can stop using CERT_CreateSubjectCertList and instead
+  // use logic like this:
+  //
+  // 1. First, try the trusted trust anchor.
+  // 2. Secondly, iterate through the certificates that were stored in the CMS
+  //    message, passing each one to checker.Check.
+  ScopedCERTCertList
+    candidates(CERT_CreateSubjectCertList(nullptr, CERT_GetDefaultCertDB(),
+                                          &encodedIssuerName, time, true));
+  if (candidates) {
+    for (CERTCertListNode* n = CERT_LIST_HEAD(candidates);
+         !CERT_LIST_END(n, candidates); n = CERT_LIST_NEXT(n)) {
+      bool keepGoing;
+      SECStatus srv = checker.Check(n->cert->derCert,
+                                    nullptr/*additionalNameConstraints*/,
+                                    keepGoing);
+      if (srv != SECSuccess) {
+        return SECFailure;
+      }
+      if (!keepGoing) {
+        break;
+      }
+    }
+  }
+
   return SECSuccess;
 }
 
 SECStatus
 AppTrustDomain::GetCertTrust(EndEntityOrCA endEntityOrCA,
                              const CertPolicyId& policy,
-                             const CERTCertificate* candidateCert,
+                             const SECItem& candidateCertDER,
                      /*out*/ TrustLevel* trustLevel)
 {
   MOZ_ASSERT(policy.IsAnyPolicy());
-  MOZ_ASSERT(candidateCert);
   MOZ_ASSERT(trustLevel);
   MOZ_ASSERT(mTrustedRoot);
-  if (!candidateCert || !trustLevel || !policy.IsAnyPolicy()) {
+  if (!trustLevel || !policy.IsAnyPolicy()) {
     PR_SetError(SEC_ERROR_INVALID_ARGS, 0);
     return SECFailure;
   }
@@ -121,8 +147,20 @@ AppTrustDomain::GetCertTrust(EndEntityOrCA endEntityOrCA,
   }
 
   // Handle active distrust of the certificate.
+
+  // XXX: This would be cleaner and more efficient if we could get the trust
+  // information without constructing a CERTCertificate here, but NSS doesn't
+  // expose it in any other easy-to-use fashion.
+  ScopedCERTCertificate candidateCert(
+    CERT_NewTempCertificate(CERT_GetDefaultCertDB(),
+                            const_cast<SECItem*>(&candidateCertDER), nullptr,
+                            false, true));
+  if (!candidateCert) {
+    return SECFailure;
+  }
+
   CERTCertTrust trust;
-  if (CERT_GetCertTrust(candidateCert, &trust) == SECSuccess) {
+  if (CERT_GetCertTrust(candidateCert.get(), &trust) == SECSuccess) {
     PRUint32 flags = SEC_GET_TRUST_FLAGS(&trust, trustObjectSigning);
 
     // For DISTRUST, we use the CERTDB_TRUSTED or CERTDB_TRUSTED_CA bit,
@@ -141,7 +179,7 @@ AppTrustDomain::GetCertTrust(EndEntityOrCA endEntityOrCA,
   }
 
   // mTrustedRoot is the only trust anchor for this validation.
-  if (CERT_CompareCerts(mTrustedRoot.get(), candidateCert)) {
+  if (CERT_CompareCerts(mTrustedRoot.get(), candidateCert.get())) {
     *trustLevel = TrustLevel::TrustAnchor;
     return SECSuccess;
   }
@@ -151,17 +189,23 @@ AppTrustDomain::GetCertTrust(EndEntityOrCA endEntityOrCA,
 }
 
 SECStatus
-AppTrustDomain::VerifySignedData(const CERTSignedData* signedData,
-                                  const CERTCertificate* cert)
+AppTrustDomain::VerifySignedData(const SignedDataWithSignature& signedData,
+                                 const SECItem& subjectPublicKeyInfo)
 {
-  return ::mozilla::pkix::VerifySignedData(signedData, cert, mPinArg);
+  return ::mozilla::pkix::VerifySignedData(signedData, subjectPublicKeyInfo,
+                                           mPinArg);
 }
 
 SECStatus
-AppTrustDomain::CheckRevocation(EndEntityOrCA,
-                                const CERTCertificate*,
-                                /*const*/ CERTCertificate*,
-                                PRTime time,
+AppTrustDomain::DigestBuf(const SECItem& item, /*out*/ uint8_t* digestBuf,
+                          size_t digestBufLen)
+{
+  return ::mozilla::pkix::DigestBuf(item, digestBuf, digestBufLen);
+}
+
+SECStatus
+AppTrustDomain::CheckRevocation(EndEntityOrCA, const CertID&, PRTime time,
+                                /*optional*/ const SECItem*,
                                 /*optional*/ const SECItem*)
 {
   // We don't currently do revocation checking. If we need to distrust an Apps
@@ -169,4 +213,16 @@ AppTrustDomain::CheckRevocation(EndEntityOrCA,
   return SECSuccess;
 }
 
-} }
+SECStatus
+AppTrustDomain::IsChainValid(const DERArray& certChain)
+{
+  return ConstructCERTCertListFromReversedDERArray(certChain, mCertChain);
+}
+
+SECStatus
+AppTrustDomain::CheckPublicKey(const SECItem& subjectPublicKeyInfo)
+{
+  return ::mozilla::pkix::CheckPublicKey(subjectPublicKeyInfo);
+}
+
+} } // namespace mozilla::psm

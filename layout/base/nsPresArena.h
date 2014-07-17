@@ -32,6 +32,17 @@ public:
     nsStyleContext_id,
     nsFrameList_id,
 
+    First_nsStyleStruct_id,
+    DummyBeforeStyleStructs_id = First_nsStyleStruct_id - 1,
+
+    #define STYLE_STRUCT(name_, checkdata_cb_) \
+      nsStyle##name_##_id,
+    #include "nsStyleStructList.h"
+    #undef STYLE_STRUCT
+
+    DummyAfterStyleStructs_id,
+    Last_nsStyleStruct_id = DummyAfterStyleStructs_id - 1,
+
     /**
      * The PresArena implementation uses this bit to distinguish objects
      * allocated by size from objects allocated by type ID (that is, frames
@@ -46,11 +57,11 @@ public:
   /**
    * Pool allocation with recycler lists indexed by object size, aSize.
    */
-  NS_HIDDEN_(void*) AllocateBySize(size_t aSize)
+  void* AllocateBySize(size_t aSize)
   {
     return Allocate(uint32_t(aSize) | uint32_t(NON_OBJECT_MARKER), aSize);
   }
-  NS_HIDDEN_(void) FreeBySize(size_t aSize, void* aPtr)
+  void FreeBySize(size_t aSize, void* aPtr)
   {
     Free(uint32_t(aSize) | uint32_t(NON_OBJECT_MARKER), aPtr);
   }
@@ -59,11 +70,11 @@ public:
    * Pool allocation with recycler lists indexed by frame-type ID.
    * Every aID must always be used with the same object size, aSize.
    */
-  NS_HIDDEN_(void*) AllocateByFrameID(nsQueryFrame::FrameIID aID, size_t aSize)
+  void* AllocateByFrameID(nsQueryFrame::FrameIID aID, size_t aSize)
   {
     return Allocate(aID, aSize);
   }
-  NS_HIDDEN_(void) FreeByFrameID(nsQueryFrame::FrameIID aID, void* aPtr)
+  void FreeByFrameID(nsQueryFrame::FrameIID aID, void* aPtr)
   {
     Free(aID, aPtr);
   }
@@ -72,11 +83,11 @@ public:
    * Pool allocation with recycler lists indexed by object-type ID (see above).
    * Every aID must always be used with the same object size, aSize.
    */
-  NS_HIDDEN_(void*) AllocateByObjectID(ObjectID aID, size_t aSize)
+  void* AllocateByObjectID(ObjectID aID, size_t aSize)
   {
     return Allocate(aID, aSize);
   }
-  NS_HIDDEN_(void) FreeByObjectID(ObjectID aID, void* aPtr)
+  void FreeByObjectID(ObjectID aID, void* aPtr)
   {
     Free(aID, aPtr);
   }
@@ -89,8 +100,8 @@ public:
                               nsArenaMemoryStats* aArenaStats);
 
 private:
-  NS_HIDDEN_(void*) Allocate(uint32_t aCode, size_t aSize);
-  NS_HIDDEN_(void) Free(uint32_t aCode, void* aPtr);
+  void* Allocate(uint32_t aCode, size_t aSize);
+  void Free(uint32_t aCode, void* aPtr);
 
   // All keys to this hash table fit in 32 bits (see below) so we do not
   // bother actually hashing them.

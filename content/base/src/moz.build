@@ -5,6 +5,7 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 EXPORTS += [
+    'AutocompleteFieldList.h',
     'mozAutoDocUpdate.h',
     'nsAtomListUtils.h',
     'nsAttrAndChildArray.h',
@@ -64,6 +65,7 @@ EXPORTS.mozilla.dom += [
     'DocumentFragment.h',
     'DocumentType.h',
     'DOMImplementation.h',
+    'DOMMatrix.h',
     'DOMParser.h',
     'DOMPoint.h',
     'DOMQuad.h',
@@ -73,6 +75,7 @@ EXPORTS.mozilla.dom += [
     'ImportManager.h',
     'Link.h',
     'NodeIterator.h',
+    'ResponsiveImageSelector.h',
     'ShadowRoot.h',
     'StyleSheetList.h',
     'Text.h',
@@ -87,6 +90,7 @@ UNIFIED_SOURCES += [
     'DocumentFragment.cpp',
     'DocumentType.cpp',
     'DOMImplementation.cpp',
+    'DOMMatrix.cpp',
     'DOMParser.cpp',
     'DOMPoint.cpp',
     'DOMQuad.cpp',
@@ -145,7 +149,6 @@ UNIFIED_SOURCES += [
     'nsMixedContentBlocker.cpp',
     'nsNameSpaceManager.cpp',
     'nsNoDataProtocolContentPolicy.cpp',
-    'nsNodeInfo.cpp',
     'nsNodeUtils.cpp',
     'nsPlainTextSerializer.cpp',
     'nsPropertyTable.cpp',
@@ -167,6 +170,7 @@ UNIFIED_SOURCES += [
     'nsXMLContentSerializer.cpp',
     'nsXMLHttpRequest.cpp',
     'nsXMLNameSpaceMap.cpp',
+    'ResponsiveImageSelector.cpp',
     'ShadowRoot.cpp',
     'StyleSheetList.cpp',
     'Text.cpp',
@@ -241,7 +245,3 @@ LOCAL_INCLUDES += [
     '/netwerk/base/src',
     '/xpcom/ds',
 ]
-
-if CONFIG['GNU_CC'] and CONFIG['MOZ_WIDGET_TOOLKIT'] == 'android':
-    # Work around bug 986928
-    CXXFLAGS += ['-Wno-error=format']

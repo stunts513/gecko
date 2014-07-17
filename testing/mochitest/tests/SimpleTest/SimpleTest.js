@@ -697,9 +697,7 @@ SimpleTest.waitForFocus = function (callback, targetWindow, expectBlankPage) {
     SimpleTest.waitForFocus_started = false;
     expectBlankPage = !!expectBlankPage;
 
-    var childTargetWindow = {};
-    SpecialPowers.getFocusedElementForWindow(targetWindow, true, childTargetWindow);
-    childTargetWindow = childTargetWindow.value;
+    var childTargetWindow = SpecialPowers.getFocusedElementForWindow(targetWindow, true);
 
     function info(msg) {
         SimpleTest.info(msg);
@@ -750,10 +748,9 @@ SimpleTest.waitForFocus = function (callback, targetWindow, expectBlankPage) {
     }
 
     // Check if the desired window is already focused.
-    var focusedChildWindow = { };
+    var focusedChildWindow = null;
     if (SpecialPowers.activeWindow()) {
-        SpecialPowers.getFocusedElementForWindow(SpecialPowers.activeWindow(), true, focusedChildWindow);
-        focusedChildWindow = focusedChildWindow.value;
+        focusedChildWindow = SpecialPowers.getFocusedElementForWindow(SpecialPowers.activeWindow(), true);
     }
 
     // If this is a child frame, ensure that the frame is focused.
@@ -866,26 +863,13 @@ SimpleTest.registerCleanupFunction = function(aFunc) {
  * SimpleTest.waitForExplicitFinish() has been invoked.
 **/
 SimpleTest.finish = function() {
-    var Task = SpecialPowers.Cu.import("resource://gre/modules/Task.jsm").Task;
-
     if (SimpleTest._alreadyFinished) {
         SimpleTest.ok(false, "[SimpleTest.finish()] this test already called finish!");
     }
 
     SimpleTest._alreadyFinished = true;
 
-    Task.spawn(function*() {
-        // Execute all of our cleanup functions.
-        var func;
-        while ((func = SimpleTest._cleanupFunctions.pop())) {
-          try {
-            yield func();
-          }
-          catch (ex) {
-            SimpleTest.ok(false, "Cleanup function threw exception: " + ex);
-          }
-        }
-
+    var afterCleanup = function() {
         if (SpecialPowers.DOMWindowUtils.isTestControllingRefreshes) {
             SimpleTest.ok(false, "test left refresh driver under test control");
             SpecialPowers.DOMWindowUtils.restoreNormalRefresh();
@@ -920,7 +904,32 @@ SimpleTest.finish = function() {
               });
             });
         }
-    });
+    }
+
+    var executeCleanupFunction = function() {
+        var func = SimpleTest._cleanupFunctions.pop();
+
+        if (!func) {
+            afterCleanup();
+            return;
+        }
+
+        var ret;
+        try {
+            ret = func();
+        } catch (ex) {
+            SimpleTest.ok(false, "Cleanup function threw exception: " + ex);
+        }
+
+        if (ret && ret.constructor.name == "Promise") {
+            ret.then(executeCleanupFunction,
+                     (ex) => SimpleTest.ok(false, "Cleanup promise rejected: " + ex));
+        } else {
+            executeCleanupFunction();
+        }
+    };
+
+    executeCleanupFunction();
 };
 
 /**

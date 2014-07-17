@@ -23,7 +23,7 @@
 #include "nsIMobileNetworkInfo.h"
 #include "nsIObserverService.h"
 #include "nsISettingsService.h"
-#include "nsITelephonyProvider.h"
+#include "nsITelephonyService.h"
 #include "nsRadioInterfaceLayer.h"
 #include "nsServiceManagerUtils.h"
 #include "nsThreadUtils.h"
@@ -52,7 +52,7 @@ USING_BLUETOOTH_NAMESPACE
 
 namespace {
   StaticRefPtr<BluetoothHfpManager> sBluetoothHfpManager;
-  static const bthf_interface_t* sBluetoothHfpInterface = nullptr;
+  static BluetoothHandsfreeInterface* sBluetoothHfpInterface = nullptr;
 
   bool sInShutdown = false;
 
@@ -200,7 +200,7 @@ IsValidDtmf(const char aChar) {
          (aChar >= 'A' && aChar <= 'D');
 }
 
-class BluetoothHfpManager::GetVolumeTask : public nsISettingsServiceCallback
+class BluetoothHfpManager::GetVolumeTask MOZ_FINAL : public nsISettingsServiceCallback
 {
 public:
   NS_DECL_ISUPPORTS
@@ -336,7 +336,7 @@ Call::Set(const nsAString& aNumber, const bool aIsOutgoing)
 void
 Call::Reset()
 {
-  mState = nsITelephonyProvider::CALL_STATE_DISCONNECTED;
+  mState = nsITelephonyService::CALL_STATE_DISCONNECTED;
   mDirection = BTHF_CALL_DIRECTION_OUTGOING;
   mNumber.Truncate();
   mType = BTHF_CALL_ADDRTYPE_UNKNOWN;
@@ -345,7 +345,7 @@ Call::Reset()
 bool
 Call::IsActive()
 {
-  return (mState == nsITelephonyProvider::CALL_STATE_CONNECTED);
+  return (mState == nsITelephonyService::CALL_STATE_CONNECTED);
 }
 
 /**
@@ -432,20 +432,20 @@ BluetoothHfpManager::Init()
 void
 BluetoothHfpManager::InitHfpInterface()
 {
-  const bt_interface_t* btInf = GetBluetoothInterface();
+  BluetoothInterface* btInf = BluetoothInterface::GetInstance();
   NS_ENSURE_TRUE_VOID(btInf);
 
   if (sBluetoothHfpInterface) {
-    sBluetoothHfpInterface->cleanup();
+    sBluetoothHfpInterface->Cleanup();
     sBluetoothHfpInterface = nullptr;
   }
 
-  bthf_interface_t *interface = (bthf_interface_t *)
-    btInf->get_profile_interface(BT_PROFILE_HANDSFREE_ID);
+  BluetoothHandsfreeInterface *interface =
+    btInf->GetBluetoothHandsfreeInterface();
   NS_ENSURE_TRUE_VOID(interface);
 
   NS_ENSURE_TRUE_VOID(BT_STATUS_SUCCESS ==
-    interface->init(&sBluetoothHfpCallbacks));
+    interface->Init(&sBluetoothHfpCallbacks));
   sBluetoothHfpInterface = interface;
 }
 
@@ -471,10 +471,8 @@ BluetoothHfpManager::~BluetoothHfpManager()
 void
 BluetoothHfpManager::DeinitHfpInterface()
 {
-  NS_ENSURE_TRUE_VOID(GetBluetoothInterface());
-
   if (sBluetoothHfpInterface) {
-    sBluetoothHfpInterface->cleanup();
+    sBluetoothHfpInterface->Cleanup();
     sBluetoothHfpInterface = nullptr;
   }
 }
@@ -674,10 +672,10 @@ BluetoothHfpManager::ProcessAtCind()
 {
   NS_ENSURE_TRUE_VOID(sBluetoothHfpInterface);
 
-  int numActive = GetNumberOfCalls(nsITelephonyProvider::CALL_STATE_CONNECTED);
-  int numHeld = GetNumberOfCalls(nsITelephonyProvider::CALL_STATE_HELD);
+  int numActive = GetNumberOfCalls(nsITelephonyService::CALL_STATE_CONNECTED);
+  int numHeld = GetNumberOfCalls(nsITelephonyService::CALL_STATE_HELD);
 
-  bt_status_t status = sBluetoothHfpInterface->cind_response(
+  bt_status_t status = sBluetoothHfpInterface->CindResponse(
                           mService,
                           numActive,
                           numHeld,
@@ -693,7 +691,7 @@ BluetoothHfpManager::ProcessAtCops()
 {
   NS_ENSURE_TRUE_VOID(sBluetoothHfpInterface);
   NS_ENSURE_TRUE_VOID(BT_STATUS_SUCCESS ==
-    sBluetoothHfpInterface->cops_response(
+    sBluetoothHfpInterface->CopsResponse(
       NS_ConvertUTF16toUTF8(mOperatorName).get()));
 }
 
@@ -723,17 +721,17 @@ BluetoothHfpManager::ProcessUnknownAt(char *aAtString)
 
   NS_ENSURE_TRUE_VOID(sBluetoothHfpInterface);
   NS_ENSURE_TRUE_VOID(BT_STATUS_SUCCESS ==
-    sBluetoothHfpInterface->at_response(BTHF_AT_RESPONSE_ERROR, 0));
+    sBluetoothHfpInterface->AtResponse(BTHF_AT_RESPONSE_ERROR, 0));
 }
 
 void
 BluetoothHfpManager::ProcessKeyPressed()
 {
   bool hasActiveCall =
-    (FindFirstCall(nsITelephonyProvider::CALL_STATE_CONNECTED) > 0);
+    (FindFirstCall(nsITelephonyService::CALL_STATE_CONNECTED) > 0);
 
   // Refer to AOSP HeadsetStateMachine.processKeyPressed
-  if (FindFirstCall(nsITelephonyProvider::CALL_STATE_INCOMING)
+  if (FindFirstCall(nsITelephonyService::CALL_STATE_INCOMING)
       && !hasActiveCall) {
     /**
      * Bluetooth HSP spec 4.2.2
@@ -879,8 +877,8 @@ BluetoothHfpManager::HandleVolumeChanged(const nsAString& aData)
   if (IsConnected()) {
     NS_ENSURE_TRUE_VOID(sBluetoothHfpInterface);
     NS_ENSURE_TRUE_VOID(BT_STATUS_SUCCESS ==
-      sBluetoothHfpInterface->volume_control(BTHF_VOLUME_TYPE_SPK,
-                                             mCurrentVgs));
+      sBluetoothHfpInterface->VolumeControl(BTHF_VOLUME_TYPE_SPK,
+                                            mCurrentVgs));
   }
 }
 
@@ -975,7 +973,7 @@ void
 BluetoothHfpManager::SendCLCC(Call& aCall, int aIndex)
 {
   NS_ENSURE_TRUE_VOID(aCall.mState !=
-                        nsITelephonyProvider::CALL_STATE_DISCONNECTED);
+                        nsITelephonyService::CALL_STATE_DISCONNECTED);
   NS_ENSURE_TRUE_VOID(sBluetoothHfpInterface);
 
   bthf_call_state_t callState = ConvertToBthfCallState(aCall.mState);
@@ -986,11 +984,11 @@ BluetoothHfpManager::SendCLCC(Call& aCall, int aIndex)
   }
 
   if (callState == BTHF_CALL_STATE_INCOMING &&
-      FindFirstCall(nsITelephonyProvider::CALL_STATE_CONNECTED)) {
+      FindFirstCall(nsITelephonyService::CALL_STATE_CONNECTED)) {
     callState = BTHF_CALL_STATE_WAITING;
   }
 
-  bt_status_t status = sBluetoothHfpInterface->clcc_response(
+  bt_status_t status = sBluetoothHfpInterface->ClccResponse(
                           aIndex,
                           aCall.mDirection,
                           callState,
@@ -1006,7 +1004,7 @@ BluetoothHfpManager::SendLine(const char* aMessage)
 {
   NS_ENSURE_TRUE_VOID(sBluetoothHfpInterface);
   NS_ENSURE_TRUE_VOID(BT_STATUS_SUCCESS ==
-    sBluetoothHfpInterface->formatted_at_response(aMessage));
+    sBluetoothHfpInterface->FormattedAtResponse(aMessage));
 }
 
 void
@@ -1014,7 +1012,7 @@ BluetoothHfpManager::SendResponse(bthf_at_response_t aResponseCode)
 {
   NS_ENSURE_TRUE_VOID(sBluetoothHfpInterface);
   NS_ENSURE_TRUE_VOID(BT_STATUS_SUCCESS ==
-    sBluetoothHfpInterface->at_response(aResponseCode, 0));
+    sBluetoothHfpInterface->AtResponse(aResponseCode, 0));
 }
 
 void
@@ -1022,8 +1020,8 @@ BluetoothHfpManager::UpdatePhoneCIND(uint32_t aCallIndex)
 {
   NS_ENSURE_TRUE_VOID(sBluetoothHfpInterface);
 
-  int numActive = GetNumberOfCalls(nsITelephonyProvider::CALL_STATE_CONNECTED);
-  int numHeld = GetNumberOfCalls(nsITelephonyProvider::CALL_STATE_HELD);
+  int numActive = GetNumberOfCalls(nsITelephonyService::CALL_STATE_CONNECTED);
+  int numHeld = GetNumberOfCalls(nsITelephonyService::CALL_STATE_HELD);
   bthf_call_state_t callSetupState =
     ConvertToBthfCallState(GetCallSetupState());
   nsAutoCString number =
@@ -1035,7 +1033,7 @@ BluetoothHfpManager::UpdatePhoneCIND(uint32_t aCallIndex)
           numActive, numHeld, callSetupState);
 
   NS_ENSURE_TRUE_VOID(BT_STATUS_SUCCESS ==
-    sBluetoothHfpInterface->phone_state_change(
+    sBluetoothHfpInterface->PhoneStateChange(
       numActive, numHeld, callSetupState, number.get(), type));
 }
 
@@ -1044,7 +1042,7 @@ BluetoothHfpManager::UpdateDeviceCIND()
 {
   if (sBluetoothHfpInterface) {
     NS_ENSURE_TRUE_VOID(BT_STATUS_SUCCESS ==
-      sBluetoothHfpInterface->device_status_notification(
+      sBluetoothHfpInterface->DeviceStatusNotification(
         (bthf_network_state_t) mService,
         (bthf_service_type_t) mRoam,
         mSignal,
@@ -1088,16 +1086,16 @@ BluetoothHfpManager::GetCallSetupState()
 
   for (uint32_t i = 1; i < callLength; ++i) {
     switch (mCurrentCallArray[i].mState) {
-      case nsITelephonyProvider::CALL_STATE_INCOMING:
-      case nsITelephonyProvider::CALL_STATE_DIALING:
-      case nsITelephonyProvider::CALL_STATE_ALERTING:
+      case nsITelephonyService::CALL_STATE_INCOMING:
+      case nsITelephonyService::CALL_STATE_DIALING:
+      case nsITelephonyService::CALL_STATE_ALERTING:
         return mCurrentCallArray[i].mState;
       default:
         break;
     }
   }
 
-  return nsITelephonyProvider::CALL_STATE_DISCONNECTED;
+  return nsITelephonyService::CALL_STATE_DISCONNECTED;
 }
 
 bthf_call_state_t
@@ -1106,15 +1104,15 @@ BluetoothHfpManager::ConvertToBthfCallState(int aCallState)
   bthf_call_state_t state;
 
   // Refer to AOSP BluetoothPhoneService.convertCallState
-  if (aCallState == nsITelephonyProvider::CALL_STATE_INCOMING) {
+  if (aCallState == nsITelephonyService::CALL_STATE_INCOMING) {
     state = BTHF_CALL_STATE_INCOMING;
-  } else if (aCallState == nsITelephonyProvider::CALL_STATE_DIALING) {
+  } else if (aCallState == nsITelephonyService::CALL_STATE_DIALING) {
     state = BTHF_CALL_STATE_DIALING;
-  } else if (aCallState == nsITelephonyProvider::CALL_STATE_ALERTING) {
+  } else if (aCallState == nsITelephonyService::CALL_STATE_ALERTING) {
     state = BTHF_CALL_STATE_ALERTING;
-  } else if (aCallState == nsITelephonyProvider::CALL_STATE_CONNECTED) {
+  } else if (aCallState == nsITelephonyService::CALL_STATE_CONNECTED) {
     state = BTHF_CALL_STATE_ACTIVE;
-  } else if (aCallState == nsITelephonyProvider::CALL_STATE_HELD) {
+  } else if (aCallState == nsITelephonyService::CALL_STATE_HELD) {
     state = BTHF_CALL_STATE_HELD;
   } else { // disconnected
     state = BTHF_CALL_STATE_IDLE;
@@ -1137,11 +1135,11 @@ BluetoothHfpManager::IsTransitionState(uint16_t aCallState, bool aIsConference)
    */
   if (!aIsConference) {
     switch (aCallState) {
-      case nsITelephonyProvider::CALL_STATE_CONNECTED:
+      case nsITelephonyService::CALL_STATE_CONNECTED:
         return (GetNumberOfCalls(aCallState) > 1);
-      case nsITelephonyProvider::CALL_STATE_HELD:
+      case nsITelephonyService::CALL_STATE_HELD:
         return (GetNumberOfCalls(aCallState) > 1 ||
-                FindFirstCall(nsITelephonyProvider::CALL_STATE_INCOMING));
+                FindFirstCall(nsITelephonyService::CALL_STATE_INCOMING));
       default:
         break;
     }
@@ -1188,17 +1186,17 @@ BluetoothHfpManager::HandleCallStateChanged(uint32_t aCallIndex,
   }
 
   switch (aCallState) {
-    case nsITelephonyProvider::CALL_STATE_DIALING:
+    case nsITelephonyService::CALL_STATE_DIALING:
       // We've send Dialer a dialing request and this is the response.
       if (!mDialingRequestProcessed) {
         SendResponse(BTHF_AT_RESPONSE_OK);
         mDialingRequestProcessed = true;
       }
       break;
-    case nsITelephonyProvider::CALL_STATE_DISCONNECTED:
+    case nsITelephonyService::CALL_STATE_DISCONNECTED:
       // -1 is necessary because call 0 is an invalid (padding) call object.
       if (mCurrentCallArray.Length() - 1 ==
-          GetNumberOfCalls(nsITelephonyProvider::CALL_STATE_DISCONNECTED)) {
+          GetNumberOfCalls(nsITelephonyService::CALL_STATE_DISCONNECTED)) {
         // In order to let user hear busy tone via connected Bluetooth headset,
         // we postpone the timing of dropping SCO.
         if (aError.Equals(NS_LITERAL_STRING("BusyError"))) {
@@ -1253,7 +1251,7 @@ BluetoothHfpManager::AnswerWaitingCall()
   MOZ_ASSERT(mPhoneType == PhoneType::CDMA);
 
   // Pick up second call. First call is held now.
-  mCdmaSecondCall.mState = nsITelephonyProvider::CALL_STATE_CONNECTED;
+  mCdmaSecondCall.mState = nsITelephonyService::CALL_STATE_CONNECTED;
   // FIXME: check CDMA + bluedroid
   //UpdateCIND(CINDType::CALLSETUP, CallSetupState::NO_CALLSETUP, true);
 
@@ -1280,8 +1278,8 @@ BluetoothHfpManager::ToggleCalls()
 
   // Toggle acitve and held calls
   mCdmaSecondCall.mState = (mCdmaSecondCall.IsActive()) ?
-                             nsITelephonyProvider::CALL_STATE_HELD :
-                             nsITelephonyProvider::CALL_STATE_CONNECTED;
+                             nsITelephonyService::CALL_STATE_HELD :
+                             nsITelephonyService::CALL_STATE_CONNECTED;
 }
 
 bool
@@ -1296,7 +1294,7 @@ BluetoothHfpManager::ConnectSco()
   bt_bdaddr_t deviceBdAddress;
   StringToBdAddressType(mDeviceAddress, &deviceBdAddress);
   NS_ENSURE_TRUE(BT_STATUS_SUCCESS ==
-    sBluetoothHfpInterface->connect_audio(&deviceBdAddress), false);
+    sBluetoothHfpInterface->ConnectAudio(&deviceBdAddress), false);
 
   return true;
 }
@@ -1310,7 +1308,7 @@ BluetoothHfpManager::DisconnectSco()
   bt_bdaddr_t deviceBdAddress;
   StringToBdAddressType(mDeviceAddress, &deviceBdAddress);
   NS_ENSURE_TRUE(BT_STATUS_SUCCESS ==
-    sBluetoothHfpInterface->disconnect_audio(&deviceBdAddress), false);
+    sBluetoothHfpInterface->DisconnectAudio(&deviceBdAddress), false);
 
   return true;
 }
@@ -1348,7 +1346,7 @@ BluetoothHfpManager::Connect(const nsAString& aDeviceAddress,
   bt_bdaddr_t deviceBdAddress;
   StringToBdAddressType(aDeviceAddress, &deviceBdAddress);
 
-  bt_status_t result = sBluetoothHfpInterface->connect(&deviceBdAddress);
+  bt_status_t result = sBluetoothHfpInterface->Connect(&deviceBdAddress);
   if (BT_STATUS_SUCCESS != result) {
     BT_LOGR("Failed to connect: %x", result);
     aController->NotifyCompletion(NS_LITERAL_STRING(ERR_CONNECTION_FAILED));
@@ -1374,7 +1372,7 @@ BluetoothHfpManager::Disconnect(BluetoothProfileController* aController)
   bt_bdaddr_t deviceBdAddress;
   StringToBdAddressType(mDeviceAddress, &deviceBdAddress);
 
-  bt_status_t result = sBluetoothHfpInterface->disconnect(&deviceBdAddress);
+  bt_status_t result = sBluetoothHfpInterface->Disconnect(&deviceBdAddress);
   if (BT_STATUS_SUCCESS != result) {
     BT_LOGR("Failed to disconnect: %x", result);
     aController->NotifyCompletion(NS_LITERAL_STRING(ERR_DISCONNECTION_FAILED));

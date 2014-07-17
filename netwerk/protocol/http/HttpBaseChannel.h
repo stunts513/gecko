@@ -19,6 +19,8 @@
 #include "nsIHttpChannel.h"
 #include "nsHttpHandler.h"
 #include "nsIHttpChannelInternal.h"
+#include "nsIForcePendingChannel.h"
+#include "nsIRedirectHistory.h"
 #include "nsIUploadChannel.h"
 #include "nsIUploadChannel2.h"
 #include "nsIProgressEventSink.h"
@@ -30,6 +32,7 @@
 #include "nsIResumableChannel.h"
 #include "nsITraceableChannel.h"
 #include "nsILoadContext.h"
+#include "nsILoadInfo.h"
 #include "mozilla/net/NeckoCommon.h"
 #include "nsThreadUtils.h"
 #include "PrivateBrowsingChannel.h"
@@ -53,6 +56,7 @@ class HttpBaseChannel : public nsHashPropertyBag
                       , public nsIEncodedChannel
                       , public nsIHttpChannel
                       , public nsIHttpChannelInternal
+                      , public nsIRedirectHistory
                       , public nsIUploadChannel
                       , public nsIUploadChannel2
                       , public nsISupportsPriority
@@ -60,16 +64,20 @@ class HttpBaseChannel : public nsHashPropertyBag
                       , public nsITraceableChannel
                       , public PrivateBrowsingChannel<HttpBaseChannel>
                       , public nsITimedChannel
+                      , public nsIForcePendingChannel
 {
+protected:
+  virtual ~HttpBaseChannel();
+
 public:
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_NSIUPLOADCHANNEL
   NS_DECL_NSIUPLOADCHANNEL2
   NS_DECL_NSITRACEABLECHANNEL
   NS_DECL_NSITIMEDCHANNEL
+  NS_DECL_NSIREDIRECTHISTORY
 
   HttpBaseChannel();
-  virtual ~HttpBaseChannel();
 
   virtual nsresult Init(nsIURI *aURI, uint32_t aCaps, nsProxyInfo *aProxyInfo,
                         uint32_t aProxyResolveFlags,
@@ -90,6 +98,8 @@ public:
   NS_IMETHOD GetURI(nsIURI **aURI);
   NS_IMETHOD GetOwner(nsISupports **aOwner);
   NS_IMETHOD SetOwner(nsISupports *aOwner);
+  NS_IMETHOD GetLoadInfo(nsILoadInfo **aLoadInfo);
+  NS_IMETHOD SetLoadInfo(nsILoadInfo *aLoadInfo);
   NS_IMETHOD GetNotificationCallbacks(nsIInterfaceRequestor **aCallbacks);
   NS_IMETHOD SetNotificationCallbacks(nsIInterfaceRequestor *aCallbacks);
   NS_IMETHOD GetContentType(nsACString& aContentType);
@@ -125,6 +135,8 @@ public:
   NS_IMETHOD VisitResponseHeaders(nsIHttpHeaderVisitor *visitor);
   NS_IMETHOD GetAllowPipelining(bool *value);
   NS_IMETHOD SetAllowPipelining(bool value);
+  NS_IMETHOD GetAllowSTS(bool *value);
+  NS_IMETHOD SetAllowSTS(bool value);
   NS_IMETHOD GetRedirectionLimit(uint32_t *value);
   NS_IMETHOD SetRedirectionLimit(uint32_t value);
   NS_IMETHOD IsNoStoreResponse(bool *value);
@@ -161,6 +173,9 @@ public:
   NS_IMETHOD TakeAllSecurityMessages(nsCOMArray<nsISecurityConsoleMessage> &aMessages);
   NS_IMETHOD GetResponseTimeoutEnabled(bool *aEnable);
   NS_IMETHOD SetResponseTimeoutEnabled(bool aEnable);
+  NS_IMETHOD AddRedirect(nsIPrincipal *aRedirect);
+  NS_IMETHOD ForcePending(bool aForcePending);
+  NS_IMETHOD GetLastModifiedTime(PRTime* lastModifiedTime);
 
   inline void CleanRedirectCacheChainIfNecessary()
   {
@@ -183,9 +198,10 @@ public:
         NS_DECL_NSIUTF8STRINGENUMERATOR
 
         nsContentEncodings(nsIHttpChannel* aChannel, const char* aEncodingHeader);
-        virtual ~nsContentEncodings();
 
     private:
+        virtual ~nsContentEncodings();
+
         nsresult PrepareForNext(void);
 
         // We do not own the buffer.  The channel owns it.
@@ -215,7 +231,7 @@ public: /* Necko internal use only... */
                                            nsHttpRequestHead::ParsedMethodType method);
 
 protected:
-    nsCOMArray<nsISecurityConsoleMessage> mSecurityConsoleMessages;
+  nsCOMArray<nsISecurityConsoleMessage> mSecurityConsoleMessages;
 
   // Handle notifying listener, removing from loadgroup if request failed.
   void     DoNotifyListener();
@@ -250,6 +266,11 @@ protected:
   // Checks whether or not aURI and mOriginalURI share the same domain.
   bool SameOriginWithOriginalUri(nsIURI *aURI);
 
+  // GetPrincipal
+  // Returns the channel principal. If requireAppId is true, then returns
+  // null if the principal has unknown appId.
+  nsIPrincipal *GetPrincipal(bool requireAppId);
+
   friend class PrivateBrowsingChannel<HttpBaseChannel>;
 
   nsCOMPtr<nsIURI>                  mURI;
@@ -259,6 +280,7 @@ protected:
   nsCOMPtr<nsISupports>             mListenerContext;
   nsCOMPtr<nsILoadGroup>            mLoadGroup;
   nsCOMPtr<nsISupports>             mOwner;
+  nsCOMPtr<nsILoadInfo>             mLoadInfo;
   nsCOMPtr<nsIInterfaceRequestor>   mCallbacks;
   nsCOMPtr<nsIProgressEventSink>    mProgressSink;
   nsCOMPtr<nsIURI>                  mReferrer;
@@ -300,6 +322,7 @@ protected:
   uint32_t                          mRequestObserversCalled     : 1;
   uint32_t                          mResponseHeadersModified    : 1;
   uint32_t                          mAllowPipelining            : 1;
+  uint32_t                          mAllowSTS                   : 1;
   uint32_t                          mForceAllowThirdPartyCookie : 1;
   uint32_t                          mUploadStreamHasHeaders     : 1;
   uint32_t                          mInheritApplicationCache    : 1;
@@ -321,6 +344,8 @@ protected:
 
   nsCOMPtr<nsIURI>                  mAPIRedirectToURI;
   nsAutoPtr<nsTArray<nsCString> >   mRedirectedCachekeys;
+  // Redirects added by previous channels.
+  nsCOMArray<nsIPrincipal>          mRedirects;
 
   uint32_t                          mProxyResolveFlags;
   nsCOMPtr<nsIURI>                  mProxyURI;
@@ -351,6 +376,10 @@ protected:
   // copied from the transaction before we null out mTransaction
   // so that the timing can still be queried from OnStopRequest
   TimingStruct                      mTransactionTimings;
+
+  nsCOMPtr<nsIPrincipal>            mPrincipal;
+
+  bool                              mForcePending;
 };
 
 // Share some code while working around C++'s absurd inability to handle casting
@@ -393,7 +422,6 @@ nsresult HttpAsyncAborter<T>::AsyncAbort(nsresult status)
          ("HttpAsyncAborter::AsyncAbort [this=%p status=%x]\n", mThis, status));
 
   mThis->mStatus = status;
-  mThis->mIsPending = false;
 
   // if this fails?  Callers ignore our return value anyway....
   return AsyncCall(&T::HandleAsyncAbort);

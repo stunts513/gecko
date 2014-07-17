@@ -72,11 +72,48 @@ function wrapIfUnwrapped(x) {
   return isWrapper(x) ? x : wrapPrivileged(x);
 }
 
-function isXrayWrapper(x) {
-  return Cu.isXrayWrapper(x);
+function isObjectOrArray(obj) {
+  if (Object(obj) !== obj)
+    return false;
+  let arrayClasses = ['Object', 'Array', 'Int8Array', 'Uint8Array',
+                      'Int16Array', 'Uint16Array', 'Int32Array',
+                      'Uint32Array', 'Float32Array', 'Float64Array',
+                      'Uint8ClampedArray'];
+  let className = Cu.getClassName(obj, true);
+  return arrayClasses.indexOf(className) != -1;
+}
+
+// In general, we want Xray wrappers for content DOM objects, because waiving
+// Xray gives us Xray waiver wrappers that clamp the principal when we cross
+// compartment boundaries. However, there are some exceptions where we want
+// to use a waiver:
+//
+// * Xray adds some gunk to toString(), which has the potential to confuse
+//   consumers that aren't expecting Xray wrappers. Since toString() is a
+//   non-privileged method that returns only strings, we can just waive Xray
+//   for that case.
+//
+// * We implement Xrays to pure JS [[Object]] and [[Array]] instances that
+//   filter out tricky things like callables. This is the right thing for
+//   security in general, but tends to break tests that try to pass object
+//   literals into SpecialPowers. So we waive [[Object]] and [[Array]]
+//   instances before inspecting properties.
+//
+// * When we don't have meaningful Xray semantics, we create an Opaque
+//   XrayWrapper for security reasons. For test code, we generally want to see
+//   through that sort of thing.
+function waiveXraysIfAppropriate(obj, propName) {
+  if (propName == 'toString' || isObjectOrArray(obj) ||
+      /Opaque/.test(Object.prototype.toString.call(obj)))
+{
+    return XPCNativeWrapper.unwrap(obj);
+}
+  return obj;
 }
 
 function callGetOwnPropertyDescriptor(obj, name) {
+  obj = waiveXraysIfAppropriate(obj, name);
+
   // Quickstubbed getters and setters are propertyOps, and don't get reified
   // until someone calls __lookupGetter__ or __lookupSetter__ on them (note
   // that there are special version of those functions for quickstubs, so
@@ -94,6 +131,18 @@ function callGetOwnPropertyDescriptor(obj, name) {
 // We can't call apply() directy on Xray-wrapped functions, so we have to be
 // clever.
 function doApply(fun, invocant, args) {
+  // We implement Xrays to pure JS [[Object]] instances that filter out tricky
+  // things like callables. This is the right thing for security in general,
+  // but tends to break tests that try to pass object literals into
+  // SpecialPowers. So we waive [[Object]] instances when they're passed to a
+  // SpecialPowers-wrapped callable.
+  //
+  // Note that the transitive nature of Xray waivers means that any property
+  // pulled off such an object will also be waived, and so we'll get principal
+  // clamping for Xrayed DOM objects reached from literals, so passing things
+  // like {l : xoWin.location} won't work. Hopefully the rabbit hole doesn't
+  // go that deep.
+  args = args.map(x => isObjectOrArray(x) ? Cu.waiveXrays(x) : x);
   return Function.prototype.apply.call(fun, invocant, args);
 }
 
@@ -165,8 +214,13 @@ function crawlProtoChain(obj, fn) {
   var rv = fn(obj);
   if (rv !== undefined)
     return rv;
-  if (Object.getPrototypeOf(obj))
-    return crawlProtoChain(Object.getPrototypeOf(obj), fn);
+  // Follow the prototype chain of the underlying object in cases where it differs
+  // from the Xray prototype chain. This is important for things like Opaque Xray
+  // Wrappers, which always get Object.prototype as their proto.
+  let proto = Cu.unwaiveXrays(Object.getPrototypeOf(Cu.waiveXrays(obj)));
+  if (proto)
+    return crawlProtoChain(proto, fn);
+  return undefined;
 };
 
 /*
@@ -206,21 +260,20 @@ SpecialPowersHandler.prototype.doGetPropertyDescriptor = function(name, own) {
   if (name == "__exposedProps__")
     return { value: ExposedPropsWaiver, writable: false, configurable: false, enumerable: false };
 
-  // In general, we want Xray wrappers for content DOM objects, because waiving
-  // Xray gives us Xray waiver wrappers that clamp the principal when we cross
-  // compartment boundaries. However, Xray adds some gunk to toString(), which
-  // has the potential to confuse consumers that aren't expecting Xray wrappers.
-  // Since toString() is a non-privileged method that returns only strings, we
-  // can just waive Xray for that case.
-  var obj = name == 'toString' ? XPCNativeWrapper.unwrap(this.wrappedObject)
-                               : this.wrappedObject;
-
   //
   // Call through to the wrapped object.
   //
   // Note that we have several cases here, each of which requires special handling.
   //
   var desc;
+  var obj = this.wrappedObject;
+  function isWrappedNativeXray(o) {
+    if (!Cu.isXrayWrapper(o))
+      return false;
+    var proto = Object.getPrototypeOf(o);
+    return /XPC_WN/.test(Cu.getClassName(o, /* unwrap = */ true)) ||
+           (proto && /XPC_WN/.test(Cu.getClassName(proto, /* unwrap = */ true)));
+  }
 
   // Case 1: Own Properties.
   //
@@ -228,27 +281,27 @@ SpecialPowersHandler.prototype.doGetPropertyDescriptor = function(name, own) {
   if (own)
     desc = callGetOwnPropertyDescriptor(obj, name);
 
-  // Case 2: Not own, not Xray-wrapped.
+  // Case 2: Not own, meaningful prototype.
   //
   // Here, we can just crawl the prototype chain, calling
   // Object.getOwnPropertyDescriptor until we find what we want.
   //
   // NB: Make sure to check this.wrappedObject here, rather than obj, because
   // we may have waived Xray on obj above.
-  else if (!isXrayWrapper(this.wrappedObject))
+  else if (!isWrappedNativeXray(this.wrappedObject))
     desc = crawlProtoChain(obj, function(o) {return callGetOwnPropertyDescriptor(o, name);});
 
-  // Case 3: Not own, Xray-wrapped.
+  // Case 3: Not own, no meaningful prototype. This corresponds to old-style
+  // XPCWrappedNative XrayWrappers.
   //
-  // This one is harder, because we Xray wrappers are flattened and don't have
-  // a prototype. Xray wrappers are proxies themselves, so we'd love to just call
-  // through to XrayWrapper<Base>::getPropertyDescriptor(). Unfortunately though,
-  // we don't have any way to do that. :-(
+  // This one is harder, because we these XrayWrappers are flattened and don't have
+  // a prototype.
   //
   // So we first try with a call to getOwnPropertyDescriptor(). If that fails,
   // we make up a descriptor, using some assumptions about what kinds of things
   // tend to live on the prototypes of Xray-wrapped objects.
   else {
+    obj = waiveXraysIfAppropriate(obj, name);
     desc = Object.getOwnPropertyDescriptor(obj, name);
     if (!desc) {
       var getter = Object.prototype.__lookupGetter__.call(obj, name);
@@ -416,6 +469,7 @@ function wrapCallback(cb) {
 }
 
 function wrapCallbackObject(obj) {
+  obj = Cu.waiveXrays(obj);
   var wrapper = { __exposedProps__: ExposedPropsWaiver };
   for (var i in obj) {
     if (typeof obj[i] == 'function')
@@ -703,27 +757,30 @@ SpecialPowersAPI.prototype = {
      Allow can be a boolean value of true/false or ALLOW_ACTION/DENY_ACTION/PROMPT_ACTION/UNKNOWN_ACTION
   */
   pushPermissions: function(inPermissions, callback) {
+    inPermissions = Cu.waiveXrays(inPermissions);
     var pendingPermissions = [];
     var cleanupPermissions = [];
 
     for (var p in inPermissions) {
         var permission = inPermissions[p];
         var originalValue = Ci.nsIPermissionManager.UNKNOWN_ACTION;
-        if (this.testPermission(permission.type, Ci.nsIPermissionManager.ALLOW_ACTION, permission.context)) {
+        var context = Cu.unwaiveXrays(permission.context); // Sometimes |context| is a DOM object on which we expect
+                                                           // to be able to access .nodePrincipal, so we need to unwaive.
+        if (this.testPermission(permission.type, Ci.nsIPermissionManager.ALLOW_ACTION, context)) {
           originalValue = Ci.nsIPermissionManager.ALLOW_ACTION;
-        } else if (this.testPermission(permission.type, Ci.nsIPermissionManager.DENY_ACTION, permission.context)) {
+        } else if (this.testPermission(permission.type, Ci.nsIPermissionManager.DENY_ACTION, context)) {
           originalValue = Ci.nsIPermissionManager.DENY_ACTION;
-        } else if (this.testPermission(permission.type, Ci.nsIPermissionManager.PROMPT_ACTION, permission.context)) {
+        } else if (this.testPermission(permission.type, Ci.nsIPermissionManager.PROMPT_ACTION, context)) {
           originalValue = Ci.nsIPermissionManager.PROMPT_ACTION;
-        } else if (this.testPermission(permission.type, Ci.nsICookiePermission.ACCESS_SESSION, permission.context)) {
+        } else if (this.testPermission(permission.type, Ci.nsICookiePermission.ACCESS_SESSION, context)) {
           originalValue = Ci.nsICookiePermission.ACCESS_SESSION;
-        } else if (this.testPermission(permission.type, Ci.nsICookiePermission.ACCESS_ALLOW_FIRST_PARTY_ONLY, permission.context)) {
+        } else if (this.testPermission(permission.type, Ci.nsICookiePermission.ACCESS_ALLOW_FIRST_PARTY_ONLY, context)) {
           originalValue = Ci.nsICookiePermission.ACCESS_ALLOW_FIRST_PARTY_ONLY;
-        } else if (this.testPermission(permission.type, Ci.nsICookiePermission.ACCESS_LIMIT_THIRD_PARTY, permission.context)) {
+        } else if (this.testPermission(permission.type, Ci.nsICookiePermission.ACCESS_LIMIT_THIRD_PARTY, context)) {
           originalValue = Ci.nsICookiePermission.ACCESS_LIMIT_THIRD_PARTY;
         }
 
-        let [url, appId, isInBrowserElement] = this._getInfoFromPermissionArg(permission.context);
+        let [url, appId, isInBrowserElement] = this._getInfoFromPermissionArg(context);
 
         let perm;
         if (typeof permission.allow !== 'boolean') {
@@ -1064,13 +1121,14 @@ SpecialPowersAPI.prototype = {
 
   addObserver: function(obs, notification, weak) {
     this._addObserverProxy(notification);
+    obs = Cu.waiveXrays(obs);
     if (typeof obs == 'object' && obs.observe.name != 'SpecialPowersCallbackWrapper')
       obs.observe = wrapCallback(obs.observe);
     Services.obs.addObserver(obs, notification, weak);
   },
   removeObserver: function(obs, notification) {
     this._removeObserverProxy(notification);
-    Services.obs.removeObserver(obs, notification);
+    Services.obs.removeObserver(Cu.waiveXrays(obs), notification);
   },
   notifyObservers: function(subject, topic, data) {
     Services.obs.notifyObservers(subject, topic, data);
@@ -1489,8 +1547,10 @@ SpecialPowersAPI.prototype = {
     return this._fm;
   },
 
-  getFocusedElementForWindow: function(targetWindow, aDeep, childTargetWindow) {
-    return this.focusManager.getFocusedElementForWindow(targetWindow, aDeep, childTargetWindow);
+  getFocusedElementForWindow: function(targetWindow, aDeep) {
+    var outParam = {};
+    this.focusManager.getFocusedElementForWindow(targetWindow, aDeep, outParam);
+    return outParam.value;
   },
 
   activeWindow: function() {
@@ -1548,6 +1608,9 @@ SpecialPowersAPI.prototype = {
   },
 
   swapFactoryRegistration: function(cid, contractID, newFactory, oldFactory) {
+    newFactory = Cu.waiveXrays(newFactory);
+    oldFactory = Cu.waiveXrays(oldFactory);
+
     var componentRegistrar = Components.manager.QueryInterface(Components.interfaces.nsIComponentRegistrar);
 
     var unregisterFactory = newFactory;

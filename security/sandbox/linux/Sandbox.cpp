@@ -55,7 +55,7 @@ namespace mozilla {
 #define LOG_ERROR(args...) __android_log_print(ANDROID_LOG_ERROR, "Sandbox", ## args)
 #elif defined(PR_LOGGING)
 static PRLogModuleInfo* gSeccompSandboxLog;
-#define LOG_ERROR(args...) PR_LOG(gSeccompSandboxLog, PR_LOG_ERROR, (args))
+#define LOG_ERROR(args...) PR_LOG(mozilla::gSeccompSandboxLog, PR_LOG_ERROR, (args))
 #else
 #define LOG_ERROR(args...)
 #endif
@@ -211,15 +211,6 @@ InstallSyscallReporter(void)
 static int
 InstallSyscallFilter(const sock_fprog *prog)
 {
-#ifdef MOZ_DMD
-  char* e = PR_GetEnv("DMD");
-  if (e && strcmp(e, "") != 0 && strcmp(e, "0") != 0) {
-    LOG_ERROR("SANDBOX DISABLED FOR DMD!  See bug 956961.");
-    // Must treat this as "failure" in order to prevent infinite loop;
-    // cf. the PR_GET_SECCOMP check below.
-    return 1;
-  }
-#endif
   if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) {
     return 1;
   }
@@ -450,7 +441,7 @@ Die::SandboxDie(const char* msg, const char* file, int line)
 namespace logging {
 
 LogMessage::LogMessage(const char *file, int line, int)
-  : line_(line), file_(file)
+  : file_(file), line_(line)
 {
   MOZ_CRASH("Unexpected call to logging::LogMessage::LogMessage");
 }

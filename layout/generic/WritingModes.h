@@ -36,6 +36,72 @@
 #define CHECK_WRITING_MODE(param) \
    NS_ASSERTION(param == mWritingMode, "writing-mode mismatch")
 
+namespace mozilla {
+// Logical side constants for use in various places.
+enum LogicalSide { eLogicalSideBStart, eLogicalSideBEnd,
+                   eLogicalSideIStart, eLogicalSideIEnd };
+
+enum LogicalSideBits {
+  eLogicalSideBitsNone   = 0,
+  eLogicalSideBitsBStart = 1 << eLogicalSideBStart,
+  eLogicalSideBitsBEnd   = 1 << eLogicalSideBEnd,
+  eLogicalSideBitsIEnd   = 1 << eLogicalSideIEnd,
+  eLogicalSideBitsIStart = 1 << eLogicalSideIStart,
+  eLogicalSideBitsBBoth = eLogicalSideBitsBStart | eLogicalSideBitsBEnd,
+  eLogicalSideBitsIBoth = eLogicalSideBitsIStart | eLogicalSideBitsIEnd,
+  eLogicalSideBitsAll = eLogicalSideBitsBBoth | eLogicalSideBitsIBoth
+};
+
+/**
+ * LogicalSides represents a set of logical sides.
+ */
+struct LogicalSides MOZ_FINAL {
+  LogicalSides() : mBits(0) {}
+  explicit LogicalSides(LogicalSideBits aSideBits)
+  {
+    MOZ_ASSERT((aSideBits & ~eLogicalSideBitsAll) == 0, "illegal side bits");
+    mBits = aSideBits;
+  }
+  bool IsEmpty() const { return mBits == 0; }
+  bool BStart()  const { return mBits & eLogicalSideBitsBStart; }
+  bool BEnd()    const { return mBits & eLogicalSideBitsBEnd; }
+  bool IStart()  const { return mBits & eLogicalSideBitsIStart; }
+  bool IEnd()    const { return mBits & eLogicalSideBitsIEnd; }
+  bool Contains(LogicalSideBits aSideBits) const
+  {
+    MOZ_ASSERT((aSideBits & ~eLogicalSideBitsAll) == 0, "illegal side bits");
+    return (mBits & aSideBits) == aSideBits;
+  }
+  LogicalSides operator|(LogicalSides aOther) const
+  {
+    return LogicalSides(LogicalSideBits(mBits | aOther.mBits));
+  }
+  LogicalSides operator|(LogicalSideBits aSideBits) const
+  {
+    return *this | LogicalSides(aSideBits);
+  }
+  LogicalSides& operator|=(LogicalSides aOther)
+  {
+    mBits |= aOther.mBits;
+    return *this;
+  }
+  LogicalSides& operator|=(LogicalSideBits aSideBits)
+  {
+    return *this |= LogicalSides(aSideBits);
+  }
+  bool operator==(LogicalSides aOther) const
+  {
+    return mBits == aOther.mBits;
+  }
+  bool operator!=(LogicalSides aOther) const
+  {
+    return !(*this == aOther);
+  }
+
+private:
+  uint8_t mBits;
+};
+
 /**
  * mozilla::WritingMode is an immutable class representing a
  * writing mode.
@@ -48,9 +114,6 @@
  * See CSS3 Writing Modes for more information
  *   http://www.w3.org/TR/css3-writing-modes/
  */
-
-namespace mozilla {
-
 class WritingMode {
 public:
   /**
@@ -833,6 +896,22 @@ public:
       *this : LogicalMargin(aToMode, GetPhysicalMargin(aFromMode));
   }
 
+  void ApplySkipSides(LogicalSides aSkipSides)
+  {
+    if (aSkipSides.BStart()) {
+      BStart() = 0;
+    }
+    if (aSkipSides.BEnd()) {
+      BEnd() = 0;
+    }
+    if (aSkipSides.IStart()) {
+      IStart() = 0;
+    }
+    if (aSkipSides.IEnd()) {
+      IEnd() = 0;
+    }
+  }
+
   bool IsEmpty() const
   {
     return (mMargin.left == 0 && mMargin.top == 0 &&
@@ -1254,6 +1333,19 @@ public:
       return nsRect(aWritingMode.IsBidiLTR() ?
                       IStart() : aContainerWidth - IEnd(),
                     BStart(), ISize(), BSize());
+    }
+  }
+
+  nsPoint GetPhysicalPosition(WritingMode aWritingMode,
+                              nscoord aContainerWidth) const
+  {
+    CHECK_WRITING_MODE(aWritingMode);
+    if (aWritingMode.IsVertical()) {
+      return nsPoint(aWritingMode.IsVerticalLR() ? BStart() : aContainerWidth - BEnd(),
+                     IStart());
+    } else {
+      return nsPoint(aWritingMode.IsBidiLTR() ? IStart() : aContainerWidth - IEnd(),
+                     BStart());
     }
   }
 

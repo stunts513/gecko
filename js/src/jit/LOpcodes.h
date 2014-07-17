@@ -34,7 +34,6 @@
     _(NewDenseArrayPar)             \
     _(NewCallObjectPar)             \
     _(NewDerivedTypedObject)        \
-    _(AbortPar)                     \
     _(InitElem)                     \
     _(InitElemGetterSetter)         \
     _(MutateProto)                  \
@@ -49,6 +48,7 @@
     _(CallNative)                   \
     _(ApplyArgsGeneric)             \
     _(Bail)                         \
+    _(Unreachable)                  \
     _(GetDynamicName)               \
     _(FilterArgumentsOrEvalS)       \
     _(FilterArgumentsOrEvalV)       \
@@ -147,7 +147,7 @@
     _(BooleanToString)              \
     _(IntToString)                  \
     _(DoubleToString)               \
-    _(PrimitiveToString)            \
+    _(ValueToString)                \
     _(Start)                        \
     _(OsrEntry)                     \
     _(OsrValue)                     \
@@ -163,7 +163,6 @@
     _(LambdaArrow)                  \
     _(LambdaForSingleton)           \
     _(LambdaPar)                    \
-    _(ImplicitThis)                 \
     _(Slots)                        \
     _(Elements)                     \
     _(ConvertElementsToDoubles)     \
@@ -250,6 +249,7 @@
     _(SetArrayLength)               \
     _(TypedArrayLength)             \
     _(TypedArrayElements)           \
+    _(TypedObjectProto)             \
     _(TypedObjectElements)          \
     _(SetTypedObjectOffset)         \
     _(StringLength)                 \
@@ -282,6 +282,7 @@
     _(SetDOMProperty)               \
     _(CallDOMNative)                \
     _(IsCallable)                   \
+    _(IsObject)                     \
     _(HaveSameClass)                \
     _(HasClass)                     \
     _(AsmJSLoadHeap)                \

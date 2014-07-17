@@ -233,7 +233,7 @@ nsFocusManager::Observe(nsISupports *aSubject,
     mFirstFocusEvent = nullptr;
     mWindowBeingLowered = nullptr;
     mDelayedBlurFocusEvents.Clear();
-    mMouseDownEventHandlingDocument = nullptr;
+    mMouseButtonEventHandlingDocument = nullptr;
   }
 
   return NS_OK;
@@ -1198,10 +1198,10 @@ nsFocusManager::SetFocusInner(nsIContent* aNewContent, int32_t aFlags,
     // is in chrome, any web contents should not be able to steal the focus.
     nsCOMPtr<nsIDOMNode> domNode(do_QueryInterface(mFocusedContent));
     sendFocusEvent = nsContentUtils::CanCallerAccess(domNode);
-    if (!sendFocusEvent && mMouseDownEventHandlingDocument) {
-      // However, while mouse down event is handling, the handling document's
+    if (!sendFocusEvent && mMouseButtonEventHandlingDocument) {
+      // However, while mouse button event is handling, the handling document's
       // script should be able to steal focus.
-      domNode = do_QueryInterface(mMouseDownEventHandlingDocument);
+      domNode = do_QueryInterface(mMouseButtonEventHandlingDocument);
       sendFocusEvent = nsContentUtils::CanCallerAccess(domNode);
     }
   }
@@ -2166,8 +2166,12 @@ nsFocusManager::SetCaretVisible(nsIPresShell* aPresShell,
     nsISelection* domSelection = docFrameSelection->
       GetSelection(nsISelectionController::SELECTION_NORMAL);
     if (domSelection) {
+      nsCOMPtr<nsISelectionController> selCon(do_QueryInterface(aPresShell));
+      if (!selCon) {
+        return NS_ERROR_FAILURE;
+      }
       // First, hide the caret to prevent attempting to show it in SetCaretDOMSelection
-      caret->SetCaretVisible(false);
+      selCon->SetCaretEnabled(false);
 
       // Caret must blink on non-editable elements
       caret->SetIgnoreUserModify(true);
@@ -2178,13 +2182,8 @@ nsFocusManager::SetCaretVisible(nsIPresShell* aPresShell,
       // fields, which have a different frame selection from the document.
       // They will take care of making the caret visible themselves.
 
-      nsCOMPtr<nsISelectionController> selCon(do_QueryInterface(aPresShell));
-      if (!selCon)
-        return NS_ERROR_FAILURE;
-
       selCon->SetCaretReadOnly(false);
       selCon->SetCaretEnabled(aVisible);
-      caret->SetCaretVisible(aVisible);
     }
   }
 
@@ -3469,8 +3468,8 @@ nsFocusManager::MarkUncollectableForCCGeneration(uint32_t aGeneration)
     sInstance->mFirstFocusEvent->OwnerDoc()->
       MarkUncollectableForCCGeneration(aGeneration);
   }
-  if (sInstance->mMouseDownEventHandlingDocument) {
-    sInstance->mMouseDownEventHandlingDocument->
+  if (sInstance->mMouseButtonEventHandlingDocument) {
+    sInstance->mMouseButtonEventHandlingDocument->
       MarkUncollectableForCCGeneration(aGeneration);
   }
 }

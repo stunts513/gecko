@@ -55,6 +55,7 @@ dictionary NetworkProperties {
   DOMString pin;
   boolean dontConnect;
   DOMString serverCertificate;
+  DOMString subjectMatch;
 };
 
 [Constructor(optional NetworkProperties properties),
@@ -90,6 +91,7 @@ interface MozWifiNetwork {
            attribute DOMString? pin;
            attribute boolean? dontConnect;
            attribute DOMString? serverCertificate;
+           attribute DOMString? subjectMatch;
 };
 
 [JSImplementation="@mozilla.org/mozwificonnection;1",
@@ -279,7 +281,7 @@ interface MozWifiManager : EventTarget {
 
   /**
    * A connectionInformation object with the same information found in an
-   * nsIDOMMozWifiConnectionInfoEvent (but without the network).
+   * MozWifiConnectionInfoEvent (but without the network).
    * If we are not currently connected to a network, this will be null.
    */
   readonly attribute MozWifiConnectionInfo? connectionInformation;
@@ -291,8 +293,8 @@ interface MozWifiManager : EventTarget {
 
   /**
    * State notification listeners. These all take an
-   * nsIDOMMozWifiStatusChangeEvent with the new status and a network (which
-   * may be null).
+   * MozWifiStatusChangeEvent with the new status and a network (which may be
+   * null).
    *
    * The possible statuses are:
    *   - connecting: Fires when we start the process of connecting to a
@@ -313,7 +315,7 @@ interface MozWifiManager : EventTarget {
    * An event listener that is called with information about the signal
    * strength and link speed every 5 seconds.
    */
-  attribute EventHandler onconnectionInfoUpdate;
+  attribute EventHandler onconnectioninfoupdate;
 
   /**
    * These two events fire when the wifi system is brought online or taken
@@ -321,4 +323,10 @@ interface MozWifiManager : EventTarget {
    */
   attribute EventHandler onenabled;
   attribute EventHandler ondisabled;
+
+  /**
+   * An event listener that is called with information about the number
+   * of wifi stations connected to wifi hotspot every 5 seconds.
+   */
+  attribute EventHandler onstationinfoupdate;
 };

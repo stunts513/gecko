@@ -13,6 +13,7 @@
 
 #include "mozilla/PodOperations.h"
 
+#include "builtin/SymbolObject.h"
 #include "vm/ArrayObject.h"
 #include "vm/BooleanObject.h"
 #include "vm/NumberObject.h"
@@ -42,8 +43,9 @@ CompilerOutput::ion() const
     jit::IonScript *ion = jit::GetIonScript(script(), mode());
     JS_ASSERT(ion != ION_COMPILING_SCRIPT);
     return ion;
+#else
+    MOZ_CRASH("Invalid kind of CompilerOutput");
 #endif
-    MOZ_ASSUME_UNREACHABLE("Invalid kind of CompilerOutput");
 }
 
 inline CompilerOutput*
@@ -75,6 +77,36 @@ RecompileInfo::shouldSweep(TypeZone &types)
 /////////////////////////////////////////////////////////////////////
 // Types
 /////////////////////////////////////////////////////////////////////
+
+inline TypeObject *
+TypeObjectKey::asTypeObjectNoBarrier()
+{
+    JS_ASSERT(isTypeObject());
+    return (TypeObject *) this;
+}
+
+inline JSObject *
+TypeObjectKey::asSingleObjectNoBarrier()
+{
+    JS_ASSERT(isSingleObject());
+    return (JSObject *) (uintptr_t(this) & ~1);
+}
+
+inline TypeObject *
+TypeObjectKey::asTypeObject()
+{
+    TypeObject *res = asTypeObjectNoBarrier();
+    TypeObject::readBarrier(res);
+    return res;
+}
+
+inline JSObject *
+TypeObjectKey::asSingleObject()
+{
+    JSObject *res = asSingleObjectNoBarrier();
+    JSObject::readBarrier(res);
+    return res;
+}
 
 /* static */ inline Type
 Type::ObjectType(JSObject *obj)
@@ -132,6 +164,8 @@ PrimitiveTypeFlag(JSValueType type)
         return TYPE_FLAG_DOUBLE;
       case JSVAL_TYPE_STRING:
         return TYPE_FLAG_STRING;
+      case JSVAL_TYPE_SYMBOL:
+        return TYPE_FLAG_SYMBOL;
       case JSVAL_TYPE_MAGIC:
         return TYPE_FLAG_LAZYARGS;
       default:
@@ -155,11 +189,35 @@ TypeFlagPrimitive(TypeFlags flags)
         return JSVAL_TYPE_DOUBLE;
       case TYPE_FLAG_STRING:
         return JSVAL_TYPE_STRING;
+      case TYPE_FLAG_SYMBOL:
+        return JSVAL_TYPE_SYMBOL;
       case TYPE_FLAG_LAZYARGS:
         return JSVAL_TYPE_MAGIC;
       default:
         MOZ_ASSUME_UNREACHABLE("Bad type");
     }
+}
+
+/*
+ * Check for numeric strings, as in js_StringIsIndex, but allow negative
+ * and overflowing integers.
+ */
+template <class Range>
+inline bool
+IdIsNumericTypeId(Range cp)
+{
+    if (cp.length() == 0)
+        return false;
+
+    if (!JS7_ISDEC(cp[0]) && cp[0] != '-')
+        return false;
+
+    for (size_t i = 1; i < cp.length(); ++i) {
+        if (!JS7_ISDEC(cp[i]))
+            return false;
+    }
+
+    return true;
 }
 
 /*
@@ -179,21 +237,13 @@ IdToTypeId(jsid id)
     if (JSID_IS_INT(id))
         return JSID_VOID;
 
-    /*
-     * Check for numeric strings, as in js_StringIsIndex, but allow negative
-     * and overflowing integers.
-     */
     if (JSID_IS_STRING(id)) {
         JSAtom *atom = JSID_TO_ATOM(id);
-        JS::TwoByteChars cp = atom->range();
-        if (cp.length() > 0 && (JS7_ISDEC(cp[0]) || cp[0] == '-')) {
-            for (size_t i = 1; i < cp.length(); ++i) {
-                if (!JS7_ISDEC(cp[i]))
-                    return id;
-            }
-            return JSID_VOID;
-        }
-        return id;
+        JS::AutoCheckCannotGC nogc;
+        bool isNumeric = atom->hasLatin1Chars()
+                         ? IdIsNumericTypeId(atom->latin1Range(nogc))
+                         : IdIsNumericTypeId(atom->twoByteRange(nogc));
+        return isNumeric ? JSID_VOID : id;
     }
 
     return JSID_VOID;
@@ -287,6 +337,8 @@ GetClassForProtoKey(JSProtoKey key)
         return &BooleanObject::class_;
       case JSProto_String:
         return &StringObject::class_;
+      case JSProto_Symbol:
+        return &SymbolObject::class_;
       case JSProto_RegExp:
         return &RegExpObject::class_;
 
@@ -733,7 +785,7 @@ TypeScript::MonitorAssign(JSContext *cx, HandleObject obj, jsid id)
         // idea here is that normal object initialization should not trigger
         // deoptimization in most cases, while actual usage as a hashmap should.
         TypeObject* type = obj->type();
-        if (type->getPropertyCount() < 8)
+        if (type->getPropertyCount() < 128)
             return;
         MarkTypeObjectUnknownProperties(cx, type);
     }
@@ -969,27 +1021,31 @@ inline TypeObjectKey *
 Type::objectKey() const
 {
     JS_ASSERT(isObject());
-    if (isTypeObject())
-        TypeObject::readBarrier((TypeObject *) data);
-    else
-        JSObject::readBarrier((JSObject *) (data ^ 1));
     return (TypeObjectKey *) data;
 }
 
 inline JSObject *
 Type::singleObject() const
 {
-    JS_ASSERT(isSingleObject());
-    JSObject::readBarrier((JSObject *) (data ^ 1));
-    return (JSObject *) (data ^ 1);
+    return objectKey()->asSingleObject();
 }
 
 inline TypeObject *
 Type::typeObject() const
 {
-    JS_ASSERT(isTypeObject());
-    TypeObject::readBarrier((TypeObject *) data);
-    return (TypeObject *) data;
+    return objectKey()->asTypeObject();
+}
+
+inline JSObject *
+Type::singleObjectNoBarrier() const
+{
+    return objectKey()->asSingleObjectNoBarrier();
+}
+
+inline TypeObject *
+Type::typeObjectNoBarrier() const
+{
+    return objectKey()->asTypeObjectNoBarrier();
 }
 
 inline bool
@@ -1093,6 +1149,20 @@ TypeSet::getTypeObject(unsigned i) const
 {
     TypeObjectKey *key = getObject(i);
     return (key && key->isTypeObject()) ? key->asTypeObject() : nullptr;
+}
+
+inline JSObject *
+TypeSet::getSingleObjectNoBarrier(unsigned i) const
+{
+    TypeObjectKey *key = getObject(i);
+    return (key && key->isSingleObject()) ? key->asSingleObjectNoBarrier() : nullptr;
+}
+
+inline TypeObject *
+TypeSet::getTypeObjectNoBarrier(unsigned i) const
+{
+    TypeObjectKey *key = getObject(i);
+    return (key && key->isTypeObject()) ? key->asTypeObjectNoBarrier() : nullptr;
 }
 
 inline const Class *
@@ -1224,9 +1294,6 @@ TypeObjectAddendum::writeBarrierPre(TypeObjectAddendum *type)
     switch (type->kind) {
       case NewScript:
         return TypeNewScript::writeBarrierPre(type->asNewScript());
-
-      case TypedObject:
-        return TypeTypedObject::writeBarrierPre(type->asTypedObject());
     }
 #endif
 }
@@ -1260,7 +1327,6 @@ template <>
 struct GCMethods<const types::Type>
 {
     static types::Type initial() { return types::Type::UnknownType(); }
-    static ThingRootKind kind() { return THING_ROOT_TYPE; }
     static bool poisoned(const types::Type &v) {
         return (v.isTypeObject() && IsPoisonedPtr(v.typeObject()))
             || (v.isSingleObject() && IsPoisonedPtr(v.singleObject()));
@@ -1271,7 +1337,6 @@ template <>
 struct GCMethods<types::Type>
 {
     static types::Type initial() { return types::Type::UnknownType(); }
-    static ThingRootKind kind() { return THING_ROOT_TYPE; }
     static bool poisoned(const types::Type &v) {
         return (v.isTypeObject() && IsPoisonedPtr(v.typeObject()))
             || (v.isSingleObject() && IsPoisonedPtr(v.singleObject()));

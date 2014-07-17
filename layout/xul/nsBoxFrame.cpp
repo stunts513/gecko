@@ -138,22 +138,16 @@ nsBoxFrame::~nsBoxFrame()
 {
 }
 
-nsresult
+void
 nsBoxFrame::SetInitialChildList(ChildListID     aListID,
                                 nsFrameList&    aChildList)
 {
-  nsresult r = nsContainerFrame::SetInitialChildList(aListID, aChildList);
-  if (r == NS_OK) {
-    // initialize our list of infos.
-    nsBoxLayoutState state(PresContext());
-    CheckBoxOrder();
-    if (mLayoutManager)
-      mLayoutManager->ChildrenSet(this, state, mFrames.FirstChild());
-  } else {
-    NS_WARNING("Warning add child failed!!\n");
-  }
-
-  return r;
+  nsContainerFrame::SetInitialChildList(aListID, aChildList);
+  // initialize our list of infos.
+  nsBoxLayoutState state(PresContext());
+  CheckBoxOrder();
+  if (mLayoutManager)
+    mLayoutManager->ChildrenSet(this, state, mFrames.FirstChild());
 }
 
 /* virtual */ void
@@ -715,7 +709,7 @@ nsBoxFrame::Reflow(nsPresContext*          aPresContext,
 
   aDesiredSize.Width() = mRect.width;
   aDesiredSize.Height() = mRect.height;
-  aDesiredSize.SetTopAscent(ascent);
+  aDesiredSize.SetBlockStartAscent(ascent);
 
   aDesiredSize.mOverflowAreas = GetOverflowAreas();
 
@@ -928,7 +922,7 @@ nsBoxFrame::DoLayout(nsBoxLayoutState& aState)
     if (!(mState & NS_STATE_IS_ROOT)) {
       ascent = GetBoxAscent(aState);
     }
-    desiredSize.SetTopAscent(ascent);
+    desiredSize.SetBlockStartAscent(ascent);
     desiredSize.mOverflowAreas = GetOverflowAreas();
 
     AddStateBits(NS_FRAME_IN_REFLOW);
@@ -999,7 +993,7 @@ nsBoxFrame::MarkIntrinsicWidthsDirty()
   // IsBoxWrapped check.
 }
 
-nsresult
+void
 nsBoxFrame::RemoveFrame(ChildListID     aListID,
                         nsIFrame*       aOldFrame)
 {
@@ -1021,10 +1015,9 @@ nsBoxFrame::RemoveFrame(ChildListID     aListID,
   PresContext()->PresShell()->
     FrameNeedsReflow(this, nsIPresShell::eTreeChange,
                      NS_FRAME_HAS_DIRTY_CHILDREN);
-  return NS_OK;
 }
 
-nsresult
+void
 nsBoxFrame::InsertFrames(ChildListID     aListID,
                          nsIFrame*       aPrevFrame,
                          nsFrameList&    aFrameList)
@@ -1059,11 +1052,10 @@ nsBoxFrame::InsertFrames(ChildListID     aListID,
    PresContext()->PresShell()->
      FrameNeedsReflow(this, nsIPresShell::eTreeChange,
                       NS_FRAME_HAS_DIRTY_CHILDREN);
-   return NS_OK;
 }
 
 
-nsresult
+void
 nsBoxFrame::AppendFrames(ChildListID     aListID,
                          nsFrameList&    aFrameList)
 {
@@ -1095,7 +1087,6 @@ nsBoxFrame::AppendFrames(ChildListID     aListID,
        FrameNeedsReflow(this, nsIPresShell::eTreeChange,
                         NS_FRAME_HAS_DIRTY_CHILDREN);
    }
-   return NS_OK;
 }
 
 /* virtual */ nsContainerFrame*
@@ -1308,19 +1299,30 @@ nsBoxFrame::BuildDisplayList(nsDisplayListBuilder*   aBuilder,
                              const nsRect&           aDirtyRect,
                              const nsDisplayListSet& aLists)
 {
-  // forcelayer is only supported on XUL elements with box layout
-  bool forceLayer =
-    GetContent()->HasAttr(kNameSpaceID_None, nsGkAtoms::layer) &&
-    GetContent()->IsXUL();
+  bool forceLayer = false;
+  uint32_t flags = 0;
+  mozilla::layers::FrameMetrics::ViewID scrollTargetId =
+    mozilla::layers::FrameMetrics::NULL_SCROLL_ID;
 
-  // Check for frames that are marked as a part of the region used
-  // in calculating glass margins on Windows.
   if (GetContent()->IsXUL()) {
-      const nsStyleDisplay* styles = StyleDisplay();
-      if (styles && styles->mAppearance == NS_THEME_WIN_EXCLUDE_GLASS) {
-        nsRect rect = nsRect(aBuilder->ToReferenceFrame(this), GetSize());
-        aBuilder->AddExcludedGlassRegion(rect);
+    // forcelayer is only supported on XUL elements with box layout
+    if (GetContent()->HasAttr(kNameSpaceID_None, nsGkAtoms::layer)) {
+      forceLayer = true;
+    } else {
+      nsIFrame* parent = GetParentBox(this);
+      if (parent && parent->GetType() == nsGkAtoms::sliderFrame) {
+        aBuilder->GetScrollbarInfo(&scrollTargetId, &flags);
+        forceLayer = (scrollTargetId != layers::FrameMetrics::NULL_SCROLL_ID);
+        nsLayoutUtils::SetScrollbarThumbLayerization(this, forceLayer);
       }
+    }
+    // Check for frames that are marked as a part of the region used
+    // in calculating glass margins on Windows.
+    const nsStyleDisplay* styles = StyleDisplay();
+    if (styles && styles->mAppearance == NS_THEME_WIN_EXCLUDE_GLASS) {
+      nsRect rect = nsRect(aBuilder->ToReferenceFrame(this), GetSize());
+      aBuilder->AddExcludedGlassRegion(rect);
+    }
   }
 
   nsDisplayListCollection tempLists;
@@ -1355,9 +1357,10 @@ nsBoxFrame::BuildDisplayList(nsDisplayListBuilder*   aBuilder,
     masterList.AppendToTop(tempLists.Content());
     masterList.AppendToTop(tempLists.PositionedDescendants());
     masterList.AppendToTop(tempLists.Outlines());
+
     // Wrap the list to make it its own layer
     aLists.Content()->AppendNewToTop(new (aBuilder)
-      nsDisplayOwnLayer(aBuilder, this, &masterList));
+      nsDisplayOwnLayer(aBuilder, this, &masterList, flags, scrollTargetId));
   }
 }
 

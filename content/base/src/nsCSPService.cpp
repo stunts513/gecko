@@ -218,56 +218,7 @@ CSPService::ShouldProcess(uint32_t         aContentType,
   if (!aContentLocation)
     return NS_ERROR_FAILURE;
 
-  // default decision is to accept the item
   *aDecision = nsIContentPolicy::ACCEPT;
-
-  // No need to continue processing if CSP is disabled
-  if (!sCSPEnabled)
-    return NS_OK;
-
-  // find the nsDocument that initiated this request and see if it has a
-  // CSP policy object
-  nsCOMPtr<nsINode> node(do_QueryInterface(aRequestContext));
-  nsCOMPtr<nsIPrincipal> principal;
-  nsCOMPtr<nsIContentSecurityPolicy> csp;
-  if (node) {
-    principal = node->NodePrincipal();
-    principal->GetCsp(getter_AddRefs(csp));
-
-    if (csp) {
-#ifdef PR_LOGGING
-      {
-        uint32_t numPolicies = 0;
-        nsresult rv = csp->GetPolicyCount(&numPolicies);
-        if (NS_SUCCEEDED(rv)) {
-          for (uint32_t i=0; i<numPolicies; i++) {
-            nsAutoString policy;
-            csp->GetPolicy(i, policy);
-            PR_LOG(gCspPRLog, PR_LOG_DEBUG,
-                   ("shouldProcess - document has policy[%d]: %s", i,
-                   NS_ConvertUTF16toUTF8(policy).get()));
-          }
-        }
-      }
-#endif
-      // obtain the enforcement decision
-      csp->ShouldProcess(aContentType,
-                         aContentLocation,
-                         aRequestOrigin,
-                         aRequestContext,
-                         aMimeTypeGuess,
-                         aExtra,
-                         aDecision);
-    }
-  }
-#ifdef PR_LOGGING
-  else {
-    nsAutoCString uriSpec;
-    aContentLocation->GetSpec(uriSpec);
-    PR_LOG(gCspPRLog, PR_LOG_DEBUG,
-           ("COULD NOT get nsINode for location: %s", uriSpec.get()));
-  }
-#endif
   return NS_OK;
 }
 
@@ -367,7 +318,8 @@ CSPService::AsyncOnChannelRedirect(nsIChannel *oldChannel,
   // to enforce the load policy if it redirects again, so we stop it now.
   nsAutoCString newUriSpec;
   rv = newUri->GetSpec(newUriSpec);
-  const char16_t *formatParams[] = { NS_ConvertUTF8toUTF16(newUriSpec).get() };
+  NS_ConvertUTF8toUTF16 unicodeSpec(newUriSpec);
+  const char16_t *formatParams[] = { unicodeSpec.get() };
   if (NS_SUCCEEDED(rv)) {
     nsContentUtils::ReportToConsole(nsIScriptError::warningFlag,
                                     NS_LITERAL_CSTRING("Redirect Error"), nullptr,

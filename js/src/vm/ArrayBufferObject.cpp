@@ -9,6 +9,7 @@
 #include "mozilla/Alignment.h"
 #include "mozilla/FloatingPoint.h"
 #include "mozilla/PodOperations.h"
+#include "mozilla/TaggedAnonymousMemory.h"
 
 #include <string.h>
 #ifndef XP_WIN
@@ -431,7 +432,7 @@ ArrayBufferObject::prepareForAsmJS(JSContext *cx, Handle<ArrayBufferObject*> buf
     if (!data)
         return false;
 # else
-    data = mmap(nullptr, AsmJSMappedSize, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    data = MozTaggedAnonymousMmap(nullptr, AsmJSMappedSize, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0, "asm-js-reserved");
     if (data == MAP_FAILED)
         return false;
 # endif
@@ -535,7 +536,7 @@ ArrayBufferObject::canNeuterAsmJSArrayBuffer(JSContext *cx, ArrayBufferObject &b
 void *
 ArrayBufferObject::createMappedContents(int fd, size_t offset, size_t length)
 {
-    return SystemPageAllocator::AllocateMappedContent(fd, offset, length, ARRAY_BUFFER_ALIGNMENT);
+    return AllocateMappedContent(fd, offset, length, ARRAY_BUFFER_ALIGNMENT);
 }
 
 void
@@ -544,7 +545,7 @@ ArrayBufferObject::releaseMappedArray()
     if(!isMappedArrayBuffer() || isNeutered())
         return;
 
-    SystemPageAllocator::DeallocateMappedContent(dataPointer(), byteLength());
+    DeallocateMappedContent(dataPointer(), byteLength());
 }
 
 void
@@ -799,8 +800,14 @@ ArrayBufferObject::finalize(FreeOp *fop, JSObject *obj)
 /* static */ void
 ArrayBufferObject::obj_trace(JSTracer *trc, JSObject *obj)
 {
-    if (!IS_GC_MARKING_TRACER(trc) && !trc->runtime()->isHeapMinorCollecting())
+    if (!IS_GC_MARKING_TRACER(trc) && !trc->runtime()->isHeapMinorCollecting()
+#ifdef JSGC_FJGENERATIONAL
+        && !trc->runtime()->isFJMinorCollecting()
+#endif
+        )
+    {
         return;
+    }
 
     // ArrayBufferObjects need to maintain a list of possibly-weak pointers to
     // their views. The straightforward way to update the weak pointers would
@@ -1140,7 +1147,7 @@ JS_CreateMappedArrayBufferContents(int fd, size_t offset, size_t length)
 JS_PUBLIC_API(void)
 JS_ReleaseMappedArrayBufferContents(void *contents, size_t length)
 {
-    SystemPageAllocator::DeallocateMappedContent(contents, length);
+    DeallocateMappedContent(contents, length);
 }
 
 JS_FRIEND_API(bool)

@@ -31,6 +31,15 @@ enum Observability {
 bool
 EliminatePhis(MIRGenerator *mir, MIRGraph &graph, Observability observe);
 
+size_t
+MarkLoopBlocks(MIRGraph &graph, MBasicBlock *header, bool *canOsr);
+
+void
+UnmarkLoopBlocks(MIRGraph &graph, MBasicBlock *header);
+
+bool
+MakeLoopsContiguous(MIRGraph &graph);
+
 bool
 EliminateDeadResumePointOperands(MIRGenerator *mir, MIRGraph &graph);
 
@@ -45,6 +54,12 @@ MakeMRegExpHoistable(MIRGraph &graph);
 
 bool
 RenumberBlocks(MIRGraph &graph);
+
+bool
+AccountForCFGChanges(MIRGenerator *mir, MIRGraph &graph, bool updateAliasAnalysis);
+
+bool
+RemoveUnmarkedBlocks(MIRGenerator *mir, MIRGraph &graph, uint32_t numMarkedBlocks);
 
 bool
 BuildDominatorTree(MIRGraph &graph);

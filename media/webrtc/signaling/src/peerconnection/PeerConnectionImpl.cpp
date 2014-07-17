@@ -151,7 +151,7 @@ PRLogModuleInfo *signalingLogInfo() {
 // XXX Workaround for bug 998092 to maintain the existing broken semantics
 template<>
 struct nsISupportsWeakReference::COMTypeInfo<nsSupportsWeakReference, void> {
-  static const nsIID kIID NS_HIDDEN;
+  static const nsIID kIID;
 };
 const nsIID nsISupportsWeakReference::COMTypeInfo<nsSupportsWeakReference, void>::kIID = NS_ISUPPORTSWEAKREFERENCE_IID;
 
@@ -372,6 +372,7 @@ public:
         break;
 
       case ADDICECANDIDATEERROR:
+        mPC->OnAddIceCandidateError();
         mObserver->OnAddIceCandidateError(mCode, ObString(mReason.c_str()), rv);
         break;
 
@@ -481,19 +482,19 @@ PeerConnectionImpl::PeerConnectionImpl(const GlobalObject* aGlobal)
 : mTimeCard(PR_LOG_TEST(signalingLogInfo(),PR_LOG_ERROR) ?
             create_timecard() : nullptr)
   , mInternal(new Internal())
-  , mReadyState(PCImplReadyState::New)
   , mSignalingState(PCImplSignalingState::SignalingStable)
   , mIceConnectionState(PCImplIceConnectionState::New)
   , mIceGatheringState(PCImplIceGatheringState::New)
   , mDtlsConnected(false)
   , mWindow(nullptr)
   , mIdentity(nullptr)
+  , mPrivacyRequested(false)
   , mSTSThread(nullptr)
-  , mLoadManager(nullptr)
   , mMedia(nullptr)
   , mNumAudioStreams(0)
   , mNumVideoStreams(0)
   , mHaveDataStream(false)
+  , mAddCandidateErrorCount(0)
   , mTrickle(true) // TODO(ekr@rtfm.com): Use pref
 {
 #ifdef MOZILLA_INTERNAL_API
@@ -536,10 +537,6 @@ PeerConnectionImpl::~PeerConnectionImpl()
       destructorSafeDestroyNSSReference();
       shutdown(calledFromObject);
     }
-  }
-  if (mLoadManager) {
-      mozilla::LoadManagerDestroy(mLoadManager);
-      mLoadManager = nullptr;
   }
 #endif
 
@@ -729,6 +726,7 @@ PeerConnectionImpl::Initialize(PeerConnectionObserver& aObserver,
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(aThread);
   mThread = do_QueryInterface(aThread);
+  CheckThread();
 
   mPCObserver = do_GetWeakReference(&aObserver);
 
@@ -874,12 +872,6 @@ PeerConnectionImpl::Initialize(PeerConnectionObserver& aObserver,
     CSFLogError(logTag, "%s: unable to get fingerprint", __FUNCTION__);
     return res;
   }
-
-#ifdef MOZILLA_INTERNAL_API
-  if (mozilla::Preferences::GetBool("media.navigator.load_adapt", false)) {
-    mLoadManager = mozilla::LoadManagerBuild();
-  }
-#endif
 
   return NS_OK;
 }
@@ -1129,47 +1121,6 @@ do_QueryObjectReferent(nsIWeakReference* aRawPtr) {
   return tmp3.forget();
 }
 
-void
-PeerConnectionImpl::NotifyConnection()
-{
-  PC_AUTO_ENTER_API_CALL_NO_CHECK();
-
-  CSFLogDebug(logTag, "%s", __FUNCTION__);
-
-#ifdef MOZILLA_INTERNAL_API
-  nsRefPtr<PeerConnectionObserver> pco = do_QueryObjectReferent(mPCObserver);
-  if (!pco) {
-    return;
-  }
-  WrappableJSErrorResult rv;
-  RUN_ON_THREAD(mThread,
-                WrapRunnable(pco,
-                             &PeerConnectionObserver::NotifyConnection,
-                             rv, static_cast<JSCompartment*>(nullptr)),
-                NS_DISPATCH_NORMAL);
-#endif
-}
-
-void
-PeerConnectionImpl::NotifyClosedConnection()
-{
-  PC_AUTO_ENTER_API_CALL_NO_CHECK();
-
-  CSFLogDebug(logTag, "%s", __FUNCTION__);
-
-#ifdef MOZILLA_INTERNAL_API
-  nsRefPtr<PeerConnectionObserver> pco = do_QueryObjectReferent(mPCObserver);
-  if (!pco) {
-    return;
-  }
-  WrappableJSErrorResult rv;
-  RUN_ON_THREAD(mThread,
-    WrapRunnable(pco, &PeerConnectionObserver::NotifyClosedConnection,
-                 rv, static_cast<JSCompartment*>(nullptr)),
-    NS_DISPATCH_NORMAL);
-#endif
-}
-
 
 #ifdef MOZILLA_INTERNAL_API
 // Not a member function so that we don't need to keep the PC live.
@@ -1276,13 +1227,7 @@ PeerConnectionImpl::SetLocalDescription(int32_t aAction, const char* aSDP)
   STAMP_TIMECARD(tc, "Set Local Description");
 
 #ifdef MOZILLA_INTERNAL_API
-  nsIDocument* doc = GetWindow()->GetExtantDoc();
-  bool isolated = true;
-  if (doc) {
-    isolated = mMedia->AnyLocalStreamIsolated(doc->NodePrincipal());
-  } else {
-    CSFLogInfo(logTag, "%s - no document, failing safe", __FUNCTION__);
-  }
+  bool isolated = mMedia->AnyLocalStreamHasPeerIdentity();
   mPrivacyRequested = mPrivacyRequested || isolated;
 #endif
 
@@ -1411,10 +1356,6 @@ PeerConnectionImpl::AddIceCandidate(const char* aCandidate, const char* aMid, un
 NS_IMETHODIMP
 PeerConnectionImpl::CloseStreams() {
   PC_AUTO_ENTER_API_CALL(false);
-
-  if (mReadyState != PCImplReadyState::Closed)  {
-    ChangeReadyState(PCImplReadyState::Closing);
-  }
 
   CSFLogInfo(logTag, "%s: Ending associated call", __FUNCTION__);
 
@@ -1638,16 +1579,6 @@ PeerConnectionImpl::GetRemoteDescription(char** aSDP)
 }
 
 NS_IMETHODIMP
-PeerConnectionImpl::ReadyState(PCImplReadyState* aState)
-{
-  PC_AUTO_ENTER_API_CALL_NO_CHECK();
-  MOZ_ASSERT(aState);
-
-  *aState = mReadyState;
-  return NS_OK;
-}
-
-NS_IMETHODIMP
 PeerConnectionImpl::SignalingState(PCImplSignalingState* aState)
 {
   PC_AUTO_ENTER_API_CALL_NO_CHECK();
@@ -1701,7 +1632,7 @@ PeerConnectionImpl::CheckApiState(bool assert_ice_ready) const
   MOZ_ASSERT(mTrickle || !assert_ice_ready ||
              (mIceGatheringState == PCImplIceGatheringState::Complete));
 
-  if (mReadyState == PCImplReadyState::Closed) {
+  if (IsClosed()) {
     CSFLogError(logTag, "%s: called API while closed", __FUNCTION__);
     return NS_ERROR_FAILURE;
   }
@@ -1841,10 +1772,6 @@ PeerConnectionImpl::onCallEvent(const OnCallEventArgs& args)
       mRemoteSDP = aInfo->getSDP();
       break;
 
-    case CONNECTED:
-      CSFLogDebug(logTag, "Setting PeerConnnection state to kActive");
-      ChangeReadyState(PCImplReadyState::Active);
-      break;
     default:
       break;
   }
@@ -1863,26 +1790,6 @@ PeerConnectionImpl::onCallEvent(const OnCallEventArgs& args)
   }
   runnable->Run();
   delete runnable;
-}
-
-void
-PeerConnectionImpl::ChangeReadyState(PCImplReadyState aReadyState)
-{
-  PC_AUTO_ENTER_API_CALL_NO_CHECK();
-  mReadyState = aReadyState;
-
-  // Note that we are passing an nsRefPtr which keeps the observer live.
-  nsRefPtr<PeerConnectionObserver> pco = do_QueryObjectReferent(mPCObserver);
-  if (!pco) {
-    return;
-  }
-  WrappableJSErrorResult rv;
-  RUN_ON_THREAD(mThread,
-                WrapRunnable(pco,
-                             &PeerConnectionObserver::OnStateChange,
-                             PCObserverStateType::ReadyState,
-                             rv, static_cast<JSCompartment*>(nullptr)),
-                NS_DISPATCH_NORMAL);
 }
 
 void
@@ -2041,6 +1948,16 @@ PeerConnectionImpl::IceConnectionStateChange_m(PCImplIceConnectionState aState)
                               timeDelta.ToMilliseconds());
       }
     }
+
+    if (isSucceeded(aState)) {
+      Telemetry::Accumulate(
+          Telemetry::WEBRTC_ICE_ADD_CANDIDATE_ERRORS_GIVEN_SUCCESS,
+          mAddCandidateErrorCount);
+    } else if (isFailed(aState)) {
+      Telemetry::Accumulate(
+          Telemetry::WEBRTC_ICE_ADD_CANDIDATE_ERRORS_GIVEN_FAILURE,
+          mAddCandidateErrorCount);
+    }
   }
 #endif
 
@@ -2074,6 +1991,8 @@ PeerConnectionImpl::IceConnectionStateChange_m(PCImplIceConnectionState aState)
     case PCImplIceConnectionState::Closed:
       STAMP_TIMECARD(mTimeCard, "Ice state: closed");
       break;
+    default:
+      MOZ_ASSERT_UNREACHABLE("Unexpected mIceConnectionState!");
   }
 
   nsRefPtr<PeerConnectionObserver> pco = do_QueryObjectReferent(mPCObserver);
@@ -2109,8 +2028,10 @@ PeerConnectionImpl::IceGatheringStateChange_m(PCImplIceGatheringState aState)
       STAMP_TIMECARD(mTimeCard, "Ice gathering state: gathering");
       break;
     case PCImplIceGatheringState::Complete:
-      STAMP_TIMECARD(mTimeCard, "Ice state: complete");
+      STAMP_TIMECARD(mTimeCard, "Ice gathering state: complete");
       break;
+    default:
+      MOZ_ASSERT_UNREACHABLE("Unexpected mIceGatheringState!");
   }
 
   nsRefPtr<PeerConnectionObserver> pco = do_QueryObjectReferent(mPCObserver);
@@ -2251,34 +2172,33 @@ static void RecordIceStats_s(
     RTCStatsReportInternal* report) {
 
   NS_ConvertASCIItoUTF16 componentId(mediaStream.name().c_str());
-  if (internalStats) {
-    std::vector<NrIceCandidatePair> candPairs;
-    nsresult res = mediaStream.GetCandidatePairs(&candPairs);
-    if (NS_FAILED(res)) {
-      CSFLogError(logTag, "%s: Error getting candidate pairs", __FUNCTION__);
-      return;
-    }
 
-    for (auto p = candPairs.begin(); p != candPairs.end(); ++p) {
-      NS_ConvertASCIItoUTF16 codeword(p->codeword.c_str());
-      NS_ConvertASCIItoUTF16 localCodeword(p->local.codeword.c_str());
-      NS_ConvertASCIItoUTF16 remoteCodeword(p->remote.codeword.c_str());
-      // Only expose candidate-pair statistics to chrome, until we've thought
-      // through the implications of exposing it to content.
+  std::vector<NrIceCandidatePair> candPairs;
+  nsresult res = mediaStream.GetCandidatePairs(&candPairs);
+  if (NS_FAILED(res)) {
+    CSFLogError(logTag, "%s: Error getting candidate pairs", __FUNCTION__);
+    return;
+  }
 
-      RTCIceCandidatePairStats s;
-      s.mId.Construct(codeword);
-      s.mComponentId.Construct(componentId);
-      s.mTimestamp.Construct(now);
-      s.mType.Construct(RTCStatsType::Candidatepair);
-      s.mLocalCandidateId.Construct(localCodeword);
-      s.mRemoteCandidateId.Construct(remoteCodeword);
-      s.mNominated.Construct(p->nominated);
-      s.mMozPriority.Construct(p->priority);
-      s.mSelected.Construct(p->selected);
-      s.mState.Construct(RTCStatsIceCandidatePairState(p->state));
-      report->mIceCandidatePairStats.Value().AppendElement(s);
-    }
+  for (auto p = candPairs.begin(); p != candPairs.end(); ++p) {
+    NS_ConvertASCIItoUTF16 codeword(p->codeword.c_str());
+    NS_ConvertASCIItoUTF16 localCodeword(p->local.codeword.c_str());
+    NS_ConvertASCIItoUTF16 remoteCodeword(p->remote.codeword.c_str());
+    // Only expose candidate-pair statistics to chrome, until we've thought
+    // through the implications of exposing it to content.
+
+    RTCIceCandidatePairStats s;
+    s.mId.Construct(codeword);
+    s.mComponentId.Construct(componentId);
+    s.mTimestamp.Construct(now);
+    s.mType.Construct(RTCStatsType::Candidatepair);
+    s.mLocalCandidateId.Construct(localCodeword);
+    s.mRemoteCandidateId.Construct(remoteCodeword);
+    s.mNominated.Construct(p->nominated);
+    s.mMozPriority.Construct(p->priority);
+    s.mSelected.Construct(p->selected);
+    s.mState.Construct(RTCStatsIceCandidatePairState(p->state));
+    report->mIceCandidatePairStats.Value().AppendElement(s);
   }
 
   std::vector<NrIceCandidate> candidates;
@@ -2314,6 +2234,7 @@ PeerConnectionImpl::ExecuteStatsQuery_s(RTCStatsQuery *query) {
         NS_LITERAL_STRING("audio_") : NS_LITERAL_STRING("video_");
     idstr.AppendInt(mp.trackid());
 
+    // Gather pipeline stats.
     switch (mp.direction()) {
       case MediaPipeline::TRANSMIT: {
         nsString localId = NS_LITERAL_STRING("outbound_rtp_") + idstr;
@@ -2369,6 +2290,26 @@ PeerConnectionImpl::ExecuteStatsQuery_s(RTCStatsQuery *query) {
           s.mIsRemote = false;
           s.mPacketsSent.Construct(mp.rtp_packets_sent());
           s.mBytesSent.Construct(mp.rtp_bytes_sent());
+
+          // Lastly, fill in video encoder stats if this is video
+          if (!isAudio) {
+            double framerateMean;
+            double framerateStdDev;
+            double bitrateMean;
+            double bitrateStdDev;
+            uint32_t droppedFrames;
+            if (mp.Conduit()->GetVideoEncoderStats(&framerateMean,
+                                                   &framerateStdDev,
+                                                   &bitrateMean,
+                                                   &bitrateStdDev,
+                                                   &droppedFrames)) {
+              s.mFramerateMean.Construct(framerateMean);
+              s.mFramerateStdDev.Construct(framerateStdDev);
+              s.mBitrateMean.Construct(bitrateMean);
+              s.mBitrateStdDev.Construct(bitrateStdDev);
+              s.mDroppedFrames.Construct(droppedFrames);
+            }
+          }
           query->report->mOutboundRTPStreamStats.Value().AppendElement(s);
         }
         break;
@@ -2432,6 +2373,25 @@ PeerConnectionImpl::ExecuteStatsQuery_s(RTCStatsQuery *query) {
                                        &avSyncDelta)) {
             s.mMozJitterBufferDelay.Construct(jitterBufferDelay);
             s.mMozAvSyncDelay.Construct(avSyncDelta);
+          }
+        }
+        // Lastly, fill in video decoder stats if this is video
+        if (!isAudio) {
+          double framerateMean;
+          double framerateStdDev;
+          double bitrateMean;
+          double bitrateStdDev;
+          uint32_t discardedPackets;
+          if (mp.Conduit()->GetVideoDecoderStats(&framerateMean,
+                                                 &framerateStdDev,
+                                                 &bitrateMean,
+                                                 &bitrateStdDev,
+                                                 &discardedPackets)) {
+            s.mFramerateMean.Construct(framerateMean);
+            s.mFramerateStdDev.Construct(framerateStdDev);
+            s.mBitrateMean.Construct(bitrateMean);
+            s.mBitrateStdDev.Construct(bitrateStdDev);
+            s.mDiscardedPackets.Construct(discardedPackets);
           }
         }
         query->report->mInboundRTPStreamStats.Value().AppendElement(s);

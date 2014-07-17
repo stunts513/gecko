@@ -81,17 +81,15 @@ ImageClient::RemoveTextureWithTracker(TextureClient* aTexture,
                                       AsyncTransactionTracker* aAsyncTransactionTracker)
 {
 #ifdef MOZ_WIDGET_GONK
-  // AsyncTransactionTracker is supported only on ImageBridge.
-  // Use AsyncTransactionTracker only when TextureClient is recyeled.
-  if (GetForwarder()->IsImageBridgeChild() &&
-      aTexture->HasRecycleCallback()) {
+  if (aAsyncTransactionTracker ||
+      GetForwarder()->IsImageBridgeChild()) {
     RefPtr<AsyncTransactionTracker> request = aAsyncTransactionTracker;
     if (!request) {
       // Create AsyncTransactionTracker if it is not provided as argument.
-      request = new RemoveTextureFromCompositableTracker(this);
+      request = new RemoveTextureFromCompositableTracker();
     }
     // Hold TextureClient until the transaction complete to postpone
-    // the TextureClient recycle.
+    // the TextureClient recycle/delete.
     request->SetTextureClient(aTexture);
     GetForwarder()->RemoveTextureFromCompositableAsync(request, this, aTexture);
     return;
@@ -128,7 +126,7 @@ TextureInfo ImageClientSingle::GetTextureInfo() const
 TemporaryRef<AsyncTransactionTracker>
 ImageClientSingle::PrepareFlushAllImages()
 {
-  RefPtr<AsyncTransactionTracker> status = new RemoveTextureFromCompositableTracker(this);
+  RefPtr<AsyncTransactionTracker> status = new RemoveTextureFromCompositableTracker();
   return status;
 }
 
@@ -278,14 +276,12 @@ ImageClientSingle::UpdateImageInternal(ImageContainer* aContainer,
     if (!mFrontBuffer) {
       gfxImageFormat format
         = gfxPlatform::GetPlatform()->OptimalFormatForContent(gfx::ContentForFormat(surface->GetFormat()));
-      mFrontBuffer = CreateTextureClientForDrawing(gfx::ImageFormatToSurfaceFormat(format),
-                                                   mTextureFlags, gfx::BackendType::NONE, size);
-      MOZ_ASSERT(mFrontBuffer->CanExposeDrawTarget());
-      if (!mFrontBuffer->AllocateForSurface(size)) {
-        mFrontBuffer = nullptr;
+      mFrontBuffer = CreateTextureClientForDrawing(gfx::ImageFormatToSurfaceFormat(format), size,
+                                                   gfx::BackendType::NONE, mTextureFlags);
+      if (!mFrontBuffer) {
         return false;
       }
-
+      MOZ_ASSERT(mFrontBuffer->CanExposeDrawTarget());
       bufferCreated = true;
     }
 
@@ -296,7 +292,7 @@ ImageClientSingle::UpdateImageInternal(ImageContainer* aContainer,
 
     {
       // We must not keep a reference to the DrawTarget after it has been unlocked.
-      RefPtr<DrawTarget> dt = mFrontBuffer->GetAsDrawTarget();
+      DrawTarget* dt = mFrontBuffer->BorrowDrawTarget();
       MOZ_ASSERT(surface.get());
       dt->CopySurface(surface, IntRect(IntPoint(), surface->GetSize()), IntPoint());
     }

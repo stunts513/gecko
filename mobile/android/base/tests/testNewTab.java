@@ -6,11 +6,12 @@ import org.mozilla.gecko.R;
 import android.app.Activity;
 import android.view.View;
 
+import com.jayway.android.robotium.solo.Condition;
+
 /* A simple test that creates 2 new tabs and checks that the tab count increases. */
 public class testNewTab extends BaseTest {
     private Element tabCount = null;
     private Element tabs = null;
-    private Element addTab = null;
     private Element closeTab = null;
     private int tabCountInt = 0;
 
@@ -23,10 +24,7 @@ public class testNewTab extends BaseTest {
         Activity activity = getActivity();
         tabCount = mDriver.findElement(activity, R.id.tabs_counter);
         tabs = mDriver.findElement(activity, R.id.tabs);
-        addTab = mDriver.findElement(activity, R.id.add_tab);
-        mAsserter.ok(tabCount != null &&
-                     tabs != null &&
-                     addTab != null, 
+        mAsserter.ok(tabCount != null && tabs != null,
                      "Checking elements", "all elements present");
 
         int expectedTabCount = 1;
@@ -44,63 +42,13 @@ public class testNewTab extends BaseTest {
         mAsserter.is(tabCountInt, expectedTabCount, "Number of tabs increased");
 
         // cleanup: close all opened tabs
-        //closeTabs();
-    }
-
-    private void closeTabs() {
-        final int closeTabId = closeTab.getId();
-        String tabCountText = null;
-
-        // open tabs panel
-        boolean clicked = tabs.click();
-        if (!clicked) {
-            mAsserter.ok(clicked != false, "checking that tabs clicked", "tabs element clicked");
-        }
-
-        // wait for closeTab to appear (this is usually immediate)
-        boolean success = waitForTest(new BooleanTest() {
-            @Override
-            public boolean test() {
-                View closeTabView = getActivity().findViewById(closeTabId);
-                if (closeTabView == null) {
-                    return false;
-                }
-                return true;
-            }
-        }, MAX_WAIT_MS);
-        if (!success) {
-            mAsserter.ok(success != false, "waiting for close tab view", "close tab view available");
-        }
-
-        // close tabs until only one remains
-        tabCountText = tabCount.getText();
-        tabCountInt = Integer.parseInt(tabCountText);
-        while (tabCountInt > 1) {
-            clicked = closeTab.click();
-            if (!clicked) {
-                mAsserter.ok(clicked != false, "checking that close_tab clicked", "close_tab element clicked");
-            }
-
-            success = waitForTest(new BooleanTest() {
-                @Override
-                public boolean test() {
-                    String newTabCountText = tabCount.getText();
-                    int newTabCount = Integer.parseInt(newTabCountText);
-                    if (newTabCount < tabCountInt) {
-                        tabCountInt = newTabCount;
-                        return true;
-                    }
-                    return false;
-                }
-            }, MAX_WAIT_MS);
-            mAsserter.ok(success, "Checking tab closed", "number of tabs now "+tabCountInt);
-        }
+        closeAddedTabs();
     }
 
     private void getTabCount(final int expected) {
-        waitForTest(new BooleanTest() {
+        waitForCondition(new Condition() {
             @Override
-            public boolean test() {
+            public boolean isSatisfied() {
                 String newTabCountText = tabCount.getText();
                 tabCountInt = Integer.parseInt(newTabCountText);
                 if (tabCountInt == expected) {

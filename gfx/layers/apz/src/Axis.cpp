@@ -62,24 +62,27 @@ void Axis::StartTouch(int32_t aPos, uint32_t aTimestampMs) {
   mAxisLocked = false;
 }
 
-float Axis::AdjustDisplacement(float aDisplacement, float& aOverscrollAmountOut) {
+bool Axis::AdjustDisplacement(float aDisplacement,
+                              float& aDisplacementOut,
+                              float& aOverscrollAmountOut)
+{
   if (mAxisLocked) {
     aOverscrollAmountOut = 0;
-    return 0;
+    aDisplacementOut = 0;
+    return false;
   }
 
   float displacement = aDisplacement;
 
   // First consume any overscroll in the opposite direction along this axis.
+  float consumedOverscroll = 0;
   if (mOverscroll > 0 && aDisplacement < 0) {
-    float consumedOverscroll = std::min(mOverscroll, -aDisplacement);
-    mOverscroll -= consumedOverscroll;
-    displacement += consumedOverscroll;
+    consumedOverscroll = std::min(mOverscroll, -aDisplacement);
   } else if (mOverscroll < 0 && aDisplacement > 0) {
-    float consumedOverscroll = std::min(-mOverscroll, aDisplacement);
-    mOverscroll += consumedOverscroll;
-    displacement -= consumedOverscroll;
+    consumedOverscroll = 0 - std::min(-mOverscroll, aDisplacement);
   }
+  mOverscroll -= consumedOverscroll;
+  displacement += consumedOverscroll;
 
   // Split the requested displacement into an allowed displacement that does
   // not overscroll, and an overscroll amount.
@@ -90,7 +93,8 @@ float Axis::AdjustDisplacement(float aDisplacement, float& aOverscrollAmountOut)
     aOverscrollAmountOut = DisplacementWillOverscrollAmount(displacement);
     displacement -= aOverscrollAmountOut;
   }
-  return displacement;
+  aDisplacementOut = displacement;
+  return fabsf(consumedOverscroll) > EPSILON;
 }
 
 float Axis::ApplyResistance(float aRequestedOverscroll) const {
@@ -121,21 +125,27 @@ float Axis::GetOverscroll() const {
   return mOverscroll;
 }
 
-void Axis::StartSnapBack() {
-  float initialSnapBackVelocity = gfxPrefs::APZSnapBackInitialVelocity();
-  if (mOverscroll > 0) {
-    mVelocity = -initialSnapBackVelocity;
-  } else {
-    mVelocity = initialSnapBackVelocity;
-  }
-}
-
 bool Axis::SampleSnapBack(const TimeDuration& aDelta) {
-  // Accelerate the snap-back as time goes on.
-  // Note: this method of acceleration isn't perfectly smooth, as it assumes
+  // Apply spring physics to the snap-back as time goes on.
+  // Note: this method of sampling isn't perfectly smooth, as it assumes
   // a constant velocity over 'aDelta', instead of an accelerating velocity.
   // (The way we applying friction to flings has the same issue.)
-  mVelocity *= pow(1.0f + gfxPrefs::APZSnapBackAcceleration(), float(aDelta.ToMilliseconds()));
+  // Hooke's law with damping:
+  //   F = -kx - bv
+  // where
+  //   k is a constant related to the stiffness of the spring
+  //     The larger the constant, the stiffer the spring.
+  //   x is the displacement of the end of the spring from its equilibrium
+  //     In our scenario, it's the amount of overscroll on the axis.
+  //   b is a constant that provides damping (friction)
+  //   v is the velocity of the point at the end of the spring
+  // See http://gafferongames.com/game-physics/spring-physics/
+  const float kSpringStiffness = gfxPrefs::APZOverscrollSnapBackSpringStiffness();
+  const float kSpringFriction = gfxPrefs::APZOverscrollSnapBackSpringFriction();
+  const float kMass = gfxPrefs::APZOverscrollSnapBackMass();
+  float force = -1 * kSpringStiffness * mOverscroll - kSpringFriction * mVelocity;
+  float acceleration = force / kMass;
+  mVelocity += acceleration * aDelta.ToMilliseconds();
   float screenDisplacement = mVelocity * aDelta.ToMilliseconds();
   float cssDisplacement = screenDisplacement / GetFrameMetrics().GetZoom().scale;
   if (mOverscroll > 0) {
@@ -171,6 +181,10 @@ bool Axis::IsOverscrolled() const {
   return mOverscroll != 0;
 }
 
+void Axis::ClearOverscroll() {
+  mOverscroll = 0;
+}
+
 float Axis::PanDistance() {
   return fabsf(mPos - mStartPos);
 }
@@ -203,22 +217,24 @@ void Axis::CancelTouch() {
 }
 
 bool Axis::CanScroll() const {
-  return GetCompositionLength() < GetPageLength();
+  return GetPageLength() - GetCompositionLength() > COORDINATE_EPSILON;
 }
 
 bool Axis::CanScrollNow() const {
   return !mAxisLocked && CanScroll();
 }
 
-bool Axis::FlingApplyFrictionOrCancel(const TimeDuration& aDelta) {
-  if (fabsf(mVelocity) <= gfxPrefs::APZFlingStoppedThreshold()) {
+bool Axis::FlingApplyFrictionOrCancel(const TimeDuration& aDelta,
+                                      float aFriction,
+                                      float aThreshold) {
+  if (fabsf(mVelocity) <= aThreshold) {
     // If the velocity is very low, just set it to 0 and stop the fling,
     // otherwise we'll just asymptotically approach 0 and the user won't
     // actually see any changes.
     mVelocity = 0.0f;
     return false;
   } else {
-    mVelocity *= pow(1.0f - gfxPrefs::APZFlingFriction(), float(aDelta.ToMilliseconds()));
+    mVelocity *= pow(1.0f - aFriction, float(aDelta.ToMilliseconds()));
   }
   return true;
 }

@@ -118,6 +118,7 @@ namespace jit {
     _(Interpreter)                                    \
     _(Invalidation)                                   \
     _(IonCompilation)                                 \
+    _(IonCompilationPaused)                           \
     _(IonLinking)                                     \
     _(IonMonkey)                                      \
     _(MinorGC)                                        \
@@ -125,9 +126,6 @@ namespace jit {
     _(ParserCompileLazy)                              \
     _(ParserCompileScript)                            \
     _(TL)                                             \
-    _(YarrCompile)                                    \
-    _(YarrInterpret)                                  \
-    _(YarrJIT)                                        \
     _(IrregexpCompile)                                \
     _(IrregexpExecute)                                \
     _(VM)                                             \
@@ -137,6 +135,7 @@ namespace jit {
     _(RenumberBlocks)                                 \
     _(DominatorTree)                                  \
     _(PhiAnalysis)                                    \
+    _(MakeLoopsContiguous)                            \
     _(ApplyTypes)                                     \
     _(ParallelSafetyAnalysis)                         \
     _(AliasAnalysis)                                  \

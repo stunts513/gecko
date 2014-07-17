@@ -49,11 +49,12 @@ public:
                  : DOMRequestReadyState::Pending;
   }
 
-  JS::Value Result(JSContext* = nullptr) const
+  void GetResult(JSContext*, JS::MutableHandle<JS::Value> aRetval) const
   {
     NS_ASSERTION(mDone || mResult == JSVAL_VOID,
-               "Result should be undefined when pending");
-    return mResult;
+                 "Result should be undefined when pending");
+    JS::ExposeValueToActiveJS(mResult);
+    aRetval.set(mResult);
   }
 
   DOMError* GetError() const
@@ -74,13 +75,13 @@ public:
 
   DOMRequest(nsPIDOMWindow* aWindow);
 
+protected:
   virtual ~DOMRequest()
   {
     mResult = JSVAL_VOID;
     mozilla::DropJSObjects(this);
   }
 
-protected:
   void FireEvent(const nsAString& aType, bool aBubble, bool aCancelable);
 
   void RootResultVal();
@@ -88,6 +89,8 @@ protected:
 
 class DOMRequestService MOZ_FINAL : public nsIDOMRequestService
 {
+  ~DOMRequestService() {}
+
 public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSIDOMREQUESTSERVICE

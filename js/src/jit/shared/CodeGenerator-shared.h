@@ -26,8 +26,6 @@ class OutOfLineCode;
 class CodeGenerator;
 class MacroAssembler;
 class IonCache;
-class OutOfLineAbortPar;
-class OutOfLinePropagateAbortPar;
 
 template <class ArgSeq, class StoreOutputTo>
 class OutOfLineCallVM;
@@ -144,13 +142,18 @@ class CodeGeneratorShared : public LInstructionVisitor
     // spills.
     int32_t frameDepth_;
 
+    // In some cases, we force stack alignment to platform boundaries, see
+    // also CodeGeneratorShared constructor. This value records the adjustment
+    // we've done.
+    int32_t frameInitialAdjustment_;
+
     // Frame class this frame's size falls into (see IonFrame.h).
     FrameSizeClass frameClass_;
 
     // For arguments to the current function.
     inline int32_t ArgToStackOffset(int32_t slot) const {
         return masm.framePushed() +
-               (gen->compilingAsmJS() ? NativeFrameSize : sizeof(IonJSFrameLayout)) +
+               (gen->compilingAsmJS() ? AsmJSFrameSize : sizeof(IonJSFrameLayout)) +
                slot;
     }
 
@@ -161,7 +164,7 @@ class CodeGeneratorShared : public LInstructionVisitor
 
     inline int32_t SlotToStackOffset(int32_t slot) const {
         JS_ASSERT(slot > 0 && slot <= int32_t(graph.localSlotCount()));
-        int32_t offset = masm.framePushed() - slot;
+        int32_t offset = masm.framePushed() - frameInitialAdjustment_ - slot;
         JS_ASSERT(offset >= 0);
         return offset;
     }
@@ -169,10 +172,10 @@ class CodeGeneratorShared : public LInstructionVisitor
         // See: SlotToStackOffset. This is used to convert pushed arguments
         // to a slot index that safepoints can use.
         //
-        // offset = framePushed - slot
-        // offset + slot = framePushed
-        // slot = framePushed - offset
-        return masm.framePushed() - offset;
+        // offset = framePushed - frameInitialAdjustment - slot
+        // offset + slot = framePushed - frameInitialAdjustment
+        // slot = framePushed - frameInitialAdjustement - offset
+        return masm.framePushed() - frameInitialAdjustment_ - offset;
     }
 
     // For argument construction for calls. Argslots are Value-sized.
@@ -463,28 +466,6 @@ class CodeGeneratorShared : public LInstructionVisitor
 
     bool omitOverRecursedCheck() const;
 
-  public:
-    bool callTraceLIR(uint32_t blockIndex, LInstruction *lir, const char *bailoutName = nullptr);
-
-    // Parallel aborts:
-    //
-    //    Parallel aborts work somewhat differently from sequential
-    //    bailouts.  When an abort occurs, we first invoke
-    //    ReportAbortPar() and then we return JS_ION_ERROR.  Each
-    //    call on the stack will check for this error return and
-    //    propagate it upwards until the C++ code that invoked the ion
-    //    code is reached.
-    //
-    //    The snapshot that is provided to `oolAbortPar` is currently
-    //    only used for error reporting, so that we can provide feedback
-    //    to the user about which instruction aborted and (perhaps) why.
-    OutOfLineAbortPar *oolAbortPar(ParallelBailoutCause cause, MBasicBlock *basicBlock,
-                                   jsbytecode *bytecode);
-    OutOfLineAbortPar *oolAbortPar(ParallelBailoutCause cause, LInstruction *lir);
-    OutOfLinePropagateAbortPar *oolPropagateAbortPar(LInstruction *lir);
-    virtual bool visitOutOfLineAbortPar(OutOfLineAbortPar *ool) = 0;
-    virtual bool visitOutOfLinePropagateAbortPar(OutOfLinePropagateAbortPar *ool) = 0;
-
 #ifdef JS_TRACE_LOGGING
   protected:
     bool emitTracelogScript(bool isStart);
@@ -764,55 +745,6 @@ CodeGeneratorShared::visitOutOfLineCallVM(OutOfLineCallVM<ArgSeq, StoreOutputTo>
     masm.jump(ool->rejoin());
     return true;
 }
-
-// Initiate a parallel abort.  The snapshot is used to record the
-// cause.
-class OutOfLineAbortPar : public OutOfLineCode
-{
-  private:
-    ParallelBailoutCause cause_;
-    MBasicBlock *basicBlock_;
-    jsbytecode *bytecode_;
-
-  public:
-    OutOfLineAbortPar(ParallelBailoutCause cause, MBasicBlock *basicBlock, jsbytecode *bytecode)
-      : cause_(cause),
-        basicBlock_(basicBlock),
-        bytecode_(bytecode)
-    { }
-
-    ParallelBailoutCause cause() {
-        return cause_;
-    }
-
-    MBasicBlock *basicBlock() {
-        return basicBlock_;
-    }
-
-    jsbytecode *bytecode() {
-        return bytecode_;
-    }
-
-    bool generate(CodeGeneratorShared *codegen);
-};
-
-// Used when some callee has aborted.
-class OutOfLinePropagateAbortPar : public OutOfLineCode
-{
-  private:
-    LInstruction *lir_;
-
-  public:
-    explicit OutOfLinePropagateAbortPar(LInstruction *lir)
-      : lir_(lir)
-    { }
-
-    LInstruction *lir() { return lir_; }
-
-    bool generate(CodeGeneratorShared *codegen);
-};
-
-extern const VMFunction InterruptCheckInfo;
 
 } // namespace jit
 } // namespace js

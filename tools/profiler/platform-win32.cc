@@ -31,6 +31,7 @@
 #include <process.h>
 #include "platform.h"
 #include "TableTicker.h"
+#include "ThreadResponsiveness.h"
 #include "ProfileEntry.h"
 #include "UnwinderThread2.h"
 
@@ -139,6 +140,8 @@ class SamplerThread : public Thread {
             continue;
           }
 
+          info->Profile()->GetThreadResponsiveness()->Update();
+
           ThreadProfile* thread_profile = info->Profile();
 
           SampleContext(sampler_, thread_profile, isFirstProfiledThread);
@@ -178,6 +181,9 @@ class SamplerThread : public Thread {
     } else {
       sample->rssMemory = 0;
     }
+
+    // Unique Set Size is not supported on Windows.
+    sample->ussMemory = 0;
 
     static const DWORD kSuspendFailed = static_cast<DWORD>(-1);
     if (SuspendThread(profiled_thread) == kSuspendFailed)

@@ -9,6 +9,7 @@
 #include "gfxTypes.h"
 #include "nsString.h"
 #include "gfxPoint.h"
+#include "gfxFontFamilyList.h"
 #include "gfxFontUtils.h"
 #include "nsTArray.h"
 #include "nsTHashtable.h"
@@ -76,7 +77,8 @@ struct gfxFontStyle {
     gfxFontStyle(uint8_t aStyle, uint16_t aWeight, int16_t aStretch,
                  gfxFloat aSize, nsIAtom *aLanguage,
                  float aSizeAdjust, bool aSystemFont,
-                 bool aPrinterFont, bool aSmallCaps,
+                 bool aPrinterFont,
+                 bool aWeightSynthesis, bool aStyleSynthesis,
                  const nsString& aLanguageOverride);
     gfxFontStyle(const gfxFontStyle& aStyle);
 
@@ -141,12 +143,15 @@ struct gfxFontStyle {
     // Used to imitate -webkit-font-smoothing: antialiased
     bool useGrayscaleAntialiasing : 1;
 
-    // Font should render as small-caps, using OT feature if available,
-    // otherwise using a synthetic small-caps implementation
-    bool smallCaps : 1;
-
     // The style of font (normal, italic, oblique)
     uint8_t style : 2;
+
+    // Whether synthetic styles are allowed
+    bool allowSyntheticWeight : 1;
+    bool allowSyntheticStyle : 1;
+
+    // caps variant (small-caps, petite-caps, etc.)
+    uint8_t variantCaps;
 
     // Return the final adjusted font size for the given aspect ratio.
     // Not meant to be called when sizeAdjust = 0.
@@ -169,7 +174,9 @@ struct gfxFontStyle {
             (*reinterpret_cast<const uint64_t*>(&size) ==
              *reinterpret_cast<const uint64_t*>(&other.size)) &&
             (style == other.style) &&
-            (smallCaps == other.smallCaps) &&
+            (variantCaps == other.variantCaps) &&
+            (allowSyntheticWeight == other.allowSyntheticWeight) &&
+            (allowSyntheticStyle == other.allowSyntheticStyle) &&
             (systemFont == other.systemFont) &&
             (printerFont == other.printerFont) &&
             (useGrayscaleAntialiasing == other.useGrayscaleAntialiasing) &&
@@ -273,8 +280,10 @@ public:
     bool IgnoreGDEF() const { return mIgnoreGDEF; }
     bool IgnoreGSUB() const { return mIgnoreGSUB; }
 
-    bool SupportsOpenTypeSmallCaps(int32_t aScript);
-    bool SupportsGraphiteSmallCaps();
+    // whether a feature is supported by the font (limited to a small set
+    // of features for which some form of fallback needs to be implemented)
+    bool SupportsOpenTypeFeature(int32_t aScript, uint32_t aFeatureTag);
+    bool SupportsGraphiteFeature(uint32_t aFeatureTag);
 
     virtual bool IsSymbolFont();
 
@@ -390,7 +399,7 @@ public:
     // Call TryGetMathTable to try to load the Open Type MATH table. The other
     // functions forward the call to the gfxMathTable class. The GetMath...()
     // functions MUST NOT be called unless TryGetMathTable() has returned true.
-    bool     TryGetMathTable(gfxFont* aFont);
+    bool     TryGetMathTable();
     gfxFloat GetMathConstant(MathConstant aConstant);
     bool     GetMathItalicsCorrection(uint32_t aGlyphID,
                                       gfxFloat* aItalicCorrection);
@@ -544,8 +553,6 @@ public:
     bool             mSkipDefaultFeatureSpaceCheck : 1;
     bool             mHasGraphiteTables : 1;
     bool             mCheckedForGraphiteTables : 1;
-    bool             mHasGraphiteSmallCaps : 1;
-    bool             mCheckedForGraphiteSmallCaps : 1;
     bool             mHasCmapTable : 1;
     bool             mGrFaceInitialized : 1;
     bool             mCheckedForColorGlyph : 1;
@@ -567,7 +574,7 @@ public:
     nsTArray<gfxFont*> mFontsUsingSVGGlyphs;
     nsAutoPtr<gfxMathTable> mMathTable;
     nsTArray<gfxFontFeature> mFeatureSettings;
-    nsAutoPtr<nsDataHashtable<nsUint32HashKey,bool>> mSmallCapsSupport;
+    nsAutoPtr<nsDataHashtable<nsUint32HashKey,bool>> mSupportedFeatures;
     uint32_t         mLanguageOverride;
 
     // Color Layer font support
@@ -811,7 +818,11 @@ public:
         {
             aFontEntry->mIgnoreGDEF = true;
         }
-        aFontEntry->mFamilyName = Name();
+        if (aFontEntry->mFamilyName.IsEmpty()) {
+            aFontEntry->mFamilyName = Name();
+        } else {
+            MOZ_ASSERT(aFontEntry->mFamilyName.Equals(Name()));
+        }
         aFontEntry->mSkipDefaultFeatureSpaceCheck = mSkipDefaultFeatureSpaceCheck;
         mAvailableFonts.AppendElement(aFontEntry);
     }
@@ -1084,6 +1095,7 @@ public:
 protected:
     class MemoryReporter MOZ_FINAL : public nsIMemoryReporter
     {
+        ~MemoryReporter() {}
     public:
         NS_DECL_ISUPPORTS
         NS_DECL_NSIMEMORYREPORTER
@@ -1093,6 +1105,7 @@ protected:
     class Observer MOZ_FINAL
         : public nsIObserver
     {
+        ~Observer() {}
     public:
         NS_DECL_ISUPPORTS
         NS_DECL_NSIOBSERVER
@@ -1470,12 +1483,12 @@ public:
     // Shape a piece of text and store the resulting glyph data into
     // aShapedText. Parameters aOffset/aLength indicate the range of
     // aShapedText to be updated; aLength is also the length of aText.
-    virtual bool ShapeText(gfxContext      *aContext,
+    virtual bool ShapeText(gfxContext     *aContext,
                            const char16_t *aText,
-                           uint32_t         aOffset,
-                           uint32_t         aLength,
-                           int32_t          aScript,
-                           gfxShapedText   *aShapedText) = 0;
+                           uint32_t        aOffset,
+                           uint32_t        aLength,
+                           int32_t         aScript,
+                           gfxShapedText  *aShapedText) = 0;
 
     gfxFont *GetFont() const { return mFont; }
 
@@ -1485,6 +1498,7 @@ public:
                       const nsTArray<gfxFontFeature>& aFontFeatures,
                       bool aDisableLigatures,
                       const nsAString& aFamilyName,
+                      bool aAddSmallCaps,
                       nsDataHashtable<nsUint32HashKey,uint32_t>& aMergedFeatures);
 
 protected:
@@ -1614,8 +1628,16 @@ public:
         return mFontEntry->HasGraphiteTables();
     }
 
-    // whether the font supports "real" small caps or should fake them
-    bool SupportsSmallCaps(int32_t aScript);
+    // whether a feature is supported by the font (limited to a small set
+    // of features for which some form of fallback needs to be implemented)
+    bool SupportsFeature(int32_t aScript, uint32_t aFeatureTag);
+
+    // whether the font supports "real" small caps, petite caps etc.
+    // aFallbackToSmallCaps true when petite caps should fallback to small caps
+    bool SupportsVariantCaps(int32_t aScript, uint32_t aVariantCaps,
+                             bool& aFallbackToSmallCaps,
+                             bool& aSyntheticLowerToSmallCaps,
+                             bool& aSyntheticUpperToSmallCaps);
 
     // Subclasses may choose to look up glyph ids for characters.
     // If they do not override this, gfxHarfBuzzShaper will fetch the cmap
@@ -1640,8 +1662,6 @@ public:
     // Font metrics
     struct Metrics {
         gfxFloat xHeight;
-        gfxFloat superscriptOffset;
-        gfxFloat subscriptOffset;
         gfxFloat strikeoutSize;
         gfxFloat strikeoutOffset;
         gfxFloat underlineSize;
@@ -1823,7 +1843,9 @@ public:
                               uint32_t        aOffset,
                               uint32_t        aLength,
                               uint8_t         aMatchType,
-                              int32_t         aScript);
+                              int32_t         aScript,
+                              bool            aSyntheticLower,
+                              bool            aSyntheticUpper);
 
     bool InitFakeSmallCapsRun(gfxContext     *aContext,
                               gfxTextRun     *aTextRun,
@@ -1831,7 +1853,9 @@ public:
                               uint32_t        aOffset,
                               uint32_t        aLength,
                               uint8_t         aMatchType,
-                              int32_t         aScript);
+                              int32_t         aScript,
+                              bool            aSyntheticLower,
+                              bool            aSyntheticUpper);
 
     // call the (virtual) InitTextRun method to do glyph generation/shaping,
     // limiting the length of text passed by processing the run in multiple
@@ -1940,9 +1964,27 @@ public:
         delete sDefaultFeatures;
     }
 
+    // Get a font dimension from the MATH table, scaled to appUnits;
+    // may only be called if mFontEntry->TryGetMathTable has succeeded
+    // (i.e. the font is known to be a valid OpenType math font).
+    nscoord GetMathConstant(gfxFontEntry::MathConstant aConstant,
+                            uint32_t aAppUnitsPerDevPixel)
+    {
+        return NSToCoordRound(mFontEntry->GetMathConstant(aConstant) *
+                              GetAdjustedSize() * aAppUnitsPerDevPixel);
+    }
+
+    // Get a dimensionless math constant (e.g. a percentage);
+    // may only be called if mFontEntry->TryGetMathTable has succeeded
+    // (i.e. the font is known to be a valid OpenType math font).
+    float GetMathConstant(gfxFontEntry::MathConstant aConstant)
+    {
+        return mFontEntry->GetMathConstant(aConstant);
+    }
+
 protected:
     // Return a font that is a "clone" of this one, but reduced to 80% size
-    // (and with the smallCaps style set to false).
+    // (and with variantCaps set to normal).
     // Default implementation relies on gfxFontEntry::CreateFontInstance;
     // backends that don't implement that will need to override this and use
     // an alternative technique. (gfxPangoFonts, I'm looking at you...)
@@ -1951,7 +1993,7 @@ protected:
     // subclasses may provide (possibly hinted) glyph widths (in font units);
     // if they do not override this, harfbuzz will use unhinted widths
     // derived from the font tables
-    virtual bool ProvidesGlyphWidths() {
+    virtual bool ProvidesGlyphWidths() const {
         return false;
     }
 
@@ -1976,8 +2018,7 @@ protected:
                    uint32_t       aOffset, // dest offset in gfxShapedText
                    uint32_t       aLength,
                    int32_t        aScript,
-                   gfxShapedText *aShapedText, // where to store the result
-                   bool           aPreferPlatformShaping = false);
+                   gfxShapedText *aShapedText); // where to store the result
 
     // Call the appropriate shaper to generate glyphs for aText and store
     // them into aShapedText.
@@ -1986,8 +2027,7 @@ protected:
                            uint32_t         aOffset,
                            uint32_t         aLength,
                            int32_t          aScript,
-                           gfxShapedText   *aShapedText,
-                           bool             aPreferPlatformShaping = false);
+                           gfxShapedText   *aShapedText);
 
     // Helper to adjust for synthetic bold and set character-type flags
     // in the shaped text; implementations of ShapeText should call this
@@ -2146,18 +2186,13 @@ protected:
     // measurement by mathml code
     nsAutoPtr<gfxFont>         mNonAAFont;
 
-    // we may switch between these shapers on the fly, based on the script
-    // of the text run being shaped
-    nsAutoPtr<gfxFontShaper>   mPlatformShaper;
+    // we create either or both of these shapers when needed, depending
+    // whether the font has graphite tables, and whether graphite shaping
+    // is actually enabled
     nsAutoPtr<gfxFontShaper>   mHarfBuzzShaper;
     nsAutoPtr<gfxFontShaper>   mGraphiteShaper;
 
     mozilla::RefPtr<mozilla::gfx::ScaledFont> mAzureScaledFont;
-
-    // Create a default platform text shaper for this font.
-    // (TODO: This should become pure virtual once all font backends have
-    // been updated.)
-    virtual void CreatePlatformShaper() { }
 
     // Helper for subclasses that want to initialize standard metrics from the
     // tables of sfnt (TrueType/OpenType) fonts.
@@ -2594,23 +2629,16 @@ protected:
         DetailedGlyph* Allocate(uint32_t aOffset, uint32_t aCount) {
             uint32_t detailIndex = mDetails.Length();
             DetailedGlyph *details = mDetails.AppendElements(aCount);
-            if (!details) {
-                return nullptr;
-            }
             // We normally set up glyph records sequentially, so the common case
             // here is to append new records to the mOffsetToIndex array;
             // test for that before falling back to the InsertElementSorted
             // method.
             if (mOffsetToIndex.Length() == 0 ||
                 aOffset > mOffsetToIndex[mOffsetToIndex.Length() - 1].mOffset) {
-                if (!mOffsetToIndex.AppendElement(DGRec(aOffset, detailIndex))) {
-                    return nullptr;
-                }
+                mOffsetToIndex.AppendElement(DGRec(aOffset, detailIndex));
             } else {
-                if (!mOffsetToIndex.InsertElementSorted(DGRec(aOffset, detailIndex),
-                                                        CompareRecordOffsets())) {
-                    return nullptr;
-                }
+                mOffsetToIndex.InsertElementSorted(DGRec(aOffset, detailIndex),
+                                                   CompareRecordOffsets());
             }
             return details;
         }
@@ -3426,9 +3454,6 @@ protected:
 private:
     // **** general helpers **** 
 
-    // Allocate aCount DetailedGlyphs for the given index
-    DetailedGlyph *AllocateDetailedGlyphs(uint32_t aCharIndex, uint32_t aCount);
-
     // Get the total advance for a range of glyphs.
     int32_t GetAdvanceForGlyphs(uint32_t aStart, uint32_t aEnd);
 
@@ -3524,7 +3549,9 @@ public:
 
     static void Shutdown(); // platform must call this to release the languageAtomService
 
-    gfxFontGroup(const nsAString& aFamilies, const gfxFontStyle *aStyle, gfxUserFontSet *aUserFontSet = nullptr);
+    gfxFontGroup(const mozilla::FontFamilyList& aFontFamilyList,
+                 const gfxFontStyle *aStyle,
+                 gfxUserFontSet *aUserFontSet = nullptr);
 
     virtual ~gfxFontGroup();
 
@@ -3541,6 +3568,11 @@ public:
 
         return mFonts[i].Font();
     }
+
+    // Returns the first font in the font-group that has an OpenType MATH table,
+    // or null if no such font is available. The GetMathConstant methods may be
+    // called on the returned font.
+    gfxFont *GetFirstMathFont();
 
     uint32_t FontListLength() const {
         return mFonts.Length();
@@ -3608,26 +3640,11 @@ public:
     gfxTextRun *MakeHyphenTextRun(gfxContext *aCtx,
                                   uint32_t aAppUnitsPerDevUnit);
 
-    /* helper function for splitting font families on commas and
-     * calling a function for each family to fill the mFonts array
-     */
-    typedef bool (*FontCreationCallback) (const nsAString& aName,
-                                            const nsACString& aGenericName,
-                                            bool aUseFontSet,
-                                            void *closure);
-    bool ForEachFont(const nsAString& aFamilies,
-                       nsIAtom *aLanguage,
-                       FontCreationCallback fc,
-                       void *closure);
-    bool ForEachFont(FontCreationCallback fc, void *closure);
-
     /**
      * Check whether a given font (specified by its gfxFontEntry)
      * is already in the fontgroup's list of actual fonts
      */
     bool HasFont(const gfxFontEntry *aFontEntry);
-
-    const nsString& GetFamilies() { return mFamilies; }
 
     // This returns the preferred underline for this font group.
     // Some CJK fonts have wrong underline offset in its metrics.
@@ -3692,8 +3709,14 @@ public:
     gfxTextRun* GetEllipsisTextRun(int32_t aAppUnitsPerDevPixel,
                                    LazyReferenceContextGetter& aRefContextGetter);
 
+    // helper method for resolving generic font families
+    static void
+    ResolveGenericFontNames(mozilla::FontFamilyType aGenericType,
+                            nsIAtom *aLanguage,
+                            nsTArray<nsString>& aGenericFamilies);
+
 protected:
-    nsString mFamilies;
+    mozilla::FontFamilyList mFamilyList;
     gfxFontStyle mStyle;
     nsTArray<FamilyFace> mFonts;
     gfxFloat mUnderlineOffset;
@@ -3754,37 +3777,27 @@ protected:
                        uint32_t aScriptRunEnd,
                        int32_t aRunScript);
 
-    /* If aResolveGeneric is true, then CSS/Gecko generic family names are
-     * replaced with preferred fonts.
-     *
-     * If aResolveFontName is true then fc() is called only for existing fonts
-     * and with actual font names.  If false then fc() is called with each
-     * family name in aFamilies (after resolving CSS/Gecko generic family names
-     * if aResolveGeneric).
-     * If aUseFontSet is true, the fontgroup's user font set is checked;
-     * if false then it is skipped.
-     */
-    bool ForEachFontInternal(const nsAString& aFamilies,
-                               nsIAtom *aLanguage,
-                               bool aResolveGeneric,
-                               bool aResolveFontName,
-                               bool aUseFontSet,
-                               FontCreationCallback fc,
-                               void *closure);
-
     // Helper for font-matching:
     // see if aCh is supported in any of the faces from aFamily;
     // if so return the best style match, else return null.
     already_AddRefed<gfxFont> TryAllFamilyMembers(gfxFontFamily* aFamily,
                                                   uint32_t aCh);
 
-    static bool FontResolverProc(const nsAString& aName, void *aClosure);
+    // helper methods for looking up fonts
 
-    static bool FindPlatformFont(const nsAString& aName,
-                                   const nsACString& aGenericName,
-                                   bool aUseFontSet,
-                                   void *closure);
+    // iterate over the fontlist, lookup names and expand generics
+    void EnumerateFontList(nsIAtom *aLanguage, void *aClosure = nullptr);
 
-    static NS_HIDDEN_(nsILanguageAtomService*) gLangService;
+    // expand a generic to a list of specific names based on prefs
+    void FindGenericFonts(mozilla::FontFamilyType aGenericType,
+                          nsIAtom *aLanguage,
+                          void *aClosure);
+
+    // lookup and add a font with a given name (i.e. *not* a generic!)
+    virtual void FindPlatformFont(const nsAString& aName,
+                                  bool aUseFontSet,
+                                  void *aClosure);
+
+    static nsILanguageAtomService* gLangService;
 };
 #endif

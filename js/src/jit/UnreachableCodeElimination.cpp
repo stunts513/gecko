@@ -83,8 +83,10 @@ UnreachableCodeElimination::removeUnmarkedBlocksAndCleanup()
     // Pass 5: It's important for optimizations to re-run GVN (and in
     // turn alias analysis) after UCE if we eliminated branches.
     if (rerunAliasAnalysis_ && mir_->optimizationInfo().gvnEnabled()) {
-        ValueNumberer gvn(mir_, graph_, mir_->optimizationInfo().gvnKind() == GVN_Optimistic);
-        if (!gvn.clear() || !gvn.analyze())
+        ValueNumberer gvn(mir_, graph_);
+        if (!gvn.run(rerunAliasAnalysis_
+                     ? ValueNumberer::UpdateAliasAnalysis
+                     : ValueNumberer::DontUpdateAliasAnalysis))
             return false;
         IonSpewPass("GVN-after-UCE");
         AssertExtendedGraphCoherency(graph_);
@@ -174,7 +176,7 @@ UnreachableCodeElimination::prunePointlessBranchesAndMarkReachableBlocks()
             if (!osrBlock->getSuccessor(i)->isMarked()) {
                 // OSR block has an otherwise unreachable successor, abort.
                 for (MBasicBlockIterator iter(graph_.begin()); iter != graph_.end(); iter++)
-                    iter->mark();
+                    iter->markUnchecked();
                 marked_ = graph_.numBlocks();
                 return true;
             }

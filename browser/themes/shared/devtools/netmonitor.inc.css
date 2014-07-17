@@ -17,15 +17,24 @@
   color: #585959; /* Grey foreground text */
 }
 
+#notice-perf-message {
+  margin-top: 2px;
+}
+
 #requests-menu-perf-notice-button {
   min-width: 30px;
-  min-height: 28px;
+  min-height: 26px;
   margin: 0;
   list-style-image: url(profiler-stopwatch.svg);
 }
 
 #requests-menu-perf-notice-button .button-text {
   display: none;
+}
+
+#requests-menu-reload-notice-button {
+  min-height: 26px;
+  margin: 0;
 }
 
 %filter substitution
@@ -75,7 +84,7 @@
   -moz-appearance: none;
   background: none;
   min-width: 1px;
-  min-height: 32px;
+  min-height: 24px;
   margin: 0;
   border: none;
   padding: 0;
@@ -406,12 +415,32 @@ label.requests-menu-status-code {
   -moz-image-region: rect(0px,16px,16px,0px);
 }
 
+#details-pane-toggle > .toolbarbutton-icon {
+  width: 16px;
+  height: 16px;
+}
+
 #details-pane-toggle[pane-collapsed] {
   list-style-image: url("chrome://browser/skin/devtools/debugger-expand.png");
 }
 
 #details-pane-toggle:active {
   -moz-image-region: rect(0px,32px,16px,16px);
+}
+
+@media (min-resolution: 2dppx) {
+  #details-pane-toggle {
+    list-style-image: url("chrome://browser/skin/devtools/debugger-collapse@2x.png");
+    -moz-image-region: rect(0px,32px,32px,0px);
+  }
+
+  #details-pane-toggle[pane-collapsed] {
+    list-style-image: url("chrome://browser/skin/devtools/debugger-expand@2x.png");
+  }
+
+  #details-pane-toggle:active {
+    -moz-image-region: rect(0px,64px,32px,32px);
+  }
 }
 
 /* Network request details tabpanels */

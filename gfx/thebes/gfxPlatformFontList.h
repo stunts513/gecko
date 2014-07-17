@@ -114,9 +114,6 @@ public:
                       const nsACString& aGenericFamily,
                       nsTArray<nsString>& aListOfFonts);
 
-    virtual bool ResolveFontName(const nsAString& aFontName,
-                                   nsAString& aResolvedFontName);
-
     void UpdateFontList();
 
     void ClearPrefFonts() { mPrefFonts.Clear(); }
@@ -194,6 +191,7 @@ public:
 protected:
     class MemoryReporter MOZ_FINAL : public nsIMemoryReporter
     {
+        ~MemoryReporter() {}
     public:
         NS_DECL_ISUPPORTS
         NS_DECL_NSIMEMORYREPORTER

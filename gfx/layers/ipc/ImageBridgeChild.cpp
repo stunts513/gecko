@@ -152,6 +152,19 @@ ImageBridgeChild::UpdatedTexture(CompositableClient* aCompositable,
 }
 
 void
+ImageBridgeChild::SendFenceHandle(AsyncTransactionTracker* aTracker,
+                                  PTextureChild* aTexture,
+                                  const FenceHandle& aFence)
+{
+  HoldUntilComplete(aTracker);
+  InfallibleTArray<AsyncChildMessageData> messages;
+  messages.AppendElement(OpDeliverFenceFromChild(aTracker->GetId(),
+                                                 nullptr, aTexture,
+                                                 FenceHandleFromChild(aFence)));
+  SendChildAsyncMessages(messages);
+}
+
+void
 ImageBridgeChild::UpdatePictureRect(CompositableClient* aCompositable,
                                     const nsIntRect& aRect)
 {
@@ -208,7 +221,6 @@ static void ImageBridgeShutdownStep2(ReentrantMonitor *aBarrier, bool *aDone)
 
   sImageBridgeChildSingleton->SendStop();
 
-  sImageBridgeChildSingleton = nullptr;
   *aDone = true;
   aBarrier->NotifyAll();
 }
@@ -235,10 +247,14 @@ static void ConnectImageBridge(ImageBridgeChild * child, ImageBridgeParent * par
 ImageBridgeChild::ImageBridgeChild()
   : mShuttingDown(false)
 {
+  MOZ_ASSERT(NS_IsMainThread());
+
   mTxn = new CompositableTransaction();
 }
 ImageBridgeChild::~ImageBridgeChild()
 {
+  MOZ_ASSERT(NS_IsMainThread());
+
   delete mTxn;
 }
 
@@ -474,7 +490,10 @@ ImageBridgeChild::EndTransaction()
   if (!mTxn->mOperations.empty()) {
     cset.AppendElements(&mTxn->mOperations.front(), mTxn->mOperations.size());
   }
-  ShadowLayerForwarder::PlatformSyncBeforeUpdate();
+
+  if (!IsSameProcess()) {
+    ShadowLayerForwarder::PlatformSyncBeforeUpdate();
+  }
 
   AutoInfallibleTArray<EditReply, 10> replies;
 
@@ -531,7 +550,9 @@ PImageBridgeChild*
 ImageBridgeChild::StartUpInChildProcess(Transport* aTransport,
                                         ProcessId aOtherProcess)
 {
-  NS_ASSERTION(NS_IsMainThread(), "Should be on the main Thread!");
+  MOZ_ASSERT(NS_IsMainThread());
+
+  gfxPlatform::GetPlatform();
 
   ProcessHandle processHandle;
   if (!base::OpenProcessHandle(aOtherProcess, &processHandle)) {
@@ -554,7 +575,7 @@ ImageBridgeChild::StartUpInChildProcess(Transport* aTransport,
 
 void ImageBridgeChild::ShutDown()
 {
-  MOZ_ASSERT(NS_IsMainThread(), "Should be on the main Thread!");
+  MOZ_ASSERT(NS_IsMainThread());
   if (ImageBridgeChild::IsCreated()) {
     MOZ_ASSERT(!sImageBridgeChildSingleton->mShuttingDown);
 
@@ -581,6 +602,8 @@ void ImageBridgeChild::ShutDown()
         barrier.Wait();
       }
     }
+
+    sImageBridgeChildSingleton = nullptr;
 
     delete sImageBridgeChildThread;
     sImageBridgeChildThread = nullptr;
@@ -802,7 +825,7 @@ ImageBridgeChild::DeallocPTextureChild(PTextureChild* actor)
 }
 
 bool
-ImageBridgeChild::RecvParentAsyncMessage(const InfallibleTArray<AsyncParentMessageData>& aMessages)
+ImageBridgeChild::RecvParentAsyncMessages(const InfallibleTArray<AsyncParentMessageData>& aMessages)
 {
   for (AsyncParentMessageArray::index_type i = 0; i < aMessages.Length(); ++i) {
     const AsyncParentMessageData& message = aMessages[i];
@@ -833,13 +856,18 @@ ImageBridgeChild::RecvParentAsyncMessage(const InfallibleTArray<AsyncParentMessa
         SendChildAsyncMessages(replies);
         break;
       }
+      case AsyncParentMessageData::TOpReplyDeliverFence: {
+        const OpReplyDeliverFence& op = message.get_OpReplyDeliverFence();
+        TransactionCompleteted(op.transactionId());
+        break;
+      }
       case AsyncParentMessageData::TOpReplyRemoveTexture: {
         const OpReplyRemoveTexture& op = message.get_OpReplyRemoveTexture();
 
         AsyncTransactionTrackersHolder::TransactionCompleteted(op.holderId(),
                                                                op.transactionId());
-      break;
-    }
+        break;
+      }
       default:
         NS_ERROR("unknown AsyncParentMessageData type");
         return false;

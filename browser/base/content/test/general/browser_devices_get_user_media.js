@@ -60,7 +60,7 @@ function expectNoObserverCalled() {
     if (gObservedTopics[topic])
       is(gObservedTopics[topic], 0, topic + " notification unexpected");
   }
-  gObservedTopics = {}
+  gObservedTopics = {};
 }
 
 function promiseMessage(aMessage, aAction) {
@@ -593,6 +593,9 @@ let gTests = [
         yield promiseMessage(expectedMessage, gum);
 
         if (expectedMessage == "ok") {
+          expectObserverCalled("getUserMedia:request");
+          yield promiseNoPopupNotification("webRTC-shareDevices");
+          expectObserverCalled("getUserMedia:response:allow");
           expectObserverCalled("recording-device-events");
 
           // Check what's actually shared.
@@ -687,6 +690,8 @@ let gTests = [
       yield promiseMessage("ok", () => {
         content.wrappedJSObject.requestDevice(aRequestAudio, aRequestVideo);
       });
+      expectObserverCalled("getUserMedia:request");
+      expectObserverCalled("getUserMedia:response:allow");
       expectObserverCalled("recording-device-events");
       yield checkSharingUI();
 
@@ -816,7 +821,7 @@ function test() {
      finish();
     });
   }, true);
-  let rootDir = getRootDirectory(gTestPath)
+  let rootDir = getRootDirectory(gTestPath);
   rootDir = rootDir.replace("chrome://mochitests/content/",
                             "https://example.com/");
   content.location = rootDir + "get_user_media.html";

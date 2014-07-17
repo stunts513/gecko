@@ -29,6 +29,7 @@ EXPORTS += [
     'DecomposeIntoNoRepeatTriangles.h',
     'ForceDiscreteGPUHelperCGL.h',
     'GfxTexturesReporter.h',
+    'GLBlitHelper.h',
     'GLBlitTextureImageHelper.h',
     'GLConsts.h',
     'GLContext.h',
@@ -51,11 +52,9 @@ EXPORTS += [
     'SharedSurface.h',
     'SharedSurfaceEGL.h',
     'SharedSurfaceGL.h',
-    'SurfaceFactory.h',
     'SurfaceStream.h',
     'SurfaceTypes.h',
     'TextureGarbageBin.h',
-    'VBOArena.h',
 ]
 
 if CONFIG['MOZ_X11']:
@@ -68,7 +67,7 @@ if CONFIG['MOZ_X11']:
 if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'windows':
     EXPORTS += [
         'GLContextWGL.h',
-        'SharedSurfaceANGLE.h',
+        'SharedSurfaceANGLE.h', # Needs <windows.h> for `HANDLE`.
         'WGLLibrary.h',
     ]
     UNIFIED_SOURCES += [
@@ -135,12 +134,10 @@ UNIFIED_SOURCES += [
     'SharedSurface.cpp',
     'SharedSurfaceEGL.cpp',
     'SharedSurfaceGL.cpp',
-    'SurfaceFactory.cpp',
     'SurfaceStream.cpp',
     'SurfaceTypes.cpp',
     'TextureGarbageBin.cpp',
     'TextureImageEGL.cpp',
-    'VBOArena.cpp',
 ]
 
 FAIL_ON_WARNINGS = True

@@ -105,14 +105,12 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=821850
           <parameter name="arg" />
           <body>
             is(typeof arg.prop, 'undefined', "No properties");
+            is(arg.wrappedJSObject.prop, 2, "Underlying object has properties");
             is(Object.getOwnPropertyNames(arg).length, 0, "Should have no own properties");
-            try {
-              arg.foo = 2;
-              ok(true, "Stuff fails silently");
-            } catch (e) {
-              ok(false, "Stuff should fail silently");
-            }
-            is(typeof arg.foo, 'undefined', "Shouldn't place props");
+            is(Object.getOwnPropertyNames(arg.wrappedJSObject).length, 1, "Underlying object has properties");
+            arg.foo = 2;
+            is(arg.foo, 2, "Should place expandos");
+            is(typeof arg.wrappedJSObject.foo, 'undefined', "Expandos should be invisible to content");
           </body>
         </method>
         <property name="prop" exposeToUntrustedContent="true">
@@ -169,9 +167,14 @@ https://bugzilla.mozilla.org/show_bug.cgi?id=821850
     bound.prop = "someOtherVal";
     is(bound.prop, "set:someOtherVal", "Can set properties from content");
 
-    // Make sure we can't pass JS objects to the XBL scope.
+    // Make sure that XBL scopes get opaque wrappers.
+    //
+    // Note: Now that we have object Xrays, we have to pass in a more obscure
+    // ES type that we don't Xray to test this.
     var proto = bound.__proto__;
-    proto.passMeAJSObject({prop: 2});
+    var nonXrayableObject = new WeakMap();
+    nonXrayableObject.prop = 2;
+    proto.passMeAJSObject(nonXrayableObject);
 
     //
     // Try sticking a bunch of stuff on the prototype object.

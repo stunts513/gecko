@@ -7,21 +7,20 @@
 #include "Voicemail.h"
 
 #include "mozilla/dom/MozVoicemailBinding.h"
+#include "mozilla/dom/MozVoicemailEvent.h"
 #include "nsIDOMMozVoicemailStatus.h"
-#include "nsIDOMMozVoicemailEvent.h"
 
 #include "mozilla/Preferences.h"
 #include "mozilla/Services.h"
 #include "nsDOMClassInfo.h"
 #include "nsServiceManagerUtils.h"
-#include "GeneratedEvents.h"
 
 #define NS_RILCONTENTHELPER_CONTRACTID "@mozilla.org/ril/content-helper;1"
 const char* kPrefRilNumRadioInterfaces = "ril.numRadioInterfaces";
 
 using namespace mozilla::dom;
 
-class Voicemail::Listener : public nsIVoicemailListener
+class Voicemail::Listener MOZ_FINAL : public nsIVoicemailListener
 {
   Voicemail* mVoicemail;
 
@@ -39,6 +38,12 @@ public:
   {
     MOZ_ASSERT(mVoicemail);
     mVoicemail = nullptr;
+  }
+
+private:
+  ~Listener()
+  {
+    MOZ_ASSERT(!mVoicemail);
   }
 };
 
@@ -164,15 +169,14 @@ Voicemail::GetDisplayName(const Optional<uint32_t>& aServiceId, nsString& aDispl
 NS_IMETHODIMP
 Voicemail::NotifyStatusChanged(nsIDOMMozVoicemailStatus* aStatus)
 {
-  nsCOMPtr<nsIDOMEvent> event;
-  NS_NewDOMMozVoicemailEvent(getter_AddRefs(event), this, nullptr, nullptr);
+  MozVoicemailEventInit init;
+  init.mBubbles = false;
+  init.mCancelable = false;
+  init.mStatus = aStatus;
 
-  nsCOMPtr<nsIDOMMozVoicemailEvent> ce = do_QueryInterface(event);
-  nsresult rv = ce->InitMozVoicemailEvent(NS_LITERAL_STRING("statuschanged"),
-                                          false, false, aStatus);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  return DispatchTrustedEvent(ce);
+  nsRefPtr<MozVoicemailEvent> event =
+    MozVoicemailEvent::Constructor(this, NS_LITERAL_STRING("statuschanged"), init);
+  return DispatchTrustedEvent(event);
 }
 
 nsresult

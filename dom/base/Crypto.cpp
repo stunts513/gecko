@@ -15,8 +15,6 @@
 
 using mozilla::dom::ContentChild;
 
-using namespace js::ArrayBufferView;
-
 namespace mozilla {
 namespace dom {
 
@@ -55,8 +53,9 @@ Crypto::WrapObject(JSContext* aCx)
   return CryptoBinding::Wrap(aCx, this);
 }
 
-JSObject *
+void
 Crypto::GetRandomValues(JSContext* aCx, const ArrayBufferView& aArray,
+			JS::MutableHandle<JSObject*> aRetval,
 			ErrorResult& aRv)
 {
   NS_ABORT_IF_FALSE(NS_IsMainThread(), "Called on the wrong thread");
@@ -66,27 +65,28 @@ Crypto::GetRandomValues(JSContext* aCx, const ArrayBufferView& aArray,
   // Throw if the wrong type of ArrayBufferView is passed in
   // (Part of the Web Crypto API spec)
   switch (JS_GetArrayBufferViewType(view)) {
-    case TYPE_INT8:
-    case TYPE_UINT8:
-    case TYPE_UINT8_CLAMPED:
-    case TYPE_INT16:
-    case TYPE_UINT16:
-    case TYPE_INT32:
-    case TYPE_UINT32:
+    case js::Scalar::Int8:
+    case js::Scalar::Uint8:
+    case js::Scalar::Uint8Clamped:
+    case js::Scalar::Int16:
+    case js::Scalar::Uint16:
+    case js::Scalar::Int32:
+    case js::Scalar::Uint32:
       break;
     default:
       aRv.Throw(NS_ERROR_DOM_TYPE_MISMATCH_ERR);
-      return nullptr;
+      return;
   }
 
   aArray.ComputeLengthAndData();
   uint32_t dataLen = aArray.Length();
   if (dataLen == 0) {
     NS_WARNING("ArrayBufferView length is 0, cannot continue");
-    return view;
+    aRetval.set(view);
+    return;
   } else if (dataLen > 65536) {
     aRv.Throw(NS_ERROR_DOM_QUOTA_EXCEEDED_ERR);
-    return nullptr;
+    return;
   }
 
   uint8_t* data = aArray.Data();
@@ -98,7 +98,7 @@ Crypto::GetRandomValues(JSContext* aCx, const ArrayBufferView& aArray,
     if (!cc->SendGetRandomValues(dataLen, &randomValues) ||
         randomValues.Length() == 0) {
       aRv.Throw(NS_ERROR_FAILURE);
-      return nullptr;
+      return;
     }
     NS_ASSERTION(dataLen == randomValues.Length(),
                  "Invalid length returned from parent process!");
@@ -108,14 +108,14 @@ Crypto::GetRandomValues(JSContext* aCx, const ArrayBufferView& aArray,
 
     if (!buf) {
       aRv.Throw(NS_ERROR_FAILURE);
-      return nullptr;
+      return;
     }
 
     memcpy(data, buf, dataLen);
     NS_Free(buf);
   }
 
-  return view;
+  aRetval.set(view);
 }
 
 SubtleCrypto*

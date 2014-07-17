@@ -41,13 +41,13 @@ class MacroAssembler : public MacroAssemblerSpecific
     }
 
   public:
-    class AutoRooter : public AutoGCRooter
+    class AutoRooter : public JS::AutoGCRooter
     {
         MacroAssembler *masm_;
 
       public:
         AutoRooter(JSContext *cx, MacroAssembler *masm)
-          : AutoGCRooter(cx, IONMASM),
+          : JS::AutoGCRooter(cx, IONMASM),
             masm_(masm)
         { }
 
@@ -177,7 +177,6 @@ class MacroAssembler : public MacroAssemblerSpecific
     mozilla::Maybe<AutoRooter> autoRooter_;
     mozilla::Maybe<IonContext> ionContext_;
     mozilla::Maybe<AutoIonContextAlloc> alloc_;
-    bool enoughMemory_;
     bool embedsNurseryPointers_;
 
     // SPS instrumentation, only used for Ion caches.
@@ -201,8 +200,7 @@ class MacroAssembler : public MacroAssemblerSpecific
     // provided, but otherwise it can be safely omitted to prevent all
     // instrumentation from being emitted.
     MacroAssembler()
-      : enoughMemory_(true),
-        embedsNurseryPointers_(false),
+      : embedsNurseryPointers_(false),
         sps_(nullptr)
     {
         IonContext *icx = GetIonContext();
@@ -226,8 +224,7 @@ class MacroAssembler : public MacroAssemblerSpecific
     // (for example, Trampoline-$(ARCH).cpp and IonCaches.cpp).
     explicit MacroAssembler(JSContext *cx, IonScript *ion = nullptr,
                             JSScript *script = nullptr, jsbytecode *pc = nullptr)
-      : enoughMemory_(true),
-        embedsNurseryPointers_(false),
+      : embedsNurseryPointers_(false),
         sps_(nullptr)
     {
         constructRoot(cx);
@@ -251,11 +248,10 @@ class MacroAssembler : public MacroAssemblerSpecific
         }
     }
 
-    // asm.js compilation handles its own IonContet-pushing
+    // asm.js compilation handles its own IonContext-pushing
     struct AsmJSToken {};
     explicit MacroAssembler(AsmJSToken)
-      : enoughMemory_(true),
-        embedsNurseryPointers_(false),
+      : embedsNurseryPointers_(false),
         sps_(nullptr)
     {
 #ifdef JS_CODEGEN_ARM
@@ -284,13 +280,6 @@ class MacroAssembler : public MacroAssemblerSpecific
 
     size_t instructionsSize() const {
         return size();
-    }
-
-    void propagateOOM(bool success) {
-        enoughMemory_ &= success;
-    }
-    bool oom() const {
-        return !enoughMemory_ || MacroAssemblerSpecific::oom();
     }
 
     bool embedsNurseryPointers() const {
@@ -345,6 +334,7 @@ class MacroAssembler : public MacroAssemblerSpecific
           case MIRType_Boolean:   return branchTestBoolean(cond, val, label);
           case MIRType_Int32:     return branchTestInt32(cond, val, label);
           case MIRType_String:    return branchTestString(cond, val, label);
+          case MIRType_Symbol:    return branchTestSymbol(cond, val, label);
           case MIRType_Object:    return branchTestObject(cond, val, label);
           case MIRType_Double:    return branchTestDouble(cond, val, label);
           case MIRType_MagicOptimizedArguments: // Fall through.
@@ -381,6 +371,7 @@ class MacroAssembler : public MacroAssemblerSpecific
     }
 
     void loadStringChars(Register str, Register dest);
+    void loadStringChar(Register str, Register index, Register output);
 
     void branchIfRope(Register str, Label *label) {
         Address flags(str, JSString::offsetOfFlags());
@@ -428,8 +419,8 @@ class MacroAssembler : public MacroAssemblerSpecific
         } else if (IsFloatingPointType(src.type())) {
             FloatRegister reg = src.typedReg().fpu();
             if (src.type() == MIRType_Float32) {
-                convertFloat32ToDouble(reg, ScratchFloatReg);
-                reg = ScratchFloatReg;
+                convertFloat32ToDouble(reg, ScratchDoubleReg);
+                reg = ScratchDoubleReg;
             }
             storeDouble(reg, dest);
         } else {
@@ -451,8 +442,8 @@ class MacroAssembler : public MacroAssemblerSpecific
     }
 
     void storeCallFloatResult(FloatRegister reg) {
-        if (reg != ReturnFloatReg)
-            moveDouble(ReturnFloatReg, reg);
+        if (reg != ReturnDoubleReg)
+            moveDouble(ReturnDoubleReg, reg);
     }
 
     void storeCallResultValue(AnyRegister dest) {
@@ -551,19 +542,17 @@ class MacroAssembler : public MacroAssemblerSpecific
             // carries a reference to a gcthing.  Need to unpack the pointer,
             // push it using ImmGCPtr, and then rematerialize the id at runtime.
 
-            // double-checking this here to ensure we don't lose sync
-            // with implementation of JSID_IS_GCTHING.
-            if (JSID_IS_OBJECT(id)) {
-                JSObject *obj = JSID_TO_OBJECT(id);
-                movePtr(ImmGCPtr(obj), scratchReg);
-                JS_ASSERT(((size_t)obj & JSID_TYPE_MASK) == 0);
-                orPtr(Imm32(JSID_TYPE_OBJECT), scratchReg);
-                Push(scratchReg);
-            } else {
+            if (JSID_IS_STRING(id)) {
                 JSString *str = JSID_TO_STRING(id);
                 JS_ASSERT(((size_t)str & JSID_TYPE_MASK) == 0);
                 JS_ASSERT(JSID_TYPE_STRING == 0x0);
                 Push(ImmGCPtr(str));
+            } else {
+                MOZ_ASSERT(JSID_IS_SYMBOL(id));
+                JS::Symbol *sym = JSID_TO_SYMBOL(id);
+                movePtr(ImmGCPtr(sym), scratchReg);
+                orPtr(Imm32(JSID_TYPE_SYMBOL), scratchReg);
+                Push(scratchReg);
             }
         } else {
             Push(ImmWord(JSID_BITS(id)));
@@ -576,8 +565,8 @@ class MacroAssembler : public MacroAssemblerSpecific
         } else if (IsFloatingPointType(v.type())) {
             FloatRegister reg = v.typedReg().fpu();
             if (v.type() == MIRType_Float32) {
-                convertFloat32ToDouble(reg, ScratchFloatReg);
-                reg = ScratchFloatReg;
+                convertFloat32ToDouble(reg, ScratchDoubleReg);
+                reg = ScratchDoubleReg;
             }
             Push(reg);
         } else {
@@ -645,11 +634,10 @@ class MacroAssembler : public MacroAssemblerSpecific
             branch32(cond, length, Imm32(key.constant()), label);
     }
 
-    void branchTestNeedsBarrier(Condition cond, Register scratch, Label *label) {
+    void branchTestNeedsBarrier(Condition cond, Label *label) {
         JS_ASSERT(cond == Zero || cond == NonZero);
         CompileZone *zone = GetIonContext()->compartment->zone();
-        movePtr(ImmPtr(zone->addressOfNeedsBarrier()), scratch);
-        Address needsBarrierAddr(scratch, 0);
+        AbsoluteAddress needsBarrierAddr(zone->addressOfNeedsBarrier());
         branchTest32(cond, needsBarrierAddr, Imm32(0x1), label);
     }
 
@@ -657,6 +645,7 @@ class MacroAssembler : public MacroAssemblerSpecific
     void callPreBarrier(const T &address, MIRType type) {
         JS_ASSERT(type == MIRType_Value ||
                   type == MIRType_String ||
+                  type == MIRType_Symbol ||
                   type == MIRType_Object ||
                   type == MIRType_Shape);
         Label done;
@@ -682,6 +671,7 @@ class MacroAssembler : public MacroAssemblerSpecific
     void patchableCallPreBarrier(const T &address, MIRType type) {
         JS_ASSERT(type == MIRType_Value ||
                   type == MIRType_String ||
+                  type == MIRType_Symbol ||
                   type == MIRType_Object ||
                   type == MIRType_Shape);
 
@@ -718,26 +708,26 @@ class MacroAssembler : public MacroAssemblerSpecific
     }
 
     template<typename T>
-    void loadFromTypedArray(int arrayType, const T &src, AnyRegister dest, Register temp, Label *fail);
+    void loadFromTypedArray(Scalar::Type arrayType, const T &src, AnyRegister dest, Register temp, Label *fail);
 
     template<typename T>
-    void loadFromTypedArray(int arrayType, const T &src, const ValueOperand &dest, bool allowDouble,
+    void loadFromTypedArray(Scalar::Type arrayType, const T &src, const ValueOperand &dest, bool allowDouble,
                             Register temp, Label *fail);
 
     template<typename S, typename T>
-    void storeToTypedIntArray(int arrayType, const S &value, const T &dest) {
+    void storeToTypedIntArray(Scalar::Type arrayType, const S &value, const T &dest) {
         switch (arrayType) {
-          case ScalarTypeDescr::TYPE_INT8:
-          case ScalarTypeDescr::TYPE_UINT8:
-          case ScalarTypeDescr::TYPE_UINT8_CLAMPED:
+          case Scalar::Int8:
+          case Scalar::Uint8:
+          case Scalar::Uint8Clamped:
             store8(value, dest);
             break;
-          case ScalarTypeDescr::TYPE_INT16:
-          case ScalarTypeDescr::TYPE_UINT16:
+          case Scalar::Int16:
+          case Scalar::Uint16:
             store16(value, dest);
             break;
-          case ScalarTypeDescr::TYPE_INT32:
-          case ScalarTypeDescr::TYPE_UINT32:
+          case Scalar::Int32:
+          case Scalar::Uint32:
             store32(value, dest);
             break;
           default:
@@ -745,8 +735,8 @@ class MacroAssembler : public MacroAssemblerSpecific
         }
     }
 
-    void storeToTypedFloatArray(int arrayType, FloatRegister value, const BaseIndex &dest);
-    void storeToTypedFloatArray(int arrayType, FloatRegister value, const Address &dest);
+    void storeToTypedFloatArray(Scalar::Type arrayType, FloatRegister value, const BaseIndex &dest);
+    void storeToTypedFloatArray(Scalar::Type arrayType, FloatRegister value, const Address &dest);
 
     Register extractString(const Address &address, Register scratch) {
         return extractObject(address, scratch);
@@ -802,7 +792,7 @@ class MacroAssembler : public MacroAssemblerSpecific
     bool shouldNurseryAllocate(gc::AllocKind allocKind, gc::InitialHeap initialHeap);
     void nurseryAllocate(Register result, Register slots, gc::AllocKind allocKind,
                          size_t nDynamicSlots, gc::InitialHeap initialHeap, Label *fail);
-    void freeSpanAllocate(Register result, Register temp, gc::AllocKind allocKind, Label *fail);
+    void freeListAllocate(Register result, Register temp, gc::AllocKind allocKind, Label *fail);
     void allocateObject(Register result, Register slots, gc::AllocKind allocKind,
                         uint32_t nDynamicSlots, gc::InitialHeap initialHeap, Label *fail);
     void allocateNonObject(Register result, Register temp, gc::AllocKind allocKind, Label *fail);
@@ -827,6 +817,12 @@ class MacroAssembler : public MacroAssemblerSpecific
 
     void newGCThingPar(Register result, Register cx, Register tempReg1, Register tempReg2,
                        gc::AllocKind allocKind, Label *fail);
+#ifdef JSGC_FJGENERATIONAL
+    void newGCNurseryThingPar(Register result, Register cx, Register tempReg1, Register tempReg2,
+                              gc::AllocKind allocKind, Label *fail);
+#endif
+    void newGCTenuredThingPar(Register result, Register cx, Register tempReg1, Register tempReg2,
+                              gc::AllocKind allocKind, Label *fail);
     void newGCThingPar(Register result, Register cx, Register tempReg1, Register tempReg2,
                        JSObject *templateObject, Label *fail);
     void newGCStringPar(Register result, Register cx, Register tempReg1, Register tempReg2,
@@ -905,7 +901,8 @@ class MacroAssembler : public MacroAssemblerSpecific
         // the JitCode onto the stack in order to GC it correctly.  exitCodePatch should
         // be unset if the code never needed to push its JitCode*.
         if (hasEnteredExitFrame()) {
-            patchDataWithValueCheck(CodeLocationLabel(code, exitCodePatch_),
+            exitCodePatch_.fixup(this);
+            PatchDataWithValueCheck(CodeLocationLabel(code, exitCodePatch_),
                                     ImmPtr(code),
                                     ImmPtr((void*)-1));
         }
@@ -1085,10 +1082,11 @@ class MacroAssembler : public MacroAssemblerSpecific
         Label stackFull;
         spsProfileEntryAddress(p, 0, temp, &stackFull);
 
+        // Push a JS frame with a copy label
         storePtr(ImmPtr(str), Address(temp, ProfileEntry::offsetOfLabel()));
         storePtr(ImmGCPtr(s), Address(temp, ProfileEntry::offsetOfSpOrScript()));
         store32(Imm32(ProfileEntry::NullPCOffset), Address(temp, ProfileEntry::offsetOfLineOrPc()));
-        store32(Imm32(0), Address(temp, ProfileEntry::offsetOfFlags()));
+        store32(Imm32(ProfileEntry::FRAME_LABEL_COPY), Address(temp, ProfileEntry::offsetOfFlags()));
 
         /* Always increment the stack size, whether or not we actually pushed. */
         bind(&stackFull);
@@ -1103,6 +1101,7 @@ class MacroAssembler : public MacroAssemblerSpecific
         Label stackFull;
         spsProfileEntryAddressSafe(p, 0, temp, &stackFull);
 
+        // Push a JS frame with a copy label
         loadPtr(str, temp2);
         storePtr(temp2, Address(temp, ProfileEntry::offsetOfLabel()));
 
@@ -1113,7 +1112,7 @@ class MacroAssembler : public MacroAssemblerSpecific
         // (See probes::EnterScript, which calls spsProfiler.enter, which pushes an entry
         //  with 0 pcIdx).
         store32(Imm32(0), Address(temp, ProfileEntry::offsetOfLineOrPc()));
-        store32(Imm32(0), Address(temp, ProfileEntry::offsetOfFlags()));
+        store32(Imm32(ProfileEntry::FRAME_LABEL_COPY), Address(temp, ProfileEntry::offsetOfFlags()));
 
         /* Always increment the stack size, whether or not we actually pushed. */
         bind(&stackFull);
@@ -1400,15 +1399,21 @@ class MacroAssembler : public MacroAssemblerSpecific
 #endif
         {}
 
-#ifdef JS_DEBUG
       public:
+#ifdef JS_DEBUG
         uint32_t initialStack;
 #endif
+        uint32_t alignmentPadding;
     };
+
+    void alignFrameForICArguments(AfterICSaveLive &aic);
+    void restoreFrameAlignmentForICArguments(AfterICSaveLive &aic);
 
     AfterICSaveLive icSaveLive(RegisterSet &liveRegs) {
         PushRegsInMask(liveRegs);
-        return AfterICSaveLive(framePushed());
+        AfterICSaveLive aic(framePushed());
+        alignFrameForICArguments(aic);
+        return aic;
     }
 
     bool icBuildOOLFakeExitFrame(void *fakeReturnAddr, AfterICSaveLive &aic) {
@@ -1416,6 +1421,7 @@ class MacroAssembler : public MacroAssemblerSpecific
     }
 
     void icRestoreLive(RegisterSet &liveRegs, AfterICSaveLive &aic) {
+        restoreFrameAlignmentForICArguments(aic);
         JS_ASSERT(framePushed() == aic.initialStack);
         PopRegsInMask(liveRegs);
     }

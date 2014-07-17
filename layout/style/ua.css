@@ -53,7 +53,7 @@
   display: table-row !important;
 }
 
-/* The ::-moz-table-column pseudo-element is for extra columns at the end 
+/* The ::-moz-table-column pseudo-element is for extra columns at the end
    of a table. */
 *|*::-moz-table-column {
   display: table-column !important;
@@ -62,7 +62,7 @@
 *|*::-moz-table-column-group {
   display: table-column-group !important;
 }
- 
+
 *|*::-moz-table-row-group {
   display: table-row-group !important;
 }
@@ -77,9 +77,10 @@
 *|*::-moz-list-bullet, *|*::-moz-list-number {
   display: inline;
   vertical-align: baseline;
-  /* Note that this padding is suppressed for some CJK numbering styles;
-   * see bug 934072 */
-  -moz-padding-end: 0.5em;
+  /* TODO: Replace this with font-variant-numeric:tabular-nums once the
+     font-variant-* properties are enabled for all channels (bug 975744). */
+  -moz-font-feature-settings: "tnum";
+  font-feature-settings: "tnum";
 }
 
 /* Links */
@@ -166,7 +167,7 @@
 %endif
 }
 
-*|*::-moz-column-content { 
+*|*::-moz-column-content {
   /* the column boxes inside a column-flowed block */
   /* make unicode-bidi inherit, otherwise it has no effect on column boxes */
   unicode-bidi: inherit;
@@ -285,4 +286,33 @@ parsererror|sourcetext {
   color: red;
   font-weight: bold;
   font-size: 12pt;
+}
+
+div[\_moz_anonclass="mozTouchCaret"].moz-touchcaret,
+div[\_moz_anonclass="mozTouchCaret"].moz-selectioncaret-left,
+div[\_moz_anonclass="mozTouchCaret"].moz-selectioncaret-right {
+  background-image: url("resource://gre/res/caret_middle.svg");
+  position: absolute;
+  width: 29px;
+  height: 31px;
+  margin-left: -15px;
+  background-position: center center;
+  background-size: 100% 100%;
+  z-index: 2147483647;
+}
+
+div[\_moz_anonclass="mozTouchCaret"].moz-selectioncaret-left.tilt {
+  background-image: url("resource://gre/res/caret_left.svg");
+  margin-left: -29px;
+}
+
+div[\_moz_anonclass="mozTouchCaret"].moz-selectioncaret-right.tilt {
+  background-image: url("resource://gre/res/caret_right.svg");
+  margin-left: 0px;
+}
+
+div[\_moz_anonclass="mozTouchCaret"].moz-touchcaret.hidden,
+div[\_moz_anonclass="mozTouchCaret"].moz-selectioncaret-left.hidden,
+div[\_moz_anonclass="mozTouchCaret"].moz-selectioncaret-right.hidden {
+  visibility: hidden;
 }

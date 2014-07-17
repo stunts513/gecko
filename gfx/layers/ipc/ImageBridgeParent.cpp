@@ -23,6 +23,7 @@
 #include "mozilla/layers/LayersSurfaces.h"  // for PGrallocBufferParent
 #include "mozilla/layers/PCompositableParent.h"
 #include "mozilla/layers/PImageBridgeParent.h"
+#include "mozilla/layers/TextureHostOGL.h"  // for TextureHostOGL
 #include "mozilla/layers/Compositor.h"
 #include "mozilla/mozalloc.h"           // for operator new, etc
 #include "mozilla/unused.h"
@@ -43,13 +44,25 @@ using namespace mozilla::gfx;
 
 std::map<base::ProcessId, ImageBridgeParent*> ImageBridgeParent::sImageBridges;
 
+MessageLoop* ImageBridgeParent::sMainLoop = nullptr;
+
+// defined in CompositorParent.cpp
+CompositorThreadHolder* GetCompositorThreadHolder();
+
 ImageBridgeParent::ImageBridgeParent(MessageLoop* aLoop,
                                      Transport* aTransport,
                                      ProcessId aChildProcessId)
   : mMessageLoop(aLoop)
   , mTransport(aTransport)
   , mChildProcessId(aChildProcessId)
+  , mCompositorThreadHolder(GetCompositorThreadHolder())
 {
+  MOZ_ASSERT(NS_IsMainThread());
+  sMainLoop = MessageLoop::current();
+
+  // top-level actors must be destroyed on the main thread.
+  SetMessageLoopToPostDestructionTo(sMainLoop);
+
   // creates the map only if it has not been created already, so it is safe
   // with several bridges
   CompositableMap::Create();
@@ -58,10 +71,14 @@ ImageBridgeParent::ImageBridgeParent(MessageLoop* aLoop,
 
 ImageBridgeParent::~ImageBridgeParent()
 {
+  MOZ_ASSERT(NS_IsMainThread());
+
   if (mTransport) {
+    MOZ_ASSERT(XRE_GetIOMessageLoop());
     XRE_GetIOMessageLoop()->PostTask(FROM_HERE,
                                      new DeleteTask<Transport>(mTransport));
   }
+
   sImageBridges.erase(mChildProcessId);
 }
 
@@ -100,10 +117,12 @@ ImageBridgeParent::RecvUpdate(const EditArray& aEdits, EditReplyArray* aReply)
     aReply->AppendElements(&replyv.front(), replyv.size());
   }
 
-  // Ensure that any pending operations involving back and front
-  // buffers have completed, so that neither process stomps on the
-  // other's buffer contents.
-  LayerManagerComposite::PlatformSyncBeforeReplyUpdate();
+  if (!IsSameProcess()) {
+    // Ensure that any pending operations involving back and front
+    // buffers have completed, so that neither process stomps on the
+    // other's buffer contents.
+    LayerManagerComposite::PlatformSyncBeforeReplyUpdate();
+  }
 
   return true;
 }
@@ -157,10 +176,25 @@ bool ImageBridgeParent::RecvWillStop()
   return true;
 }
 
+static void
+ReleaseImageBridgeParent(ImageBridgeParent* aImageBridgeParent)
+{
+  aImageBridgeParent->Release();
+}
+
 bool ImageBridgeParent::RecvStop()
 {
-  // Nothing to do. This message just serves as synchronization between the
+  // This message just serves as synchronization between the
   // child and parent threads during shutdown.
+
+  // There is one thing that we need to do here: temporarily addref, so that
+  // the handling of this sync message can't race with the destruction of
+  // the ImageBridgeParent, which would trigger the dreaded "mismatched CxxStackFrames"
+  // assertion of MessageChannel.
+  AddRef();
+  MessageLoop::current()->PostTask(
+    FROM_HERE,
+    NewRunnableFunction(&ReleaseImageBridgeParent, this));
   return true;
 }
 
@@ -208,13 +242,13 @@ ImageBridgeParent::SendFenceHandle(AsyncTransactionTracker* aTracker,
   messages.AppendElement(OpDeliverFence(aTracker->GetId(),
                                         aTexture, nullptr,
                                         aFence));
-  mozilla::unused << SendParentAsyncMessage(messages);
+  mozilla::unused << SendParentAsyncMessages(messages);
 }
 
 void
 ImageBridgeParent::SendAsyncMessage(const InfallibleTArray<AsyncParentMessageData>& aMessage)
 {
-  mozilla::unused << SendParentAsyncMessage(aMessage);
+  mozilla::unused << SendParentAsyncMessages(aMessage);
 }
 
 bool
@@ -224,6 +258,27 @@ ImageBridgeParent::RecvChildAsyncMessages(const InfallibleTArray<AsyncChildMessa
     const AsyncChildMessageData& message = aMessages[i];
 
     switch (message.type()) {
+      case AsyncChildMessageData::TOpDeliverFenceFromChild: {
+        const OpDeliverFenceFromChild& op = message.get_OpDeliverFenceFromChild();
+#if defined(MOZ_WIDGET_GONK) && ANDROID_VERSION >= 17
+        FenceHandle fence = FenceHandle(op.fence());
+        PTextureParent* parent = op.textureParent();
+
+        TextureHostOGL* hostOGL = nullptr;
+        RefPtr<TextureHost> texture = TextureHost::AsTextureHost(parent);
+        if (texture) {
+          hostOGL = texture->AsHostOGL();
+        }
+        if (hostOGL) {
+          hostOGL->SetAcquireFence(fence.mFence);
+        }
+#endif
+        // Send back a response.
+        InfallibleTArray<AsyncParentMessageData> replies;
+        replies.AppendElement(OpReplyDeliverFence(op.transactionId()));
+        mozilla::unused << SendParentAsyncMessages(replies);
+        break;
+      }
       case AsyncChildMessageData::TOpReplyDeliverFence: {
         const OpReplyDeliverFence& op = message.get_OpReplyDeliverFence();
         TransactionCompleteted(op.transactionId());
@@ -237,36 +292,15 @@ ImageBridgeParent::RecvChildAsyncMessages(const InfallibleTArray<AsyncChildMessa
   return true;
 }
 
-MessageLoop * ImageBridgeParent::GetMessageLoop() {
+MessageLoop * ImageBridgeParent::GetMessageLoop() const {
   return mMessageLoop;
 }
-
-class ReleaseRunnable : public nsRunnable
-{
-public:
-  ReleaseRunnable(ImageBridgeParent* aRef)
-    : mRef(aRef)
-  {
-  }
-
-  NS_IMETHOD Run()
-  {
-    mRef->Release();
-    return NS_OK;
-  }
-
-private:
-  ImageBridgeParent* mRef;
-};
 
 void
 ImageBridgeParent::DeferredDestroy()
 {
-  ImageBridgeParent* self;
-  mSelfRef.forget(&self);
-
-  nsCOMPtr<nsIRunnable> runnable = new ReleaseRunnable(self);
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_DispatchToMainThread(runnable)));
+  mCompositorThreadHolder = nullptr;
+  mSelfRef = nullptr;
 }
 
 ImageBridgeParent*
@@ -304,7 +338,7 @@ ImageBridgeParent::ReplyRemoveTexture(const OpReplyRemoveTexture& aReply)
 {
   InfallibleTArray<AsyncParentMessageData> messages;
   messages.AppendElement(aReply);
-  mozilla::unused << SendParentAsyncMessage(messages);
+  mozilla::unused << SendParentAsyncMessages(messages);
 }
 
 /*static*/ void
@@ -339,7 +373,7 @@ ImageBridgeParent::SendFenceHandleToTrackerIfPresent(uint64_t aDestHolderId,
                                                  aDestHolderId,
                                                  aTransactionId,
                                                  fence));
-  mozilla::unused << SendParentAsyncMessage(messages);
+  mozilla::unused << SendParentAsyncMessages(messages);
 }
 
 /*static*/ void

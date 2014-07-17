@@ -27,7 +27,7 @@ class EventChainPostVisitor;
 class EventChainPreVisitor;
 namespace dom {
 class OwningIDBObjectStoreOrIDBIndexOrIDBCursor;
-class ErrorEventInit;
+struct ErrorEventInit;
 }
 }
 
@@ -86,8 +86,6 @@ public:
 
   DOMError* GetError(ErrorResult& aRv);
 
-  JSContext* GetJSContext();
-
   void
   SetActor(IndexedDBRequestParentBase* aActorParent)
   {
@@ -131,8 +129,15 @@ public:
     return GetOwner();
   }
 
-  JS::Value
-  GetResult(JSContext* aCx, ErrorResult& aRv) const;
+  void
+  GetResult(JS::MutableHandle<JS::Value> aResult, ErrorResult& aRv) const;
+
+  void
+  GetResult(JSContext* aCx, JS::MutableHandle<JS::Value> aResult,
+            ErrorResult& aRv) const
+  {
+    GetResult(aResult, aRv);
+  }
 
   IDBTransaction*
   GetTransaction() const

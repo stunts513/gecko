@@ -29,9 +29,7 @@ class FrozenImage : public ImageWrapper
   typedef mozilla::gfx::SourceSurface SourceSurface;
 
 public:
-  NS_DECL_ISUPPORTS
-
-  virtual ~FrozenImage() { }
+  NS_DECL_ISUPPORTS_INHERITED
 
   virtual nsIntRect FrameRect(uint32_t aWhichFrame) MOZ_OVERRIDE;
   virtual void IncrementAnimationConsumers() MOZ_OVERRIDE;
@@ -60,6 +58,7 @@ public:
 
 protected:
   FrozenImage(Image* aImage) : ImageWrapper(aImage) { }
+  virtual ~FrozenImage() { }
 
 private:
   friend class ImageOps;

@@ -86,8 +86,10 @@ interface HTMLMediaElement : HTMLElement {
 
   // TODO: Bug 847379
   // tracks
-  //readonly attribute AudioTrackList audioTracks;
-  //readonly attribute VideoTrackList videoTracks;
+  [Pref="media.track.enabled"]
+  readonly attribute AudioTrackList audioTracks;
+  [Pref="media.track.enabled"]
+  readonly attribute VideoTrackList videoTracks;
   [Pref="media.webvtt.enabled"]
   readonly attribute TextTrackList textTracks;
   [Pref="media.webvtt.enabled"]
@@ -101,6 +103,11 @@ partial interface HTMLMediaElement {
   attribute MediaStream? mozSrcObject;
   attribute boolean mozPreservesPitch;
   readonly attribute boolean mozAutoplayEnabled;
+
+  // NB: for internal use with the video controls:
+  [Func="IsChromeOrXBL"] attribute boolean mozMediaStatisticsShowing;
+  [Func="IsChromeOrXBL"] attribute boolean mozAllowCasting;
+  [Func="IsChromeOrXBL"] attribute boolean mozIsCasting;
 
   // Mozilla extension: stream capture
   [Throws]
@@ -129,4 +136,26 @@ partial interface HTMLMediaElement {
   // * onmozinterruptbegin - called when the media element is interrupted
   //   because of the audiochannel manager.
   // * onmozinterruptend - called when the interruption is concluded
+};
+
+enum MediaWaitingFor {
+  "none",
+  "data",
+  "key"
+};
+
+// Encrypted Media Extensions
+partial interface HTMLMediaElement {
+  [Pref="media.eme.enabled"]
+  readonly attribute MediaKeys? mediaKeys;
+  
+  // Promise<any>
+  [Pref="media.eme.enabled", Throws, NewObject]
+  Promise setMediaKeys(MediaKeys? mediaKeys);
+  
+  [Pref="media.eme.enabled"]
+  attribute EventHandler onneedkey;
+
+  [Pref="media.eme.enabled"]
+  readonly attribute MediaWaitingFor waitingFor;
 };

@@ -136,6 +136,9 @@ nsHTTPDownloadEvent::Run()
   nsCOMPtr<nsIHttpChannel> hchan = do_QueryInterface(chan);
   NS_ENSURE_STATE(hchan);
 
+  rv = hchan->SetAllowSTS(false);
+  NS_ENSURE_SUCCESS(rv, rv);
+
   rv = hchan->SetRequestMethod(mRequestSession->mRequestMethod);
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -581,16 +584,6 @@ void nsNSSHttpInterface::initTable()
   v1.trySendAndReceiveFcn = trySendAndReceiveFcn;
   v1.cancelFcn = cancelFcn;
   v1.freeFcn = freeFcn;
-}
-
-void nsNSSHttpInterface::registerHttpClient()
-{
-  SEC_RegisterDefaultHttpClient(&sNSSInterfaceTable);
-}
-
-void nsNSSHttpInterface::unregisterHttpClient()
-{
-  SEC_RegisterDefaultHttpClient(nullptr);
 }
 
 nsHTTPListener::nsHTTPListener()
@@ -1212,7 +1205,7 @@ void HandshakeCallback(PRFileDesc* fd, void* client_data) {
     nsContentUtils::LogSimpleConsoleError(msg, "SSL");
   }
 
-  mozilla::pkix::ScopedCERTCertificate serverCert(SSL_PeerCertificate(fd));
+  ScopedCERTCertificate serverCert(SSL_PeerCertificate(fd));
 
   /* Set the SSL Status information */
   RefPtr<nsSSLStatus> status(infoObject->SSLStatus());

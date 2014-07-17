@@ -35,23 +35,8 @@ endif
 USE_AUTOTARGETS_MK = 1
 include $(topsrcdir)/config/makefiles/makeutils.mk
 
-# Only build with Pymake (not GNU make) on Windows.
-ifeq ($(HOST_OS_ARCH),WINNT)
-ifndef L10NBASEDIR
-ifndef .PYMAKE
-$(error Pymake is required to build on Windows. Run |./mach build| to \
-automatically use pymake or invoke pymake directly via \
-|python build/pymake/make.py|.)
-endif
-endif
-endif
-
 ifdef REBUILD_CHECK
-ifdef .PYMAKE
-REPORT_BUILD = @%rebuild_check rebuild_check $@ $^
-else
 REPORT_BUILD = $(info $(shell $(PYTHON) $(MOZILLA_DIR)/config/rebuild_check.py $@ $^))
-endif
 else
 REPORT_BUILD = $(info $(notdir $@))
 endif
@@ -66,15 +51,11 @@ endif
 # ELOG prints out failed command when building silently (gmake -s). Pymake
 # prints out failed commands anyway, so ELOG just makes things worse by
 # forcing shell invocations.
-ifndef .PYMAKE
 ifneq (,$(findstring s, $(filter-out --%, $(MAKEFLAGS))))
   ELOG := $(EXEC) sh $(BUILD_TOOLS)/print-failed-commands.sh
 else
   ELOG :=
 endif # -s
-else
-  ELOG :=
-endif # ifndef .PYMAKE
 
 _VPATH_SRCS = $(abspath $<)
 
@@ -202,6 +183,14 @@ endif # MKSHLIB
 endif # FORCE_SHARED_LIB
 endif # LIBRARY
 
+ifdef MKSHLIB
+ifdef SONAME
+DSO_SONAME			= $(DLL_PREFIX)$(SONAME)$(DLL_SUFFIX)
+else
+DSO_SONAME			= $(notdir $@)
+endif
+endif # MKSHLIB
+
 ifdef FORCE_STATIC_LIB
 ifndef FORCE_SHARED_LIB
 SHARED_LIBRARY		:= $(NULL)
@@ -238,7 +227,7 @@ endif
 COMPILE_CFLAGS += $(COMPILE_PDB_FLAG)
 COMPILE_CXXFLAGS += $(COMPILE_PDB_FLAG)
 
-LINK_PDBFILE = $(basename $(@F)).pdb
+LINK_PDBFILE ?= $(basename $(@F)).pdb
 ifdef MOZ_DEBUG
 CODFILE=$(basename $(@F)).cod
 endif
@@ -357,7 +346,11 @@ ifdef MOZ_UPDATE_XTERM
 # Its good not to have a newline at the end of the titlebar string because it
 # makes the make -s output easier to read.  Echo -n does not work on all
 # platforms, but we can trick printf into doing it.
+ifeq (.,$(relativesrcdir))
+UPDATE_TITLE = printf '\033]0;%s in %s\007' $(1) $(2) ;
+else
 UPDATE_TITLE = printf '\033]0;%s in %s\007' $(1) $(relativesrcdir)/$(2) ;
+endif
 endif
 
 ifdef MACH
@@ -371,7 +364,7 @@ endif
 
 define SUBMAKE # $(call SUBMAKE,target,directory,static)
 +@$(UPDATE_TITLE)
-+$(MAKE) $(if $(2),-C $(2)) $(1)
++@$(MAKE) $(if $(2),-C $(2)) $(1)
 
 endef # The extra line is important here! don't delete it
 
@@ -510,6 +503,10 @@ ifeq ($(OS_ARCH),Linux)
 ifdef IS_COMPONENT
 EXTRA_DSO_LDOPTS += -Wl,-Bsymbolic
 endif
+ifdef LD_VERSION_SCRIPT
+EXTRA_DSO_LDOPTS += -Wl,--version-script,$(LD_VERSION_SCRIPT)
+EXTRA_DEPS += $(LD_VERSION_SCRIPT)
+endif
 endif
 
 #
@@ -590,10 +587,8 @@ endif
 # default rule before including rules.mk
 default all::
 	$(MAKE) export
-ifdef MOZ_PSEUDO_DERECURSE
 ifdef COMPILE_ENVIRONMENT
 	$(MAKE) compile
-endif
 endif
 	$(MAKE) libs
 	$(MAKE) tools
@@ -842,7 +837,7 @@ $(filter %.$(LIB_SUFFIX),$(LIBRARY)): $(OBJS) $(EXTRA_DEPS) $(GLOBAL_DEPS)
 $(filter-out %.$(LIB_SUFFIX),$(LIBRARY)): $(filter %.$(LIB_SUFFIX),$(LIBRARY)) $(OBJS) $(EXTRA_DEPS) $(GLOBAL_DEPS)
 # When we only build a library descriptor, blow out any existing library
 	$(REPORT_BUILD)
-	$(if $(filter %.$(LIB_SUFFIX),$(LIBRARY)),,$(RM) $(REAL_LIBRARY) $(EXPORT_LIBRARY:%=%/$(REAL_LIBRARY)))
+	$(if $(filter %.$(LIB_SUFFIX),$(LIBRARY)),,$(RM) $(REAL_LIBRARY))
 	$(EXPAND_LIBS_GEN) -o $@ $(OBJS) $(SHARED_LIBRARY_LIBS)
 
 ifeq ($(OS_ARCH),WINNT)
@@ -1020,6 +1015,10 @@ $(filter %.s,$(CPPSRCS:%.cc=%.s)): %.s: %.cc $(call mkdir_deps,$(MDDEPDIR))
 	$(REPORT_BUILD)
 	$(CCC) -S $(COMPILE_CXXFLAGS) $($(notdir $<)_FLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
 
+$(filter %.s,$(CPPSRCS:%.cxx=%.s)): %.s: %.cpp $(call mkdir_deps,$(MDDEPDIR))
+	$(REPORT_BUILD)
+	$(CCC) -S $(COMPILE_CXXFLAGS) $($(notdir $<)_FLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
+
 $(filter %.s,$(CSRCS:%.c=%.s)): %.s: %.c $(call mkdir_deps,$(MDDEPDIR))
 	$(REPORT_BUILD)
 	$(CC) -S $(COMPILE_CFLAGS) $($(notdir $<)_FLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
@@ -1035,6 +1034,7 @@ ifneq (,$(filter %.i,$(MAKECMDGOALS)))
 _group_srcs = $(sort $(patsubst %.$1,%.i,$(filter %.$1,$2 $(notdir $2))))
 _PREPROCESSED_CPP_FILES := $(call _group_srcs,cpp,$(CPPSRCS))
 _PREPROCESSED_CC_FILES := $(call _group_srcs,cc,$(CPPSRCS))
+_PREPROCESSED_CXX_FILES := $(call _group_srcs,cxx,$(CPPSRCS))
 _PREPROCESSED_C_FILES := $(call _group_srcs,c,$(CSRCS))
 _PREPROCESSED_CMM_FILES := $(call _group_srcs,mm,$(CMMSRCS))
 
@@ -1044,7 +1044,7 @@ VPATH += $(addprefix $(srcdir)/,$(sort $(dir $(CPPSRCS) $(CSRCS) $(CMMSRCS))))
 
 # Make preprocessed files PHONY so they are always executed, since they are
 # manual targets and we don't necessarily write to $@.
-.PHONY: $(_PREPROCESSED_CPP_FILES) $(_PREPROCESSED_CC_FILES) $(_PREPROCESSED_C_FILES) $(_PREPROCESSED_CMM_FILES)
+.PHONY: $(_PREPROCESSED_CPP_FILES) $(_PREPROCESSED_CC_FILES) $(_PREPROCESSED_CXX_FILES) $(_PREPROCESSED_C_FILES) $(_PREPROCESSED_CMM_FILES)
 
 $(_PREPROCESSED_CPP_FILES): %.i: %.cpp $(call mkdir_deps,$(MDDEPDIR))
 	$(REPORT_BUILD)
@@ -1052,6 +1052,11 @@ $(_PREPROCESSED_CPP_FILES): %.i: %.cpp $(call mkdir_deps,$(MDDEPDIR))
 	$(CCC) -C $(PREPROCESS_OPTION)$@ $(COMPILE_CXXFLAGS) $($(notdir $<)_FLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
 
 $(_PREPROCESSED_CC_FILES): %.i: %.cc $(call mkdir_deps,$(MDDEPDIR))
+	$(REPORT_BUILD)
+	$(addprefix $(MKDIR) -p ,$(filter-out .,$(@D)))
+	$(CCC) -C $(PREPROCESS_OPTION)$@ $(COMPILE_CXXFLAGS) $($(notdir $<)_FLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
+
+$(_PREPROCESSED_CXX_FILES): %.i: %.cxx $(call mkdir_deps,$(MDDEPDIR))
 	$(REPORT_BUILD)
 	$(addprefix $(MKDIR) -p ,$(filter-out .,$(@D)))
 	$(CCC) -C $(PREPROCESS_OPTION)$@ $(COMPILE_CXXFLAGS) $($(notdir $<)_FLAGS) $(TARGET_LOCAL_INCLUDES) $(_VPATH_SRCS)
@@ -1074,7 +1079,7 @@ PP_UNIFIED ?= 1
 # infinite loop if the filename doesn't exist in the unified source files.
 ifndef PP_REINVOKE
 
-MATCH_cpp = \(cpp\|cc\)
+MATCH_cpp = \(cpp\|cc|cxx\)
 UPPER_c = C
 UPPER_cpp = CPP
 UPPER_mm = CMM
@@ -1128,9 +1133,7 @@ else
 endif
 
 # Cancel GNU make built-in implicit rules
-ifndef .PYMAKE
 MAKEFLAGS += -r
-endif
 
 ifneq (,$(filter WINNT,$(OS_ARCH)))
 SEP := ;
@@ -1283,28 +1286,6 @@ ifdef EXTRA_PP_JS_MODULES
 ifndef NO_DIST_INSTALL
 EXTRA_PP_JS_MODULES_PATH := $(FINAL_JS_MODULES_PATH)
 PP_TARGETS += EXTRA_PP_JS_MODULES
-endif
-endif
-
-################################################################################
-# Copy testing-only JS modules to appropriate destination.
-#
-# For each file defined in TESTING_JS_MODULES, copy it to
-# objdir/_tests/modules/. If TESTING_JS_MODULE_DIR is defined, that path
-# wlll be appended to the output directory.
-
-ifdef ENABLE_TESTS
-ifdef TESTING_JS_MODULES
-testmodulesdir = $(DEPTH)/_tests/modules/$(TESTING_JS_MODULE_DIR)
-
-GENERATED_DIRS += $(testmodulesdir)
-
-ifndef NO_DIST_INSTALL
-TESTING_JS_MODULES_FILES := $(TESTING_JS_MODULES)
-TESTING_JS_MODULES_DEST := $(testmodulesdir)
-INSTALL_TARGETS += TESTING_JS_MODULES
-endif
-
 endif
 endif
 

@@ -16,11 +16,39 @@
 
 #include "GonkCameraParameters.h"
 #include "camera/CameraParameters.h"
+#include "CameraPreferences.h"
 #include "ICameraControl.h"
 #include "CameraCommon.h"
+#include "mozilla/Hal.h"
 
 using namespace mozilla;
 using namespace android;
+
+/* static */ bool
+GonkCameraParameters::IsLowMemoryPlatform()
+{
+  bool testIsLowMem = false;
+  CameraPreferences::GetPref("camera.control.test.is_low_memory", testIsLowMem);
+  if (testIsLowMem) {
+    NS_WARNING("Forcing low-memory platform camera preferences");
+    return true;
+  }
+
+  uint32_t lowMemoryThresholdBytes = 0;
+  CameraPreferences::GetPref("camera.control.low_memory_thresholdMB",
+                             lowMemoryThresholdBytes);
+  lowMemoryThresholdBytes *= 1024 * 1024;
+  if (lowMemoryThresholdBytes) {
+    uint32_t totalMemoryBytes = hal::GetTotalSystemMemory();
+    if (totalMemoryBytes < lowMemoryThresholdBytes) {
+      DOM_CAMERA_LOGI("Low-memory platform with %d bytes of RAM (threshold: <%d bytes)\n",
+        totalMemoryBytes, lowMemoryThresholdBytes);
+      return true;
+    }
+  }
+
+  return false;
+}
 
 /* static */ const char*
 GonkCameraParameters::Parameters::GetTextKey(uint32_t aKey)
@@ -138,6 +166,7 @@ GonkCameraParameters::GonkCameraParameters()
   : mLock(PR_NewRWLock(PR_RWLOCK_RANK_NONE, "GonkCameraParameters.Lock"))
   , mDirty(false)
   , mInitialized(false)
+  , mExposureCompensationStep(0.0)
 {
   MOZ_COUNT_CTOR(GonkCameraParameters);
   if (!mLock) {
@@ -148,6 +177,7 @@ GonkCameraParameters::GonkCameraParameters()
 GonkCameraParameters::~GonkCameraParameters()
 {
   MOZ_COUNT_DTOR(GonkCameraParameters);
+  mIsoModeMap.Clear();
   MOZ_ASSERT(mLock, "mLock missing in ~GonkCameraParameters()");
   if (mLock) {
     PR_DestroyRWLock(mLock);
@@ -158,20 +188,19 @@ GonkCameraParameters::~GonkCameraParameters()
 nsresult
 GonkCameraParameters::MapIsoToGonk(const nsAString& aIso, nsACString& aIsoOut)
 {
-  if (aIso.EqualsASCII("hjr")) {
-    aIsoOut = "ISO_HJR";
-  } else if (aIso.EqualsASCII("auto")) {
-    aIsoOut = "auto";
-  } else {
-    nsAutoCString v = NS_LossyConvertUTF16toASCII(aIso);
-    unsigned int iso;
-    if (sscanf(v.get(), "%u", &iso) != 1) {
-      return NS_ERROR_INVALID_ARG;
+  nsCString* s;
+  if (mIsoModeMap.Get(aIso, &s)) {
+    if (!s) {
+      DOM_CAMERA_LOGE("ISO mode '%s' maps to null Gonk ISO value\n",
+        NS_LossyConvertUTF16toASCII(aIso).get());
+      return NS_ERROR_FAILURE;
     }
-    aIsoOut = nsPrintfCString("ISO%u", iso);
+
+    aIsoOut = *s;
+    return NS_OK;
   }
 
-  return NS_OK;
+  return NS_ERROR_INVALID_ARG;
 }
 
 nsresult
@@ -183,9 +212,13 @@ GonkCameraParameters::MapIsoFromGonk(const char* aIso, nsAString& aIsoOut)
     aIsoOut.AssignASCII("auto");
   } else {
     unsigned int iso;
-    if (sscanf(aIso, "ISO%u", &iso) != 1) {
+    char ignored;
+    // Some camera libraries return ISO modes as "ISO100", others as "100".
+    if (sscanf(aIso, "ISO%u%c", &iso, &ignored) != 1 &&
+        sscanf(aIso, "%u%c", &iso, &ignored) != 1) {
       return NS_ERROR_INVALID_ARG;
     }
+    aIsoOut.Truncate(0);
     aIsoOut.AppendInt(iso);
   }
 
@@ -199,15 +232,20 @@ GonkCameraParameters::Initialize()
 {
   nsresult rv;
 
-  rv = GetImpl(CAMERA_PARAM_SUPPORTED_MINEXPOSURECOMPENSATION, mExposureCompensationMin);
-  if (NS_FAILED(rv)) {
-    NS_WARNING("Failed to initialize minimum exposure compensation");
-    mExposureCompensationMin = 0;
-  }
-  rv = GetImpl(CAMERA_PARAM_SUPPORTED_EXPOSURECOMPENSATIONSTEP, mExposureCompensationStep);
+  rv = GetImpl(Parameters::KEY_EXPOSURE_COMPENSATION_STEP, mExposureCompensationStep);
   if (NS_FAILED(rv)) {
     NS_WARNING("Failed to initialize exposure compensation step size");
-    mExposureCompensationStep = 0;
+    mExposureCompensationStep = 0.0;
+  }
+  rv = GetImpl(Parameters::KEY_MIN_EXPOSURE_COMPENSATION, mExposureCompensationMinIndex);
+  if (NS_FAILED(rv)) {
+    NS_WARNING("Failed to initialize minimum exposure compensation index");
+    mExposureCompensationMinIndex = 0;
+  }
+  rv = GetImpl(Parameters::KEY_MAX_EXPOSURE_COMPENSATION, mExposureCompensationMaxIndex);
+  if (NS_FAILED(rv)) {
+    NS_WARNING("Failed to initialize maximum exposure compensation index");
+    mExposureCompensationMaxIndex = 0;
   }
 
   rv = GetListAsArray(CAMERA_PARAM_SUPPORTED_ZOOMRATIOS, mZoomRatios);
@@ -233,13 +271,27 @@ GonkCameraParameters::Initialize()
   // The return code from GetListAsArray() doesn't matter. If it fails,
   // the isoModes array will be empty, and the subsequent loop won't
   // execute.
+  nsString s;
   nsTArray<nsCString> isoModes;
   GetListAsArray(CAMERA_PARAM_SUPPORTED_ISOMODES, isoModes);
-  for (uint32_t i = 0; i < isoModes.Length(); ++i) {
-    nsString v;
-    rv = MapIsoFromGonk(isoModes[i].get(), v);
-    if (NS_SUCCEEDED(rv)) {
-      *mIsoModes.AppendElement() = v;
+  for (nsTArray<nsCString>::size_type i = 0; i < isoModes.Length(); ++i) {
+    rv = MapIsoFromGonk(isoModes[i].get(), s);
+    if (NS_FAILED(rv)) {
+      DOM_CAMERA_LOGW("Unrecognized ISO mode value '%s'\n", isoModes[i].get());
+      continue;
+    }
+    *mIsoModes.AppendElement() = s;
+    mIsoModeMap.Put(s, new nsCString(isoModes[i]));
+  }
+
+  GetListAsArray(CAMERA_PARAM_SUPPORTED_SCENEMODES, mSceneModes);
+  if (IsLowMemoryPlatform()) {
+    bool hdrRemoved = false;
+    while (mSceneModes.RemoveElement(NS_LITERAL_STRING("hdr"))) {
+      hdrRemoved = true;
+    }
+    if (hdrRemoved) {
+      DOM_CAMERA_LOGI("Disabling HDR support due to low memory\n");
     }
   }
 
@@ -251,16 +303,26 @@ GonkCameraParameters::Initialize()
 nsresult
 GonkCameraParameters::SetTranslated(uint32_t aKey, const nsAString& aValue)
 {
-  if (aKey == CAMERA_PARAM_ISOMODE) {
-    nsAutoCString v;
-    nsresult rv = MapIsoToGonk(aValue, v);
-    if (NS_FAILED(rv)) {
-      return rv;
-    }
-    return SetImpl(aKey, v.get());
-  }
+  switch (aKey) {
+    case CAMERA_PARAM_ISOMODE:
+      {
+        nsAutoCString v;
+        nsresult rv = MapIsoToGonk(aValue, v);
+        if (NS_FAILED(rv)) {
+          return rv;
+        }
+        return SetImpl(aKey, v.get());
+      }
 
-  return SetImpl(aKey, NS_ConvertUTF16toUTF8(aValue).get());
+    case CAMERA_PARAM_SCENEMODE:
+      if (mSceneModes.IndexOf(aValue) == nsTArray<nsString>::NoIndex) {
+        return NS_ERROR_INVALID_ARG;
+      }
+      // fallthrough
+
+    default:
+      return SetImpl(aKey, NS_ConvertUTF16toUTF8(aValue).get());
+  }
 }
 
 nsresult
@@ -540,8 +602,8 @@ GonkCameraParameters::SetTranslated(uint32_t aKey, const double& aValue)
 
   switch (aKey) {
     case CAMERA_PARAM_EXPOSURECOMPENSATION:
-      if (mExposureCompensationStep == 0) {
-        DOM_CAMERA_LOGE("Exposure compensation not supported, can't set %f\n", aValue);
+      if (mExposureCompensationStep == 0.0) {
+        DOM_CAMERA_LOGE("Exposure compensation not supported, can't set EV=%f\n", aValue);
         return NS_ERROR_NOT_AVAILABLE;
       }
 
@@ -549,9 +611,16 @@ GonkCameraParameters::SetTranslated(uint32_t aKey, const double& aValue)
        * Convert from real value to a Gonk index, round
        * to the nearest step; index is 1-based.
        */
-      index =
-        (aValue - mExposureCompensationMin + mExposureCompensationStep / 2) /
-        mExposureCompensationStep + 1;
+      {
+        double i = round(aValue / mExposureCompensationStep);
+        if (i < mExposureCompensationMinIndex) {
+          index = mExposureCompensationMinIndex;
+        } else if (i > mExposureCompensationMaxIndex) {
+          index = mExposureCompensationMaxIndex;
+        } else {
+          index = i;
+        }
+      }
       DOM_CAMERA_LOGI("Exposure compensation = %f --> index = %d\n", aValue, index);
       return SetImpl(CAMERA_PARAM_EXPOSURECOMPENSATION, index);
 
@@ -600,7 +669,7 @@ GonkCameraParameters::SetTranslated(uint32_t aKey, const double& aValue)
 nsresult
 GonkCameraParameters::GetTranslated(uint32_t aKey, double& aValue)
 {
-  double val;
+  double val = 0.0; // initialize to keep the compiler happy [-Wmaybe-uninitialized]
   int index = 0;
   double focusDistance[3];
   const char* s;
@@ -643,15 +712,16 @@ GonkCameraParameters::GetTranslated(uint32_t aKey, double& aValue)
       break;
 
     case CAMERA_PARAM_EXPOSURECOMPENSATION:
+    case CAMERA_PARAM_SUPPORTED_MINEXPOSURECOMPENSATION:
+    case CAMERA_PARAM_SUPPORTED_MAXEXPOSURECOMPENSATION:
+      if (mExposureCompensationStep == 0.0) {
+        DOM_CAMERA_LOGE("Exposure compensation not supported, can't get EV\n");
+        return NS_ERROR_NOT_AVAILABLE;
+      }
       rv = GetImpl(aKey, index);
       if (NS_SUCCEEDED(rv)) {
-        if (!index) {
-          // NaN indicates automatic exposure compensation
-          val = NAN;
-        } else {
-          val = (index - 1) * mExposureCompensationStep + mExposureCompensationMin;
-          DOM_CAMERA_LOGI("index = %d --> compensation = %f\n", index, val);
-        }
+        val = index * mExposureCompensationStep;
+        DOM_CAMERA_LOGI("exposure compensation (aKey=%d): index=%d --> EV=%f\n", aKey, index, val);
       }
       break;
 
@@ -819,12 +889,18 @@ GonkCameraParameters::GetListAsArray(uint32_t aKey, nsTArray<T>& aArray)
 nsresult
 GonkCameraParameters::GetTranslated(uint32_t aKey, nsTArray<nsString>& aValues)
 {
-  if (aKey == CAMERA_PARAM_SUPPORTED_ISOMODES) {
-    aValues = mIsoModes;
-    return NS_OK;
-  }
+  switch (aKey) {
+    case CAMERA_PARAM_SUPPORTED_ISOMODES:
+      aValues = mIsoModes;
+      return NS_OK;
 
-  return GetListAsArray(aKey, aValues);
+    case CAMERA_PARAM_SUPPORTED_SCENEMODES:
+      aValues = mSceneModes;
+      return NS_OK;
+
+    default:
+      return GetListAsArray(aKey, aValues);
+  }
 }
 
 nsresult

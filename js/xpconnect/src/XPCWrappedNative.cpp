@@ -173,7 +173,7 @@ XPCWrappedNative::WrapNewGlobal(xpcObjectHelper &nativeHelper,
     RootedObject global(cx, xpc::CreateGlobalObject(cx, clasp, principal, aOptions));
     if (!global)
         return NS_ERROR_FAILURE;
-    XPCWrappedNativeScope *scope = GetCompartmentPrivate(global)->scope;
+    XPCWrappedNativeScope *scope = CompartmentPrivate::Get(global)->scope;
 
     // Immediately enter the global's compartment, so that everything else we
     // create ends up there.
@@ -324,16 +324,14 @@ XPCWrappedNative::GetNewOrUsed(xpcObjectHelper& helper,
     // It is possible that we will then end up forwarding this entire call
     // to this same function but with a different scope.
 
-    // If we are making a wrapper for the nsIClassInfo interface then
+    // If we are making a wrapper for an nsIClassInfo singleton then
     // We *don't* want to have it use the prototype meant for instances
     // of that class.
-    bool iidIsClassInfo = Interface->GetIID()->Equals(NS_GET_IID(nsIClassInfo));
     uint32_t classInfoFlags;
     bool isClassInfoSingleton = helper.GetClassInfo() == helper.Object() &&
                                 NS_SUCCEEDED(helper.GetClassInfo()
                                                    ->GetFlags(&classInfoFlags)) &&
                                 (classInfoFlags & nsIClassInfo::SINGLETON_CLASSINFO);
-    bool isClassInfo = iidIsClassInfo || isClassInfoSingleton;
 
     nsIClassInfo *info = helper.GetClassInfo();
 
@@ -348,7 +346,7 @@ XPCWrappedNative::GetNewOrUsed(xpcObjectHelper& helper,
     // described by the nsIClassInfo, not for the class info object
     // itself.
     const XPCNativeScriptableCreateInfo& sciWrapper =
-        isClassInfo ? sci :
+        isClassInfoSingleton ? sci :
         GatherScriptableCreateInfo(identity, info, sciProto, sci);
 
     RootedObject parent(cx, Scope->GetGlobalJSObject());
@@ -374,7 +372,7 @@ XPCWrappedNative::GetNewOrUsed(xpcObjectHelper& helper,
         ac.construct(static_cast<JSContext*>(cx), parent);
 
         if (parent != plannedParent) {
-            XPCWrappedNativeScope* betterScope = GetObjectScope(parent);
+            XPCWrappedNativeScope* betterScope = ObjectScope(parent);
             if (betterScope != Scope)
                 return GetNewOrUsed(helper, betterScope, Interface, resultWrapper);
 
@@ -413,7 +411,7 @@ XPCWrappedNative::GetNewOrUsed(xpcObjectHelper& helper,
     // Note that the security check happens inside FindTearOff - after the
     // wrapper is actually created, but before JS code can see it.
 
-    if (info && !isClassInfo) {
+    if (info && !isClassInfoSingleton) {
         proto = XPCWrappedNativeProto::GetNewOrUsed(Scope, info, &sciProto);
         if (!proto)
             return NS_ERROR_FAILURE;
@@ -633,7 +631,7 @@ XPCWrappedNative::Destroy()
     if (mIdentity) {
         XPCJSRuntime* rt = GetRuntime();
         if (rt && rt->GetDoingFinalization()) {
-            nsContentUtils::DeferredFinalize(mIdentity);
+            cyclecollector::DeferredFinalize(mIdentity);
             mIdentity = nullptr;
         } else {
             NS_RELEASE(mIdentity);
@@ -961,7 +959,7 @@ XPCWrappedNative::FlatJSObjectFinalized()
 #endif
                 XPCJSRuntime* rt = GetRuntime();
                 if (rt) {
-                    nsContentUtils::DeferredFinalize(obj);
+                    cyclecollector::DeferredFinalize(obj);
                 } else {
                     obj->Release();
                 }
@@ -1304,8 +1302,8 @@ RescueOrphans(HandleObject obj)
         RootedObject realParent(cx, js::UncheckedUnwrap(parentObj));
         XPCWrappedNative *wn =
             static_cast<XPCWrappedNative*>(js::GetObjectPrivate(obj));
-        return wn->ReparentWrapperIfFound(GetObjectScope(parentObj),
-                                          GetObjectScope(realParent),
+        return wn->ReparentWrapperIfFound(ObjectScope(parentObj),
+                                          ObjectScope(realParent),
                                           realParent, wn->GetIdentityObject());
     }
 
@@ -1658,8 +1656,8 @@ class MOZ_STACK_CLASS CallMethodHelper
 
     MOZ_ALWAYS_INLINE void CleanupParam(nsXPTCMiniVariant& param, nsXPTType& type);
 
-    MOZ_ALWAYS_INLINE bool HandleDipperParam(nsXPTCVariant* dp,
-                                             const nsXPTParamInfo& paramInfo);
+    MOZ_ALWAYS_INLINE bool AllocateStringClass(nsXPTCVariant* dp,
+                                               const nsXPTParamInfo& paramInfo);
 
     MOZ_ALWAYS_INLINE nsresult Invoke();
 
@@ -2098,9 +2096,18 @@ CallMethodHelper::ConvertIndependentParam(uint8_t i)
     dp->type = type;
     MOZ_ASSERT(!paramInfo.IsShared(), "[shared] implies [noscript]!");
 
-    // Handle dipper types separately.
-    if (paramInfo.IsDipper())
-        return HandleDipperParam(dp, paramInfo);
+    // String classes are always "in" - those that are marked "out" are converted
+    // by the XPIDL compiler to "in+dipper". See the note above IsDipper() in
+    // xptinfo.h.
+    //
+    // Also note that the fact that we bail out early for dipper parameters means
+    // that "inout" dipper parameters don't work - see bug 687612.
+    if (paramInfo.IsStringClass()) {
+        if (!AllocateStringClass(dp, paramInfo))
+            return false;
+        if (paramInfo.IsDipper())
+            return true;
+    }
 
     // Specify the correct storage/calling semantics.
     if (paramInfo.IsIndirect())
@@ -2158,7 +2165,7 @@ CallMethodHelper::ConvertIndependentParam(uint8_t i)
     }
 
     nsresult err;
-    if (!XPCConvert::JSData2Native(&dp->val, src, type, true, &param_iid, &err)) {
+    if (!XPCConvert::JSData2Native(&dp->val, src, type, &param_iid, &err)) {
         ThrowBadParam(err, i, mCallContext);
         return false;
     }
@@ -2278,7 +2285,7 @@ CallMethodHelper::ConvertDependentParam(uint8_t i)
             }
         }
     } else {
-        if (!XPCConvert::JSData2Native(&dp->val, src, type, true,
+        if (!XPCConvert::JSData2Native(&dp->val, src, type,
                                        &param_iid, &err)) {
             ThrowBadParam(err, i, mCallContext);
             return false;
@@ -2313,15 +2320,11 @@ CallMethodHelper::CleanupParam(nsXPTCMiniVariant& param, nsXPTType& type)
             break;
         case nsXPTType::T_ASTRING:
         case nsXPTType::T_DOMSTRING:
-            nsXPConnect::GetRuntimeInstance()->DeleteShortLivedString((nsString*)param.val.p);
+            nsXPConnect::GetRuntimeInstance()->mScratchStrings.Destroy((nsString*)param.val.p);
             break;
         case nsXPTType::T_UTF8STRING:
         case nsXPTType::T_CSTRING:
-            {
-                nsCString* rs = (nsCString*)param.val.p;
-                if (rs != &EmptyCString() && rs != &NullCString())
-                    delete rs;
-            }
+            nsXPConnect::GetRuntimeInstance()->mScratchCStrings.Destroy((nsCString*)param.val.p);
             break;
         default:
             MOZ_ASSERT(!type.IsArithmetic(), "Cleanup requested on unexpected type.");
@@ -2330,51 +2333,26 @@ CallMethodHelper::CleanupParam(nsXPTCMiniVariant& param, nsXPTType& type)
     }
 }
 
-// Handle parameters with dipper types.
-//
-// Dipper types are one of the more inscrutable aspects of xpidl. In a
-// nutshell, dippers are empty container objects, created and passed by
-// the caller, and filled by the callee. The callee receives a
-// fully-formed object, and thus does not have to construct anything. But
-// the object is functionally empty, and the callee is responsible for
-// putting something useful inside of it.
-//
-// XPIDL decides which types to make dippers. The list of these types
-// is given in the isDipperType() function in typelib.py, and is currently
-// limited to 4 string types.
-//
-// When a dipper type is declared as an 'out' parameter, xpidl internally
-// converts it to an 'in', and sets the XPT_PD_DIPPER flag on it. For this
-// reason, dipper types are sometimes referred to as 'out parameters
-// masquerading as in'. The burden of maintaining this illusion falls mostly
-// on XPConnect - we create the empty containers, and harvest the results
-// after the call.
-//
-// This method creates these empty containers.
 bool
-CallMethodHelper::HandleDipperParam(nsXPTCVariant* dp,
-                                    const nsXPTParamInfo& paramInfo)
+CallMethodHelper::AllocateStringClass(nsXPTCVariant* dp,
+                                      const nsXPTParamInfo& paramInfo)
 {
     // Get something we can make comparisons with.
     uint8_t type_tag = paramInfo.GetType().TagPart();
 
-    // Dippers always have the 'in' and 'dipper' flags set. Never 'out'.
-    MOZ_ASSERT(!paramInfo.IsOut(), "Dipper has unexpected flags.");
-
-    // xpidl.h specifies that dipper types will be used in exactly four
-    // cases, all strings. Verify that here.
+    // There should be 4 cases, all strings. Verify that here.
     MOZ_ASSERT(type_tag == nsXPTType::T_ASTRING ||
                type_tag == nsXPTType::T_DOMSTRING ||
                type_tag == nsXPTType::T_UTF8STRING ||
                type_tag == nsXPTType::T_CSTRING,
-               "Unexpected dipper type!");
+               "Unexpected string class type!");
 
     // ASTRING and DOMSTRING are very similar, and both use nsString.
     // UTF8_STRING and CSTRING are also quite similar, and both use nsCString.
     if (type_tag == nsXPTType::T_ASTRING || type_tag == nsXPTType::T_DOMSTRING)
-        dp->val.p = nsXPConnect::GetRuntimeInstance()->NewShortLivedString();
+        dp->val.p = nsXPConnect::GetRuntimeInstance()->mScratchStrings.Create();
     else
-        dp->val.p = new nsCString();
+        dp->val.p = nsXPConnect::GetRuntimeInstance()->mScratchCStrings.Create();
 
     // Check for OOM, in either case.
     if (!dp->val.p) {

@@ -189,28 +189,28 @@ bool
 ContentClientRemoteBuffer::CreateAndAllocateTextureClient(RefPtr<TextureClient>& aClient,
                                                           TextureFlags aFlags)
 {
-  // gfx::BackendType::NONE means fallback to the content backend
-  aClient = CreateTextureClientForDrawing(mSurfaceFormat,
-                                          mTextureInfo.mTextureFlags | aFlags,
-                                          gfx::BackendType::NONE,
-                                          mSize);
-  if (!aClient) {
-    return false;
+  TextureAllocationFlags allocFlags = TextureAllocationFlags::ALLOC_CLEAR_BUFFER;
+  if (aFlags & TextureFlags::ON_WHITE) {
+    allocFlags = TextureAllocationFlags::ALLOC_CLEAR_BUFFER_WHITE;
   }
 
-  if (!aClient->AllocateForSurface(mSize, ALLOC_CLEAR_BUFFER)) {
-    aClient = CreateTextureClientForDrawing(mSurfaceFormat,
-                mTextureInfo.mTextureFlags | TextureFlags::ALLOC_FALLBACK | aFlags,
-                gfx::BackendType::NONE,
-                mSize);
-    if (!aClient) {
-      return false;
-    }
-    if (!aClient->AllocateForSurface(mSize, ALLOC_CLEAR_BUFFER)) {
-      NS_WARNING("Could not allocate texture client");
-      aClient = nullptr;
-      return false;
-    }
+  // gfx::BackendType::NONE means fallback to the content backend
+  aClient = CreateTextureClientForDrawing(mSurfaceFormat, mSize,
+                                          gfx::BackendType::NONE,
+                                          mTextureInfo.mTextureFlags | aFlags,
+                                          allocFlags);
+  if (!aClient) {
+    // try with ALLOC_FALLBACK
+    aClient = CreateTextureClientForDrawing(mSurfaceFormat, mSize,
+                                            gfx::BackendType::NONE,
+                                            mTextureInfo.mTextureFlags
+                                            | TextureFlags::ALLOC_FALLBACK
+                                            | aFlags,
+                                            allocFlags);
+  }
+
+  if (!aClient) {
+    return false;
   }
 
   NS_WARN_IF_FALSE(aClient->IsValid(), "Created an invalid texture client");
@@ -280,12 +280,12 @@ ContentClientRemoteBuffer::CreateBuffer(ContentType aType,
   DebugOnly<bool> locked = mTextureClient->Lock(OpenMode::OPEN_READ_WRITE);
   MOZ_ASSERT(locked, "Could not lock the TextureClient");
 
-  *aBlackDT = mTextureClient->GetAsDrawTarget();
+  *aBlackDT = mTextureClient->BorrowDrawTarget();
   if (aFlags & BUFFER_COMPONENT_ALPHA) {
     locked = mTextureClientOnWhite->Lock(OpenMode::OPEN_READ_WRITE);
     MOZ_ASSERT(locked, "Could not lock the second TextureClient for component alpha");
 
-    *aWhiteDT = mTextureClientOnWhite->GetAsDrawTarget();
+    *aWhiteDT = mTextureClientOnWhite->BorrowDrawTarget();
   }
 }
 
@@ -347,10 +347,11 @@ ContentClientRemoteBuffer::SwapBuffers(const nsIntRegion& aFrontUpdatedRegion)
 void
 ContentClientDoubleBuffered::DestroyFrontBuffer()
 {
-  MOZ_ASSERT(mFrontClient);
+  if (mFrontClient) {
+    mOldTextures.AppendElement(mFrontClient);
+    mFrontClient = nullptr;
+  }
 
-  mOldTextures.AppendElement(mFrontClient);
-  mFrontClient = nullptr;
   if (mFrontClientOnWhite) {
     mOldTextures.AppendElement(mFrontClientOnWhite);
     mFrontClientOnWhite = nullptr;
@@ -365,9 +366,9 @@ ContentClientDoubleBuffered::Updated(const nsIntRegion& aRegionToDraw,
   ContentClientRemoteBuffer::Updated(aRegionToDraw, aVisibleRegion, aDidSelfCopy);
 
 #if defined(MOZ_WIDGET_GONK) && ANDROID_VERSION >= 17
-  if (mFrontClient && CompositorChild::ChildProcessHasCompositor()) {
+  if (mFrontClient) {
     // remove old buffer from CompositableHost
-    RefPtr<AsyncTransactionTracker> tracker = new RemoveTextureFromCompositableTracker(this);
+    RefPtr<AsyncTransactionTracker> tracker = new RemoveTextureFromCompositableTracker();
     // Hold TextureClient until transaction complete.
     tracker->SetTextureClient(mFrontClient);
     mFrontClient->SetRemoveFromCompositableTracker(tracker);
@@ -375,9 +376,9 @@ ContentClientDoubleBuffered::Updated(const nsIntRegion& aRegionToDraw,
     GetForwarder()->RemoveTextureFromCompositableAsync(tracker, this, mFrontClient);
   }
 
-  if (mFrontClientOnWhite && CompositorChild::ChildProcessHasCompositor()) {
+  if (mFrontClientOnWhite) {
     // remove old buffer from CompositableHost
-    RefPtr<AsyncTransactionTracker> tracker = new RemoveTextureFromCompositableTracker(this);
+    RefPtr<AsyncTransactionTracker> tracker = new RemoveTextureFromCompositableTracker();
     // Hold TextureClient until transaction complete.
     tracker->SetTextureClient(mFrontClientOnWhite);
     mFrontClientOnWhite->SetRemoveFromCompositableTracker(tracker);
@@ -458,6 +459,9 @@ ContentClientDoubleBuffered::FinalizeFrame(const nsIntRegion& aRegionToDraw)
     return;
   }
   MOZ_ASSERT(mFrontClient);
+  if (!mFrontClient) {
+    return;
+  }
 
   MOZ_LAYERS_LOG(("BasicShadowableThebes(%p): reading back <x=%d,y=%d,w=%d,h=%d>",
                   this,
@@ -495,9 +499,9 @@ ContentClientDoubleBuffered::FinalizeFrame(const nsIntRegion& aRegionToDraw)
     // Restrict the DrawTargets and frontBuffer to a scope to make
     // sure there is no more external references to the DrawTargets
     // when we Unlock the TextureClients.
-    RefPtr<DrawTarget> dt = mFrontClient->GetAsDrawTarget();
+    RefPtr<DrawTarget> dt = mFrontClient->BorrowDrawTarget();
     RefPtr<DrawTarget> dtOnWhite = mFrontClientOnWhite
-      ? mFrontClientOnWhite->GetAsDrawTarget()
+      ? mFrontClientOnWhite->BorrowDrawTarget()
       : nullptr;
     RotatedBuffer frontBuffer(dt,
                               dtOnWhite,
@@ -517,6 +521,9 @@ ContentClientDoubleBuffered::EnsureBackBufferIfFrontBuffer()
 {
   if (!mTextureClient && mFrontClient) {
     CreateBackBuffer(mFrontBufferRect);
+
+    mBufferRect = mFrontBufferRect;
+    mBufferRotation = mFrontBufferRotation;
   }
 }
 
@@ -922,6 +929,7 @@ ContentClientIncremental::GetUpdateSurface(BufferType aType,
                                           mContentType,
                                           &desc)) {
     NS_WARNING("creating SurfaceDescriptor failed!");
+    Clear();
     return nullptr;
   }
 

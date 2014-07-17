@@ -7,6 +7,18 @@ Cu.import("resource://gre/modules/Log.jsm");
 Cu.import("resource://services-common/utils.js");
 Cu.import("resource://services-common/hawkrequest.js");
 
+// https://github.com/mozilla/fxa-auth-server/wiki/onepw-protocol#wiki-use-session-certificatesign-etc
+let SESSION_KEYS = {
+  sessionToken: h("a0a1a2a3a4a5a6a7 a8a9aaabacadaeaf"+
+                  "b0b1b2b3b4b5b6b7 b8b9babbbcbdbebf"),
+
+  tokenID:      h("c0a29dcf46174973 da1378696e4c82ae"+
+                  "10f723cf4f4d9f75 e39f4ae3851595ab"),
+
+  reqHMACkey:   h("9d8f22998ee7f579 8b887042466b72d5"+
+                  "3e56ab0c094388bf 65831f702d2febc0"),
+};
+
 function do_register_cleanup() {
   Services.prefs.resetUserPrefs();
 
@@ -31,7 +43,7 @@ add_test(function test_intl_accept_language() {
     "fa-CG;ik",     // Congolese dialect of Farsei, defaulting to Inupiaq
   ];
 
-  function setLanguage(lang) {
+  function setLanguagePref(lang) {
     let acceptLanguage = Cc["@mozilla.org/supports-string;1"]
                            .createInstance(Ci.nsISupportsString);
     acceptLanguage.data = lang;
@@ -41,20 +53,27 @@ add_test(function test_intl_accept_language() {
 
   let hawk = new HAWKAuthenticatedRESTRequest("https://example.com");
 
-  Services.prefs.addObserver("intl.accept_languages", nextTest, false);
-  setLanguage(languages[testCount]);
+  Services.prefs.addObserver("intl.accept_languages", checkLanguagePref, false);
+  setLanguagePref(languages[testCount]);
 
-  function nextTest() {
+  function checkLanguagePref() {
+    var _done = false;
     CommonUtils.nextTick(function() {
-      if (testCount < 2) {
-        do_check_eq(hawk._intl.accept_languages, languages[testCount]);
+      // Ensure we're only called for the number of entries in languages[].
+      do_check_true(testCount < languages.length);
 
-        testCount += 1;
-        setLanguage(languages[testCount]);
-        nextTest();
+      do_check_eq(hawk._intl.accept_languages, languages[testCount]);
+
+      testCount++;
+      if (testCount < languages.length) {
+        // Set next language in prefs; Pref service will call checkNextLanguage.
+        setLanguagePref(languages[testCount]);
         return;
       }
-      Services.prefs.removeObserver("intl.accept_languages", nextTest);
+
+      // We've checked all the entries in languages[]. Cleanup and move on.
+      do_print("Checked " + testCount + " languages. Removing checkLanguagePref as pref observer.");
+      Services.prefs.removeObserver("intl.accept_languages", checkLanguagePref);
       run_next_test();
       return;
     });
@@ -201,3 +220,16 @@ add_test(function test_hawk_language_pref_changed() {
   }
 });
 
+add_task(function test_deriveHawkCredentials() {
+  let credentials = deriveHawkCredentials(
+    SESSION_KEYS.sessionToken, "sessionToken");
+
+  do_check_eq(credentials.algorithm, "sha256");
+  do_check_eq(credentials.id, SESSION_KEYS.tokenID);
+  do_check_eq(CommonUtils.bytesAsHex(credentials.key), SESSION_KEYS.reqHMACkey);
+});
+
+// turn formatted test vectors into normal hex strings
+function h(hexStr) {
+  return hexStr.replace(/\s+/g, "");
+}

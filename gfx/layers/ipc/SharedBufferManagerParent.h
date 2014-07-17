@@ -7,6 +7,7 @@
 #ifndef SharedBufferManagerPARENT_H_
 #define SharedBufferManagerPARENT_H_
 
+#include "mozilla/Atomics.h"          // for Atomic
 #include "mozilla/layers/PSharedBufferManagerParent.h"
 #include "mozilla/StaticPtr.h"
 
@@ -32,6 +33,7 @@ namespace layers {
 
 class SharedBufferManagerParent : public PSharedBufferManagerParent
 {
+friend class GrallocReporter;
 public:
   /**
    * Create a SharedBufferManagerParent for child process, and link to the child side before leaving
@@ -44,7 +46,7 @@ public:
    */
   static SharedBufferManagerParent* GetInstance(ProcessId id);
 #ifdef MOZ_HAVE_SURFACEDESCRIPTORGRALLOC
-  android::sp<android::GraphicBuffer> GetGraphicBuffer(int key);
+  android::sp<android::GraphicBuffer> GetGraphicBuffer(int64_t key);
   static android::sp<android::GraphicBuffer> GetGraphicBuffer(GrallocBufferRef aRef);
 #endif
   /**
@@ -93,14 +95,15 @@ protected:
   /**
    * Buffers owned by this SharedBufferManager pair
    */
-  std::map<int, android::sp<android::GraphicBuffer> > mBuffers;
+  std::map<int64_t, android::sp<android::GraphicBuffer> > mBuffers;
   Mutex mBuffersMutex;
 #endif
   
   Transport* mTransport;
   base::ProcessId mOwner;
   base::Thread* mThread;
-  static int sBufferKey;
+  static uint64_t sBufferKey;
+
   static StaticAutoPtr<Monitor> sManagerMonitor;
 };
 

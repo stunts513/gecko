@@ -41,10 +41,6 @@
 #include "prnetdb.h"
 
 extern PRLogModuleInfo* gRtspLog;
-#define LOGI(msg, ...) PR_LOG(gRtspLog, PR_LOG_ALWAYS, ("RTSP" msg, ##__VA_ARGS__))
-#define LOGV(msg, ...) PR_LOG(gRtspLog, PR_LOG_DEBUG, (msg, ##__VA_ARGS__))
-#define LOGE(msg, ...) PR_LOG(gRtspLog, PR_LOG_ERROR, (msg, ##__VA_ARGS__))
-#define LOGW(msg, ...) PR_LOG(gRtspLog, PR_LOG_WARNING, (msg, ##__VA_ARGS__))
 
 // If no access units are received within 2 secs, assume that the rtp
 // stream has ended and signal end of stream.
@@ -239,7 +235,7 @@ struct RtspConnectionHandler : public AHandler {
         setCheckPending(true);
         ++mCheckGeneration;
 
-        sp<AMessage> reply = new AMessage('pause', id());
+        sp<AMessage> reply = new AMessage('paus', id());
         mConn->sendRequest(request.c_str(), reply);
     }
 
@@ -257,7 +253,7 @@ struct RtspConnectionHandler : public AHandler {
 
         setCheckPending(false);
 
-        sp<AMessage> reply = new AMessage('resume', id());
+        sp<AMessage> reply = new AMessage('resu', id());
         mConn->sendRequest(request.c_str(), reply);
 
     }
@@ -741,7 +737,7 @@ struct RtspConnectionHandler : public AHandler {
                 }
                 break;
             }
-            case 'pause':
+            case 'paus':
             {
                 mPausePending = true;
                 LOGI("pause completed");
@@ -750,7 +746,7 @@ struct RtspConnectionHandler : public AHandler {
                 msg->post();
                 break;
             }
-            case 'resume':
+            case 'resu':
                  break;
             case 'play':
             {
@@ -835,7 +831,7 @@ struct RtspConnectionHandler : public AHandler {
                 break;
             }
 
-            case 'endofstream':
+            case 'eost':
             {
                 size_t trackIndex = 0;
                 msg->findSize("trackIndex", &trackIndex);
@@ -951,7 +947,7 @@ struct RtspConnectionHandler : public AHandler {
 
                 if (track->mNumAccessUnitsReceiveds == 0) {
                     LOGI("stream ended? aborting.");
-                    sp<AMessage> endStreamMsg = new AMessage('endofstream', id());
+                    sp<AMessage> endStreamMsg = new AMessage('eost', id());
                     endStreamMsg->setSize("trackIndex", trackIndex);
                     endStreamMsg->post();
                     break;

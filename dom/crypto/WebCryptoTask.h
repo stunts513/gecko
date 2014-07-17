@@ -13,7 +13,7 @@
 #include "mozilla/dom/Promise.h"
 #include "mozilla/dom/DOMException.h"
 #include "mozilla/dom/SubtleCryptoBinding.h"
-#include "mozilla/dom/Key.h"
+#include "mozilla/dom/CryptoKey.h"
 
 namespace mozilla {
 namespace dom {
@@ -87,13 +87,13 @@ public:
 protected:
   static WebCryptoTask* EncryptDecryptTask(JSContext* aCx,
                            const ObjectOrString& aAlgorithm,
-                           Key& aKey,
+                           CryptoKey& aKey,
                            const CryptoOperationData& aData,
                            bool aEncrypt);
 
   static WebCryptoTask* SignVerifyTask(JSContext* aCx,
                           const ObjectOrString& aAlgorithm,
-                          Key& aKey,
+                          CryptoKey& aKey,
                           const CryptoOperationData& aSignature,
                           const CryptoOperationData& aData,
                           bool aSign);
@@ -101,7 +101,7 @@ protected:
 public:
   static WebCryptoTask* EncryptTask(JSContext* aCx,
                           const ObjectOrString& aAlgorithm,
-                          Key& aKey,
+                          CryptoKey& aKey,
                           const CryptoOperationData& aData)
   {
     return EncryptDecryptTask(aCx, aAlgorithm, aKey, aData, true);
@@ -109,7 +109,7 @@ public:
 
   static WebCryptoTask* DecryptTask(JSContext* aCx,
                           const ObjectOrString& aAlgorithm,
-                          Key& aKey,
+                          CryptoKey& aKey,
                           const CryptoOperationData& aData)
   {
     return EncryptDecryptTask(aCx, aAlgorithm, aKey, aData, false);
@@ -117,7 +117,7 @@ public:
 
   static WebCryptoTask* SignTask(JSContext* aCx,
                           const ObjectOrString& aAlgorithm,
-                          Key& aKey,
+                          CryptoKey& aKey,
                           const CryptoOperationData& aData)
   {
     CryptoOperationData dummy;
@@ -127,7 +127,7 @@ public:
 
   static WebCryptoTask* VerifyTask(JSContext* aCx,
                           const ObjectOrString& aAlgorithm,
-                          Key& aKey,
+                          CryptoKey& aKey,
                           const CryptoOperationData& aSignature,
                           const CryptoOperationData& aData)
   {
@@ -145,7 +145,7 @@ public:
                           bool aExtractable,
                           const Sequence<nsString>& aKeyUsages);
   static WebCryptoTask* ExportKeyTask(const nsAString& aFormat,
-                          Key& aKey);
+                          CryptoKey& aKey);
   static WebCryptoTask* GenerateKeyTask(JSContext* aCx,
                           const ObjectOrString& aAlgorithm,
                           bool aExtractable,
@@ -153,13 +153,13 @@ public:
 
   static WebCryptoTask* DeriveKeyTask(JSContext* aCx,
                           const ObjectOrString& aAlgorithm,
-                          Key& aBaseKey,
+                          CryptoKey& aBaseKey,
                           const ObjectOrString& aDerivedKeyType,
                           bool extractable,
                           const Sequence<nsString>& aKeyUsages);
   static WebCryptoTask* DeriveBitsTask(JSContext* aCx,
                           const ObjectOrString& aAlgorithm,
-                          Key& aKey,
+                          CryptoKey& aKey,
                           uint32_t aLength);
 
 protected:
@@ -180,57 +180,15 @@ protected:
   virtual void Resolve() {}
   virtual void Cleanup() {}
 
-  void FailWithError(nsresult aRv)
-  {
-    MOZ_ASSERT(NS_IsMainThread());
-
-    // Blindly convert nsresult to DOMException
-    // Individual tasks must ensure they pass the right values
-    mResultPromise->MaybeReject(aRv);
-    // Manually release mResultPromise while we're on the main thread
-    mResultPromise = nullptr;
-    Cleanup();
-  }
+  void FailWithError(nsresult aRv);
 
   // Subclasses should override this method if they keep references to
   // any NSS objects, e.g., SECKEYPrivateKey or PK11SymKey.
   virtual void ReleaseNSSResources() MOZ_OVERRIDE {}
 
-  virtual nsresult CalculateResult() MOZ_OVERRIDE MOZ_FINAL
-  {
-    MOZ_ASSERT(!NS_IsMainThread());
+  virtual nsresult CalculateResult() MOZ_OVERRIDE MOZ_FINAL;
 
-    if (NS_FAILED(mEarlyRv)) {
-      return mEarlyRv;
-    }
-
-    if (isAlreadyShutDown()) {
-      return NS_ERROR_DOM_UNKNOWN_ERR;
-    }
-
-    return DoCrypto();
-  }
-
-  virtual void CallCallback(nsresult rv) MOZ_OVERRIDE MOZ_FINAL
-  {
-    MOZ_ASSERT(NS_IsMainThread());
-    if (NS_FAILED(rv)) {
-      FailWithError(rv);
-      return;
-    }
-
-    nsresult rv2 = AfterCrypto();
-    if (NS_FAILED(rv2)) {
-      FailWithError(rv2);
-      return;
-    }
-
-    Resolve();
-
-    // Manually release mResultPromise while we're on the main thread
-    mResultPromise = nullptr;
-    Cleanup();
-  }
+  virtual void CallCallback(nsresult rv) MOZ_OVERRIDE MOZ_FINAL;
 };
 
 } // namespace dom

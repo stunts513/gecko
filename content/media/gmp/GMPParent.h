@@ -15,10 +15,11 @@
 #include "nsISupports.h"
 #include "nsString.h"
 #include "nsTArray.h"
+#include "nsIFile.h"
+#include "ThreadSafeRefcountingWithMainThreadDestruction.h"
 
 class nsILineInputStream;
 class nsIThread;
-class nsIFile;
 
 namespace mozilla {
 namespace gmp {
@@ -38,7 +39,7 @@ enum GMPState {
 class GMPParent MOZ_FINAL : public PGMPParent
 {
 public:
-  NS_INLINE_DECL_REFCOUNTING(GMPParent)
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING_WITH_MAIN_THREAD_DESTRUCTION(GMPParent)
 
   GMPParent();
 
@@ -55,6 +56,31 @@ public:
 #ifdef DEBUG
   nsIThread* GMPThread();
 #endif
+
+  // A GMP can either be a single instance shared across all origins (like
+  // in the OpenH264 case), or we can require a new plugin instance for every
+  // origin running the plugin (as in the EME plugin case).
+  //
+  // Plugins are associated with an origin by calling SetOrigin() before
+  // loading.
+  //
+  // If a plugin has no origin specified and it is loaded, it is assumed to
+  // be shared across origins.
+
+  // Specifies that a GMP can only work with the specified origin.
+  void SetOrigin(const nsAString& aOrigin);
+
+  // Returns true if a plugin can be or is being used across multiple origins.
+  bool CanBeSharedCrossOrigin() const;
+
+  // A GMP can be used from an origin if it's already been set to work with
+  // that origin, or if it's not been set to work with any origin and has
+  // not yet been loaded (i.e. it's not shared across origins).
+  bool CanBeUsedFrom(const nsAString& aOrigin) const;
+
+  already_AddRefed<nsIFile> GetDirectory() {
+    return nsCOMPtr<nsIFile>(mDirectory).forget();
+  }
 
 private:
   ~GMPParent();
@@ -80,6 +106,9 @@ private:
 #ifdef DEBUG
   nsCOMPtr<nsIThread> mGMPThread;
 #endif
+  // Origin the plugin is assigned to, or empty if the the plugin is not
+  // assigned to an origin.
+  nsAutoString mOrigin;
 };
 
 } // namespace gmp

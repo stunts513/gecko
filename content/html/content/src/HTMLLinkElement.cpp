@@ -35,7 +35,7 @@ NS_IMPL_NS_NEW_HTML_ELEMENT(Link)
 namespace mozilla {
 namespace dom {
 
-HTMLLinkElement::HTMLLinkElement(already_AddRefed<nsINodeInfo>& aNodeInfo)
+HTMLLinkElement::HTMLLinkElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
   : nsGenericHTMLElement(aNodeInfo)
   , Link(MOZ_THIS_IN_INITIALIZER_LIST())
 {
@@ -81,7 +81,7 @@ NS_IMPL_ELEMENT_CLONE(HTMLLinkElement)
 bool
 HTMLLinkElement::Disabled()
 {
-  nsCSSStyleSheet* ss = GetSheet();
+  CSSStyleSheet* ss = GetSheet();
   return ss && ss->Disabled();
 }
 
@@ -95,11 +95,10 @@ HTMLLinkElement::GetMozDisabled(bool* aDisabled)
 void
 HTMLLinkElement::SetDisabled(bool aDisabled)
 {
-  nsCSSStyleSheet* ss = GetSheet();
+  CSSStyleSheet* ss = GetSheet();
   if (ss) {
     ss->SetDisabled(aDisabled);
   }
-
 }
 
 NS_IMETHODIMP
@@ -252,11 +251,6 @@ HTMLLinkElement::CreateAndDispatchEvent(nsIDocument* aDoc,
 void
 HTMLLinkElement::UpdateImport()
 {
-  if (!Preferences::GetBool("dom.webcomponents.enabled")) {
-    // For now imports are hidden behind a pref...
-    return;
-  }
-
   // 1. link node should be attached to the document.
   nsCOMPtr<nsIDocument> doc = GetCurrentDoc();
   if (!doc) {
@@ -282,7 +276,7 @@ HTMLLinkElement::UpdateImport()
   // 2. rel type should be import.
   nsAutoString rel;
   GetAttr(kNameSpaceID_None, nsGkAtoms::rel, rel);
-  uint32_t linkTypes = nsStyleLinkElement::ParseLinkTypes(rel);
+  uint32_t linkTypes = nsStyleLinkElement::ParseLinkTypes(rel, NodePrincipal());
   if (!(linkTypes & eHTMLIMPORT)) {
     mImportLoader = nullptr;
     return;
@@ -291,6 +285,11 @@ HTMLLinkElement::UpdateImport()
   nsCOMPtr<nsIURI> uri = GetHrefURI();
   if (!uri) {
     mImportLoader = nullptr;
+    return;
+  }
+
+  if (!nsStyleLinkElement::IsImportEnabled(NodePrincipal())) {
+    // For now imports are hidden behind a pref...
     return;
   }
 
@@ -321,6 +320,7 @@ HTMLLinkElement::SetAttr(int32_t aNameSpaceID, nsIAtom* aName,
   // to get updated information about the visitedness from Link.
   if (aName == nsGkAtoms::href && kNameSpaceID_None == aNameSpaceID) {
     Link::ResetLinkState(!!aNotify, true);
+    CreateAndDispatchEvent(OwnerDoc(), NS_LITERAL_STRING("DOMLinkChanged"));
   }
 
   if (NS_SUCCEEDED(rv) && aNameSpaceID == kNameSpaceID_None &&
@@ -331,7 +331,8 @@ HTMLLinkElement::SetAttr(int32_t aNameSpaceID, nsIAtom* aName,
        aName == nsGkAtoms::type)) {
     bool dropSheet = false;
     if (aName == nsGkAtoms::rel) {
-      uint32_t linkTypes = nsStyleLinkElement::ParseLinkTypes(aValue);
+      uint32_t linkTypes = nsStyleLinkElement::ParseLinkTypes(aValue,
+                                                              NodePrincipal());
       if (GetSheet()) {
         dropSheet = !(linkTypes & nsStyleLinkElement::eSTYLESHEET);
       } else if (linkTypes & eHTMLIMPORT) {
@@ -382,6 +383,7 @@ HTMLLinkElement::UnsetAttr(int32_t aNameSpaceID, nsIAtom* aAttribute,
   // to get updated information about the visitedness from Link.
   if (aAttribute == nsGkAtoms::href && kNameSpaceID_None == aNameSpaceID) {
     Link::ResetLinkState(!!aNotify, false);
+    CreateAndDispatchEvent(OwnerDoc(), NS_LITERAL_STRING("DOMLinkChanged"));
   }
 
   return rv;
@@ -457,7 +459,7 @@ HTMLLinkElement::GetStyleSheetInfo(nsAString& aTitle,
 
   nsAutoString rel;
   GetAttr(kNameSpaceID_None, nsGkAtoms::rel, rel);
-  uint32_t linkTypes = nsStyleLinkElement::ParseLinkTypes(rel);
+  uint32_t linkTypes = nsStyleLinkElement::ParseLinkTypes(rel, NodePrincipal());
   // Is it a stylesheet link?
   if (!(linkTypes & nsStyleLinkElement::eSTYLESHEET)) {
     return;

@@ -1,4 +1,4 @@
-// -*- Mode: javascript; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
+// -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -39,7 +39,7 @@ function test_strict() {
 
   // Issued by otherCA, which is not in the pinset for pinning.example.com.
   add_connection_test("bad.include-subdomains.pinning.example.com",
-    getXPCOMStatusFromNSS(SEC_ERROR_APPLICATION_CALLBACK_ERROR));
+    getXPCOMStatusFromNSS(PSM_ERROR_KEY_PINNING_FAILURE));
 
   // These domains serve certs that match the pinset.
   add_connection_test("include-subdomains.pinning.example.com", Cr.NS_OK);
@@ -101,7 +101,7 @@ function test_enforce_test_mode() {
 
   // Issued by otherCA, which is not in the pinset for pinning.example.com.
   add_connection_test("bad.include-subdomains.pinning.example.com",
-    getXPCOMStatusFromNSS(SEC_ERROR_APPLICATION_CALLBACK_ERROR));
+    getXPCOMStatusFromNSS(PSM_ERROR_KEY_PINNING_FAILURE));
 
   // These domains serve certs that match the pinset.
   add_connection_test("include-subdomains.pinning.example.com", Cr.NS_OK);
@@ -117,7 +117,7 @@ function test_enforce_test_mode() {
   // bad.include-subdomains.pinning.example.com, is in test-mode, but we are
   // enforcing test mode pins.
   add_connection_test("test-mode.pinning.example.com",
-    getXPCOMStatusFromNSS(SEC_ERROR_APPLICATION_CALLBACK_ERROR));
+    getXPCOMStatusFromNSS(PSM_ERROR_KEY_PINNING_FAILURE));
 }
 
 function check_pinning_telemetry() {

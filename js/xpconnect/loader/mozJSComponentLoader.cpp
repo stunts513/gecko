@@ -38,12 +38,14 @@
 #include "nsDOMBlobBuilder.h"
 #include "jsprf.h"
 #include "nsJSPrincipals.h"
+#include "nsJSUtils.h"
 #include "xpcprivate.h"
 #include "xpcpublic.h"
 #include "nsContentUtils.h"
 #include "nsCxPusher.h"
 #include "WrapperFactory.h"
 
+#include "mozilla/AddonPathService.h"
 #include "mozilla/scache/StartupCache.h"
 #include "mozilla/scache/StartupCacheUtils.h"
 #include "mozilla/MacroForEach.h"
@@ -110,26 +112,26 @@ Dump(JSContext *cx, unsigned argc, Value *vp)
     if (args.length() == 0)
         return true;
 
-    JSString *str = JS::ToString(cx, args[0]);
+    RootedString str(cx, JS::ToString(cx, args[0]));
     if (!str)
         return false;
 
-    size_t length;
-    const jschar *chars = JS_GetStringCharsAndLength(cx, str, &length);
-    if (!chars)
+    JSAutoByteString utf8str;
+    if (!utf8str.encodeUtf8(cx, str))
         return false;
 
-    NS_ConvertUTF16toUTF8 utf8str(reinterpret_cast<const char16_t*>(chars),
-                                  length);
 #ifdef ANDROID
-    __android_log_print(ANDROID_LOG_INFO, "Gecko", "%s", utf8str.get());
+    __android_log_print(ANDROID_LOG_INFO, "Gecko", "%s", utf8str.ptr());
 #endif
 #ifdef XP_WIN
     if (IsDebuggerPresent()) {
-      OutputDebugStringW(reinterpret_cast<const wchar_t*>(chars));
+        nsAutoJSString wstr;
+        if (!wstr.init(cx, str))
+            return false;
+        OutputDebugStringW(wstr.get());
     }
 #endif
-    fputs(utf8str.get(), stdout);
+    fputs(utf8str.ptr(), stdout);
     fflush(stdout);
     return true;
 }
@@ -155,7 +157,7 @@ File(JSContext *cx, unsigned argc, Value *vp)
     }
 
     nsCOMPtr<nsISupports> native;
-    nsresult rv = nsDOMMultipartFile::NewFile(getter_AddRefs(native));
+    nsresult rv = DOMMultipartFileImpl::NewFile(getter_AddRefs(native));
     if (NS_FAILED(rv)) {
         XPCThrower::Throw(rv, cx);
         return false;
@@ -190,7 +192,7 @@ Blob(JSContext *cx, unsigned argc, Value *vp)
     CallArgs args = CallArgsFromVp(argc, vp);
 
     nsCOMPtr<nsISupports> native;
-    nsresult rv = nsDOMMultipartFile::NewBlob(getter_AddRefs(native));
+    nsresult rv = DOMMultipartFileImpl::NewBlob(getter_AddRefs(native));
     if (NS_FAILED(rv)) {
         XPCThrower::Throw(rv, cx);
         return false;
@@ -310,7 +312,6 @@ mozJSComponentLoader::mozJSComponentLoader()
       mModules(32),
       mImports(32),
       mInProgressImports(32),
-      mThisObjects(32),
       mInitialized(false),
       mReuseLoaderGlobal(false)
 {
@@ -578,10 +579,11 @@ mozJSComponentLoader::FindTargetObject(JSContext* aCx,
 
     RootedObject targetObject(aCx);
     if (mReuseLoaderGlobal) {
-        JSScript* script =
-            js::GetOutermostEnclosingFunctionOfScriptedCaller(aCx);
-        if (script) {
-            targetObject = mThisObjects.Get(script);
+        JSFunction *fun = js::GetOutermostEnclosingFunctionOfScriptedCaller(aCx);
+        if (fun) {
+            JSObject *funParent = js::GetObjectParent(JS_GetFunctionObject(fun));
+            if (JS_GetClass(funParent) == &kFakeBackstagePassJSClass)
+                targetObject = funParent;
         }
     }
 
@@ -595,18 +597,6 @@ mozJSComponentLoader::FindTargetObject(JSContext* aCx,
 
     aTargetObject.set(targetObject);
     return NS_OK;
-}
-
-void
-mozJSComponentLoader::NoteSubScript(HandleScript aScript, HandleObject aThisObject)
-{
-  if (!mInitialized && NS_FAILED(ReallyInit())) {
-      MOZ_CRASH();
-  }
-
-  if (js::GetObjectJSClass(aThisObject) == &kFakeBackstagePassJSClass) {
-    mThisObjects.Put(aScript, aThisObject);
-  }
 }
 
 /* static */ size_t
@@ -635,7 +625,6 @@ mozJSComponentLoader::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf)
     amount += mModules.SizeOfExcludingThis(DataEntrySizeOfExcludingThis, aMallocSizeOf);
     amount += mImports.SizeOfExcludingThis(ClassEntrySizeOfExcludingThis, aMallocSizeOf);
     amount += mInProgressImports.SizeOfExcludingThis(DataEntrySizeOfExcludingThis, aMallocSizeOf);
-    amount += mThisObjects.SizeOfExcludingThis(nullptr, aMallocSizeOf);
 
     return amount;
 }
@@ -695,7 +684,9 @@ mozJSComponentLoader::PrepareObjectForLocation(JSCLContextHelper& aCx,
 
         CompartmentOptions options;
         options.setZone(SystemZone)
-               .setVersion(JSVERSION_LATEST);
+               .setVersion(JSVERSION_LATEST)
+               .setAddonId(aReuseLoaderGlobal ? nullptr : MapURIToAddonID(aURI));
+
         // Defer firing OnNewGlobalObject until after the __URI__ property has
         // been defined so the JS debugger can tell what module the global is
         // for
@@ -911,12 +902,11 @@ mozJSComponentLoader::ObjectForLocation(ComponentLoaderInfo &aInfo,
             }
 
             if (!mReuseLoaderGlobal) {
-                script = Compile(cx, obj, options, buf,
-                                     fileSize32);
+                Compile(cx, obj, options, buf, fileSize32, &script);
             } else {
-                function = CompileFunction(cx, obj, options,
-                                               nullptr, 0, nullptr,
-                                               buf, fileSize32);
+                CompileFunction(cx, obj, options,
+                                nullptr, 0, nullptr,
+                                buf, fileSize32, &function);
             }
 
             PR_MemUnmap(buf, fileSize32);
@@ -998,11 +988,11 @@ mozJSComponentLoader::ObjectForLocation(ComponentLoaderInfo &aInfo,
             buf[len] = '\0';
 
             if (!mReuseLoaderGlobal) {
-                script = Compile(cx, obj, options, buf, bytesRead);
+                Compile(cx, obj, options, buf, bytesRead, &script);
             } else {
-                function = CompileFunction(cx, obj, options,
-                                               nullptr, 0, nullptr,
-                                               buf, bytesRead);
+                CompileFunction(cx, obj, options,
+                                nullptr, 0, nullptr,
+                                buf, bytesRead, &function);
             }
         }
         // Propagate the exception, if one exists. Also, don't leave the stale
@@ -1048,16 +1038,6 @@ mozJSComponentLoader::ObjectForLocation(ComponentLoaderInfo &aInfo,
 
     aTableScript.set(tableScript);
 
-    if (js::GetObjectJSClass(obj) == &kFakeBackstagePassJSClass) {
-        MOZ_ASSERT(mReuseLoaderGlobal);
-        // tableScript stays in the table until shutdown.  It is rooted by
-        // virtue of the fact that aTableScript is a handle to
-        // ModuleEntry::thisObjectKey, which is a PersistentRootedScript.  Since
-        // ModuleEntries are never dynamically unloaded when mReuseLoaderGlobal
-        // is true, this prevents it from being collected and another script
-        // getting the same address.
-        mThisObjects.Put(tableScript, obj);
-    }
     bool ok = false;
 
     {
@@ -1079,7 +1059,6 @@ mozJSComponentLoader::ObjectForLocation(ComponentLoaderInfo &aInfo,
         }
         aObject.set(nullptr);
         aTableScript.set(nullptr);
-        mThisObjects.Remove(tableScript);
         return NS_ERROR_FAILURE;
     }
 
@@ -1088,7 +1067,6 @@ mozJSComponentLoader::ObjectForLocation(ComponentLoaderInfo &aInfo,
     if (!*aLocation) {
         aObject.set(nullptr);
         aTableScript.set(nullptr);
-        mThisObjects.Remove(tableScript);
         return NS_ERROR_OUT_OF_MEMORY;
     }
 
@@ -1124,7 +1102,6 @@ mozJSComponentLoader::UnloadModules()
 
     mInProgressImports.Clear();
     mImports.Clear();
-    mThisObjects.Clear();
 
     mModules.Enumerate(ClearModules, nullptr);
 

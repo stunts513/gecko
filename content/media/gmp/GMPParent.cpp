@@ -13,6 +13,7 @@
 #include "nsThreadUtils.h"
 #include "nsIRunnable.h"
 #include "mozIGeckoMediaPluginService.h"
+#include "mozilla/unused.h"
 
 namespace mozilla {
 namespace gmp {
@@ -126,7 +127,8 @@ GMPParent::VideoDecoderDestroyed(GMPVideoDecoderParent* aDecoder)
 {
   MOZ_ASSERT(GMPThread() == NS_GetCurrentThread());
 
-  MOZ_ALWAYS_TRUE(mVideoDecoders.RemoveElement(aDecoder));
+  // If the constructor fails, we'll get called before it's added
+  unused << NS_WARN_IF(!mVideoDecoders.RemoveElement(aDecoder));
 
   // Recv__delete__ is on the stack, don't potentially destroy the top-level actor
   // until after this has completed.
@@ -139,7 +141,8 @@ GMPParent::VideoEncoderDestroyed(GMPVideoEncoderParent* aEncoder)
 {
   MOZ_ASSERT(GMPThread() == NS_GetCurrentThread());
 
-  MOZ_ALWAYS_TRUE(mVideoEncoders.RemoveElement(aEncoder));
+  // If the constructor fails, we'll get called before it's added
+  unused << NS_WARN_IF(!mVideoEncoders.RemoveElement(aEncoder));
 
   // Recv__delete__ is on the stack, don't potentially destroy the top-level actor
   // until after this has completed.
@@ -418,6 +421,27 @@ GMPParent::ReadGMPMetaData()
   }
 
   return NS_OK;
+}
+
+bool
+GMPParent::CanBeSharedCrossOrigin() const
+{
+  return mOrigin.IsEmpty();
+}
+
+bool
+GMPParent::CanBeUsedFrom(const nsAString& aOrigin) const
+{
+  return (mOrigin.IsEmpty() && State() == GMPStateNotLoaded) ||
+         mOrigin.Equals(aOrigin);
+}
+
+void
+GMPParent::SetOrigin(const nsAString& aOrigin)
+{
+  MOZ_ASSERT(!aOrigin.IsEmpty());
+  MOZ_ASSERT(CanBeUsedFrom(aOrigin));
+  mOrigin = aOrigin;
 }
 
 } // namespace gmp

@@ -818,26 +818,28 @@ nsMathMLmoFrame::Stretch(nsRenderingContext& aRenderingContext,
   }
   if (isAccent && firstChild) {
     // see bug 188467 for what is going on here
-    nscoord dy = aDesiredStretchSize.TopAscent() - (mBoundingMetrics.ascent + leading);
-    aDesiredStretchSize.SetTopAscent(mBoundingMetrics.ascent + leading);
-    aDesiredStretchSize.Height() = aDesiredStretchSize.TopAscent() + mBoundingMetrics.descent;
+    nscoord dy = aDesiredStretchSize.BlockStartAscent() -
+      (mBoundingMetrics.ascent + leading);
+    aDesiredStretchSize.SetBlockStartAscent(mBoundingMetrics.ascent + leading);
+    aDesiredStretchSize.Height() = aDesiredStretchSize.BlockStartAscent() +
+                                   mBoundingMetrics.descent;
 
     firstChild->SetPosition(firstChild->GetPosition() - nsPoint(0, dy));
   }
   else if (useMathMLChar) {
     nscoord ascent = fm->MaxAscent();
     nscoord descent = fm->MaxDescent();
-    aDesiredStretchSize.SetTopAscent(std::max(mBoundingMetrics.ascent + leading, ascent));
-    aDesiredStretchSize.Height() = aDesiredStretchSize.TopAscent() +
+    aDesiredStretchSize.SetBlockStartAscent(std::max(mBoundingMetrics.ascent + leading, ascent));
+    aDesiredStretchSize.Height() = aDesiredStretchSize.BlockStartAscent() +
                                  std::max(mBoundingMetrics.descent + leading, descent);
   }
   aDesiredStretchSize.Width() = mBoundingMetrics.width;
   aDesiredStretchSize.mBoundingMetrics = mBoundingMetrics;
   mReference.x = 0;
-  mReference.y = aDesiredStretchSize.TopAscent();
+  mReference.y = aDesiredStretchSize.BlockStartAscent();
   // Place our mMathMLChar, its origin is in our coordinate system
   if (useMathMLChar) {
-    nscoord dy = aDesiredStretchSize.TopAscent() - mBoundingMetrics.ascent;
+    nscoord dy = aDesiredStretchSize.BlockStartAscent() - mBoundingMetrics.ascent;
     mMathMLChar.SetRect(nsRect(0, dy, charSize.width, charSize.ascent + charSize.descent));
   }
 
@@ -922,17 +924,13 @@ nsMathMLmoFrame::TransmitAutomaticData()
   return NS_OK;
 }
 
-nsresult
+void
 nsMathMLmoFrame::SetInitialChildList(ChildListID     aListID,
                                      nsFrameList&    aChildList)
 {
   // First, let the parent class do its work
-  nsresult rv = nsMathMLTokenFrame::SetInitialChildList(aListID, aChildList);
-  if (NS_FAILED(rv))
-    return rv;
-
+  nsMathMLTokenFrame::SetInitialChildList(aListID, aChildList);
   ProcessTextData();
-  return rv;
 }
 
 void

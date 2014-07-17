@@ -12,11 +12,13 @@ const { once } = require('../system/events');
 const { exit, env, staticArgs } = require('../system');
 const { when: unload } = require('../system/unload');
 const { loadReason } = require('../self');
-const { rootURI, metadata: { preferences } } = require("@loader/options");
+const { rootURI, metadata } = require("@loader/options");
 const globals = require('../system/globals');
 const xulApp = require('../system/xul-app');
+const { id } = require('sdk/self');
 const appShellService = Cc['@mozilla.org/appshell/appShellService;1'].
                         getService(Ci.nsIAppShellService);
+const { preferences } = metadata;
 
 const NAME2TOPIC = {
   'Firefox': 'sessionstore-windows-restored',
@@ -123,8 +125,9 @@ function run(options) {
       // Do not enable HTML localization while running test as it is hard to
       // disable. Because unit tests are evaluated in a another Loader who
       // doesn't have access to this current loader.
-      if (options.main !== 'test-harness/run-tests')
+      if (options.main !== 'sdk/test/runner') {
         require('../l10n/html').enable();
+      }
     }
     catch(error) {
       console.exception(error);
@@ -133,14 +136,14 @@ function run(options) {
     // native-options does stuff directly with preferences key from package.json
     if (preferences && preferences.length > 0) {
       try {
-        require('../preferences/native-options').enable(preferences);
-      } 
-      catch (error) {
-        console.exception(error); 
+        require('../preferences/native-options').enable({ preferences: preferences, id: id });
       }
-    } 
+      catch (error) {
+        console.exception(error);
+      }
+    }
     else {
-      // keeping support for addons packaged with older SDK versions, 
+      // keeping support for addons packaged with older SDK versions,
       // when cfx didn't include the 'preferences' key in @loader/options
 
       // Initialize inline options localization, without preventing addon to be
@@ -158,7 +161,7 @@ function run(options) {
         // Only set if `prefsURI` specified
         try {
           setDefaultPrefs(options.prefsURI);
-        } 
+        }
         catch (err) {
           // cfx bootstrap always passes prefsURI, even in addons without prefs
         }

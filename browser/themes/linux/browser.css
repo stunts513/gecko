@@ -51,7 +51,22 @@
   padding-bottom: 1px;
 }
 
+#navigator-toolbox > toolbar:not(#toolbar-menubar):not(#TabsToolbar):not(#nav-bar):not(#addon-bar) {
+  overflow: -moz-hidden-unscrollable;
+  max-height: 4em;
+  transition: min-height 170ms ease-out, max-height 170ms ease-out;
+}
+
+#navigator-toolbox > toolbar:not(#toolbar-menubar):not(#TabsToolbar):not(#nav-bar):not(#addon-bar)[collapsed=true] {
+  min-height: 0.1px;
+  max-height: 0;
+  transition: min-height 170ms ease-out, max-height 170ms ease-out, visibility 170ms linear;
+}
+
 #TabsToolbar:not([collapsed="true"]) + #nav-bar {
+  border-top: 1px solid hsla(0,0%,0%,.3) !important;
+  background-clip: padding-box;
+  margin-top: -1px; /* Move up into the TabsToolbar for the inner highlight at the top of the nav-bar */
   /* Position the toolbar above the bottom of background tabs */
   position: relative;
   z-index: 1;
@@ -748,6 +763,11 @@ toolbarbutton[sdk-button="true"][cui-areatype="toolbar"] > .toolbarbutton-icon {
   -moz-image-region: rect(0, 64px, 16px, 48px);
 }
 
+/* undo close tab menu item */
+#alltabs_undoCloseTab {
+  list-style-image: url(chrome://browser/skin/undoCloseTab.png);
+}
+
 #bookmarks-button {
   -moz-image-region: rect(0px 72px 24px 48px);
 }
@@ -1373,14 +1393,24 @@ toolbarbutton[sdk-button="true"][cui-areatype="toolbar"] > .toolbarbutton-icon {
 
 %include ../shared/translation/infobar.inc.css
 
+notification[value="translation"] {
+  min-height: 40px;
+}
+
 notification[value="translation"],
 notification[value="translation"] button,
 notification[value="translation"] menulist {
+  min-height: 30px;
   color: #5A5959;
 }
 
 notification[value="translation"] {
   background-color: #F2F1F0;
+}
+
+notification[value="translation"] button,
+notification[value="translation"] menulist {
+  -moz-padding-end: 1ch;
 }
 
 notification[value="translation"] menulist {
@@ -1391,6 +1421,13 @@ notification[value="translation"] menulist {
 notification[value="translation"] button {
   border: 1px solid #C1C1C1;
   background-color: #F2F1F0;
+}
+
+notification[value="translation"] button,
+notification[value="translation"] menulist,
+notification[value="translation"] menulist > .menulist-label-box {
+  -moz-margin-start: 1ch;
+  -moz-margin-end: 1ch;
 }
 
 notification[value="translation"] button:hover,
@@ -1410,6 +1447,16 @@ notification[value="translation"] button[anonid="translate"] {
 notification[value="translation"] button[anonid="translate"]:hover,
 notification[value="translation"] button[anonid="translate"]:active {
   background-image: linear-gradient(#8DA726, #8DA726);
+}
+
+notification[value="translation"] button > .button-box,
+notification[value="translation"] button[type="menu"] > .button-box > .button-menu-dropmarker {
+  padding: 0;
+  -moz-margin-start: 3ch;
+}
+
+notification[value="translation"] button:not([type="menu"]) > .button-box {
+  -moz-margin-end: 3ch;
 }
 
 notification[value="translation"] menulist > .menulist-dropmarker {
@@ -1557,6 +1604,10 @@ richlistitem[type~="action"][actiontype="switchtab"] > .ac-url-box > .ac-action-
   list-style-image: url("chrome://browser/skin/Info.png");
 }
 
+/* Loop */
+#loop-call-button {
+  list-style-image: url("chrome://global/skin/loop/loop-call.png");
+}
 
 /* social share panel */
 
@@ -1695,7 +1746,6 @@ richlistitem[type~="action"][actiontype="switchtab"] > .ac-url-box > .ac-action-
 
 .panel-promo-closebutton > .toolbarbutton-text {
   padding: 0;
-  margin: 0;
 }
 
 /* Content area */
@@ -1721,21 +1771,7 @@ richlistitem[type~="action"][actiontype="switchtab"] > .ac-url-box > .ac-action-
 #TabsToolbar {
   min-height: 0;
   padding: 0;
-  position: relative;
   margin-bottom: -@tabToolbarNavbarOverlap@;
-}
-
-/*
- * Draw the bottom border of the tabstrip:
- */
-#TabsToolbar::after {
-  content: "";
-  position: absolute;
-  bottom: @tabToolbarNavbarOverlap@;
-  left: 0;
-  right: 0;
-  z-index: 0;
-  border-bottom: 1px solid hsla(0,0%,0%,.3);
 }
 
 #TabsToolbar:not(:-moz-lwtheme) {
@@ -1801,59 +1837,60 @@ richlistitem[type~="action"][actiontype="switchtab"] > .ac-url-box > .ac-action-
 }
 
 /* Tabbrowser arrowscrollbox arrows */
+.tabbrowser-arrowscrollbox > .scrollbutton-up > .toolbarbutton-icon,
+.tabbrowser-arrowscrollbox > .scrollbutton-down > .toolbarbutton-icon {
+  -moz-appearance: none;
+}
+
 .tabbrowser-arrowscrollbox > .scrollbutton-up,
 .tabbrowser-arrowscrollbox > .scrollbutton-down {
   -moz-appearance: none;
+  list-style-image: url("chrome://browser/skin/tabbrowser/tab-arrow-left.png");
   margin: 0 0 @tabToolbarNavbarOverlap@;
 }
 
-.tabbrowser-arrowscrollbox > .scrollbutton-up {
-  -moz-border-start: 0;
-  -moz-border-end: 2px solid transparent;
+#TabsToolbar[brighttext] > #tabbrowser-tabs > .tabbrowser-arrowscrollbox > .scrollbutton-up,
+#TabsToolbar[brighttext] > #tabbrowser-tabs > .tabbrowser-arrowscrollbox > .scrollbutton-down {
+  list-style-image: url(chrome://browser/skin/tabbrowser/tab-arrow-left-inverted.png);
+}
+
+.tabbrowser-arrowscrollbox > .scrollbutton-up[disabled],
+.tabbrowser-arrowscrollbox > .scrollbutton-down[disabled] {
+  opacity: .4;
+}
+
+.tabbrowser-arrowscrollbox > .scrollbutton-up:-moz-locale-dir(rtl),
+.tabbrowser-arrowscrollbox > .scrollbutton-down:-moz-locale-dir(ltr) {
+  transform: scaleX(-1);
 }
 
 .tabbrowser-arrowscrollbox > .scrollbutton-down {
-  -moz-border-start: 2px solid transparent;
-  -moz-border-end: 0;
-  transition: 1s box-shadow ease-out;
-  border-radius: 4px;
+  transition: 1s background-color ease-out;
 }
 
 .tabbrowser-arrowscrollbox > .scrollbutton-down[notifybgtab] {
-  box-shadow: 0 0 5px 5px Highlight inset;
+  background-color: Highlight;
   transition: none;
-}
-
-.tabbrowser-arrowscrollbox > .scrollbutton-up:not([disabled]):-moz-locale-dir(ltr),
-.tabbrowser-arrowscrollbox > .scrollbutton-down:not([disabled]):-moz-locale-dir(rtl) {
-  border-width: 0 2px 0 0;
-  border-style: solid;
-  border-image: url("chrome://browser/skin/tabbrowser/tab-overflow-border.png") 0 2 0 2 fill;
-}
-
-.tabbrowser-arrowscrollbox > .scrollbutton-down:not([disabled]):-moz-locale-dir(ltr),
-.tabbrowser-arrowscrollbox > .scrollbutton-up:not([disabled]):-moz-locale-dir(rtl) {
-  border-width: 0 0 0 2px;
-  border-style: solid;
-  border-image: url("chrome://browser/skin/tabbrowser/tab-overflow-border.png") 0 2 0 2 fill;
 }
 
 #TabsToolbar .toolbarbutton-1 {
   margin-bottom: @tabToolbarNavbarOverlap@;
 }
 
-#TabsToolbar .toolbarbutton-1 > .toolbarbutton-icon,
-#TabsToolbar .toolbarbutton-1 > .toolbarbutton-menu-dropmarker,
-#TabsToolbar .toolbarbutton-1 > .toolbarbutton-menubutton-button > .toolbarbutton-icon {
-  margin-top: -2px;
-  margin-bottom: -2px;
+#alltabs-button {
+  list-style-image: url("chrome://browser/skin/tabbrowser/alltabs.png");
 }
 
-#alltabs-button > .toolbarbutton-menu-dropmarker {
-  margin-bottom: -2px;
+#TabsToolbar[brighttext] > #alltabs-button,
+#TabsToolbar[brighttext] > toolbarpaletteitem > #alltabs-button {
+  list-style-image: url("chrome://browser/skin/tabbrowser/alltabs-inverted.png");
 }
 
 #alltabs-button > .toolbarbutton-icon {
+  padding: 9px 6px 6px;
+}
+
+#alltabs-button > .toolbarbutton-menu-dropmarker {
   display: none;
 }
 
@@ -2168,15 +2205,29 @@ chatbox {
 
 %include ../shared/customizableui/customizeMode.inc.css
 
-#main-window[customizing] > #tab-view-deck {
-  background: linear-gradient(to bottom, #bcbcbc, #b5b5b5);
+#main-window[customize-entered] > #tab-view-deck {
+  background-image: url("chrome://browser/skin/customizableui/customizeMode-gridTexture.png"),
+                    linear-gradient(to bottom, #bcbcbc, #b5b5b5);
+  background-attachment: fixed;
 }
 
-#main-window[customize-entered] > #tab-view-deck {
+#main-window[customization-lwtheme] > #tab-view-deck:-moz-lwtheme {
+  background-repeat: no-repeat;
+  background-position: right top;
+  background-attachment: fixed;
+  /* The image will get set from CustomizeMode.jsm */
+  background-image: none;
+  background-color: transparent;
+}
+
+#main-window[customization-lwtheme]:-moz-lwtheme {
   background-image: url("chrome://browser/skin/customizableui/customizeMode-gridTexture.png"),
                     url("chrome://browser/skin/customizableui/background-noise-toolbar.png"),
                     linear-gradient(to bottom, #bcbcbc, #b5b5b5);
+  background-color: #b5b5b5;
+  background-repeat: repeat;
   background-attachment: fixed;
+  background-position: left top;
 }
 
 #main-window[customize-entered] #browser-bottombox,

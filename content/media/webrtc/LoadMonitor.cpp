@@ -149,11 +149,17 @@ private:
 
 void LoadMonitor::Shutdown()
 {
-  MutexAutoLock lock(mLock);
   if (mLoadInfoThread) {
-    mShutdownPending = true;
-    mCondVar.Notify();
+    {
+      MutexAutoLock lock(mLock);
+      LOG(("LoadMonitor: shutting down"));
+      mShutdownPending = true;
+      mCondVar.Notify();
+    }
 
+    // Note: can't just call ->Shutdown() from here; that spins the event
+    // loop here, causing re-entrancy issues if we're invoked from cycle
+    // collection.  Argh.
     mLoadInfoThread = nullptr;
 
     nsRefPtr<LoadMonitorRemoveObserver> remObsRunner = new LoadMonitorRemoveObserver(this);
@@ -268,10 +274,16 @@ nsresult WinProcMon::QuerySystemLoad(float* load_percent)
 }
 #endif
 
-class LoadStats
+// Use a non-generic class name, because otherwise we can get name collisions
+// with other classes in the codebase.  The normal way of dealing with that is
+// to put the class in an anonymous namespace, but this class is used as a
+// member of RTCLoadInfo, which can't be in the anonymous namespace, so it also
+// can't be in an anonymous namespace: gcc warns about that setup and this
+// directory is fail-on-warnings.
+class RTCLoadStats
 {
 public:
-  LoadStats() :
+  RTCLoadStats() :
     mPrevTotalTimes(0),
     mPrevCpuTimes(0),
     mPrevLoad(0) {};
@@ -283,11 +295,17 @@ public:
   float mPrevLoad;               // Previous load value.
 };
 
-class LoadInfo : public mozilla::RefCounted<LoadInfo>
+// Use a non-generic class name, because otherwise we can get name collisions
+// with other classes in the codebase.  The normal way of dealing with that is
+// to put the class in an anonymous namespace, but this class is used as a
+// member of LoadInfoCollectRunner, which can't be in the anonymous namespace,
+// so it also can't be in an anonymous namespace: gcc warns about that setup
+// and this directory is fail-on-warnings.
+class RTCLoadInfo : public mozilla::RefCounted<RTCLoadInfo>
 {
 public:
-  MOZ_DECLARE_REFCOUNTED_TYPENAME(LoadInfo)
-  LoadInfo(): mLoadUpdateInterval(0) {};
+  MOZ_DECLARE_REFCOUNTED_TYPENAME(RTCLoadInfo)
+  RTCLoadInfo(): mLoadUpdateInterval(0) {};
   nsresult Init(int aLoadUpdateInterval);
   double GetSystemLoad() { return mSystemLoad.GetLoad(); };
   double GetProcessLoad() { return mProcessLoad.GetLoad(); };
@@ -298,19 +316,19 @@ private:
   void UpdateCpuLoad(uint64_t ticks_per_interval,
                      uint64_t current_total_times,
                      uint64_t current_cpu_times,
-                     LoadStats* loadStat);
+                     RTCLoadStats* loadStat);
 #ifdef XP_WIN
   WinProcMon mSysMon;
   HANDLE mProcHandle;
   int mNumProcessors;
 #endif
-  LoadStats mSystemLoad;
-  LoadStats mProcessLoad;
+  RTCLoadStats mSystemLoad;
+  RTCLoadStats mProcessLoad;
   uint64_t mTicksPerInterval;
   int mLoadUpdateInterval;
 };
 
-nsresult LoadInfo::Init(int aLoadUpdateInterval)
+nsresult RTCLoadInfo::Init(int aLoadUpdateInterval)
 {
   mLoadUpdateInterval = aLoadUpdateInterval;
 #ifdef XP_WIN
@@ -325,10 +343,10 @@ nsresult LoadInfo::Init(int aLoadUpdateInterval)
 #endif
 }
 
-void LoadInfo::UpdateCpuLoad(uint64_t ticks_per_interval,
-                             uint64_t current_total_times,
-                             uint64_t current_cpu_times,
-                             LoadStats *loadStat) {
+void RTCLoadInfo::UpdateCpuLoad(uint64_t ticks_per_interval,
+                                uint64_t current_total_times,
+                                uint64_t current_cpu_times,
+                                RTCLoadStats *loadStat) {
   // Check if we get an inconsistent number of ticks.
   if (((current_total_times - loadStat->mPrevTotalTimes)
        > (ticks_per_interval * 10))
@@ -360,7 +378,7 @@ void LoadInfo::UpdateCpuLoad(uint64_t ticks_per_interval,
   loadStat->mPrevCpuTimes = current_cpu_times;
 }
 
-nsresult LoadInfo::UpdateSystemLoad()
+nsresult RTCLoadInfo::UpdateSystemLoad()
 {
 #if defined(LINUX) || defined(ANDROID)
   nsCOMPtr<nsIFile> procStatFile = do_CreateInstance(NS_LOCAL_FILE_CONTRACTID);
@@ -431,10 +449,10 @@ nsresult LoadInfo::UpdateSystemLoad()
     CTL_KERN,
     KERN_CP_TIME,
   };
-  size_t miblen = sizeof(mib) / sizeof(mib[0]);
-  if (sysctl(mib, miblen, &cp_time, &sz, NULL, 0)) {
+  u_int miblen = sizeof(mib) / sizeof(mib[0]);
+  if (sysctl(mib, miblen, &cp_time, &sz, nullptr, 0)) {
 #else
-  if (sysctlbyname("kern.cp_time", &cp_time, &sz, NULL, 0)) {
+  if (sysctlbyname("kern.cp_time", &cp_time, &sz, nullptr, 0)) {
 #endif // KERN_CP_TIME
     LOG(("sysctl kern.cp_time failed"));
     return NS_ERROR_FAILURE;
@@ -466,7 +484,7 @@ nsresult LoadInfo::UpdateSystemLoad()
 #endif
 }
 
-nsresult LoadInfo::UpdateProcessLoad() {
+nsresult RTCLoadInfo::UpdateProcessLoad() {
 #if defined(XP_UNIX)
   struct timeval tv;
   gettimeofday(&tv, nullptr);
@@ -512,12 +530,16 @@ nsresult LoadInfo::UpdateProcessLoad() {
   return NS_OK;
 }
 
+// Note: This class can't be in the anonymous namespace, because then we can't
+// declare it as a friend of LoadMonitor.
 class LoadInfoCollectRunner : public nsRunnable
 {
 public:
   LoadInfoCollectRunner(nsRefPtr<LoadMonitor> loadMonitor,
-                        RefPtr<LoadInfo> loadInfo)
-    : mLoadUpdateInterval(loadMonitor->mLoadUpdateInterval),
+                        RefPtr<RTCLoadInfo> loadInfo,
+                        nsIThread *loadInfoThread)
+    : mThread(loadInfoThread),
+      mLoadUpdateInterval(loadMonitor->mLoadUpdateInterval),
       mLoadNoiseCounter(0)
   {
     mLoadMonitor = loadMonitor;
@@ -526,6 +548,19 @@ public:
 
   NS_IMETHOD Run()
   {
+    if (NS_IsMainThread()) {
+      if (mThread) {
+        // Don't leak threads!
+        mThread->Shutdown(); // can't Shutdown from the thread itself, darn
+        // Don't null out mThread!
+        // See bug 999104.  We must hold a ref to the thread across Dispatch()
+        // since the internal mThread ref could be released while processing
+        // the Dispatch(), and Dispatch/PutEvent itself doesn't hold a ref; it
+        // assumes the caller does.
+      }
+      return NS_OK;
+    }
+
     MutexAutoLock lock(mLoadMonitor->mLock);
     while (!mLoadMonitor->mShutdownPending) {
       mLoadInfo->UpdateSystemLoad();
@@ -543,11 +578,14 @@ public:
 
       mLoadMonitor->mCondVar.Wait(PR_MillisecondsToInterval(mLoadUpdateInterval));
     }
+    // ok, we need to exit safely and can't shut ourselves down (DARN)
+    NS_DispatchToMainThread(this);
     return NS_OK;
   }
 
 private:
-  RefPtr<LoadInfo> mLoadInfo;
+  nsCOMPtr<nsIThread> mThread;
+  RefPtr<RTCLoadInfo> mLoadInfo;
   nsRefPtr<LoadMonitor> mLoadMonitor;
   int mLoadUpdateInterval;
   int mLoadNoiseCounter;
@@ -591,11 +629,11 @@ LoadMonitor::Init(nsRefPtr<LoadMonitor> &self)
 {
   LOG(("Initializing LoadMonitor"));
 
-  RefPtr<LoadInfo> load_info = new LoadInfo();
+  RefPtr<RTCLoadInfo> load_info = new RTCLoadInfo();
   nsresult rv = load_info->Init(mLoadUpdateInterval);
 
   if (NS_FAILED(rv)) {
-    LOG(("LoadInfo::Init error"));
+    LOG(("RTCLoadInfo::Init error"));
     return rv;
   }
 
@@ -605,7 +643,7 @@ LoadMonitor::Init(nsRefPtr<LoadMonitor> &self)
   NS_NewNamedThread("Sys Load Info", getter_AddRefs(mLoadInfoThread));
 
   nsRefPtr<LoadInfoCollectRunner> runner =
-    new LoadInfoCollectRunner(self, load_info);
+    new LoadInfoCollectRunner(self, load_info, mLoadInfoThread);
   mLoadInfoThread->Dispatch(runner, NS_DISPATCH_NORMAL);
 
   return NS_OK;

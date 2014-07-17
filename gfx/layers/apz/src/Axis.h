@@ -25,7 +25,7 @@ const float EPSILON = 0.0001f;
 // isn't too large.
 const float COORDINATE_EPSILON = 0.01f;
 
-class FrameMetrics;
+struct FrameMetrics;
 class AsyncPanZoomController;
 
 /**
@@ -83,9 +83,13 @@ public:
    * to prevent the viewport from overscrolling the page rect), and axis locking
    * (which might prevent any displacement from happening). If overscroll
    * ocurred, its amount is written to |aOverscrollAmountOut|.
-   * The adjusted displacement is returned.
+   * The |aDisplacementOut| parameter is set to the adjusted
+   * displacement, and the function returns true iff internal overscroll amounts
+   * were changed.
    */
-  float AdjustDisplacement(float aDisplacement, float& aOverscrollAmountOut);
+  bool AdjustDisplacement(float aDisplacement,
+                          float& aDisplacementOut,
+                          float& aOverscrollAmountOut);
 
   /**
    * Overscrolls this axis by the requested amount in the requested direction.
@@ -99,11 +103,6 @@ public:
   float GetOverscroll() const;
 
   /**
-   * Start a snap-back animation to relieve overscroll.
-   */
-  void StartSnapBack();
-
-  /**
    * Sample the snap-back animation to relieve overscroll.
    * |aDelta| is the time since the last sample.
    */
@@ -113,6 +112,11 @@ public:
    * Return whether this axis is overscrolled in either direction.
    */
   bool IsOverscrolled() const;
+
+  /**
+   * Clear any overscroll amount on this axis.
+   */
+  void ClearOverscroll();
 
   /**
    * Gets the distance between the starting position of the touch supplied in
@@ -130,10 +134,15 @@ public:
   /**
    * Applies friction during a fling, or cancels the fling if the velocity is
    * too low. Returns true if the fling should continue to another frame, or
-   * false if it should end. |aDelta| is the amount of time that has passed
-   * since the last time friction was applied.
+   * false if it should end.
+   * |aDelta| is the amount of time that has passed since the last time
+   * friction was applied.
+   * |aFriction| is the amount of friction to apply.
+   * |aThreshold| is the velocity below which the fling is cancelled.
    */
-  bool FlingApplyFrictionOrCancel(const TimeDuration& aDelta);
+  bool FlingApplyFrictionOrCancel(const TimeDuration& aDelta,
+                                  float aFriction,
+                                  float aThreshold);
 
   /**
    * Returns true if the page has room to be scrolled along this axis.

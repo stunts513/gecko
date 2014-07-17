@@ -1,4 +1,4 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
  * vim: sw=2 ts=2 sts=2 expandtab filetype=javascript
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -63,8 +63,7 @@ function isFilenameWithSameDate(aSourceName, aTargetName) {
   let targetMatches = aTargetName.match(filenamesRegex);
 
   return sourceMatches && targetMatches &&
-         sourceMatches[1] == targetMatches[1] &&
-         sourceMatches[4] == targetMatches[4];
+         sourceMatches[1] == targetMatches[1];
 }
 
 /**
@@ -438,6 +437,10 @@ this.PlacesBackups = {
         this._backupFiles.shift();
         this._entries.shift();
         newBackupFile = mostRecentBackupFile;
+        // Ensure we retain the proper extension when renaming
+        // the most recent backup file.
+        if (/\.json$/.test(OS.Path.basename(mostRecentBackupFile)))
+          newBackupFilename = this.getFilenameForDate();
         newFilenameWithMetaData = appendMetaDataToFilename(
           newBackupFilename,
           { count: this.getBookmarkCountForFile(mostRecentBackupFile),

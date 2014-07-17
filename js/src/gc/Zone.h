@@ -137,15 +137,7 @@ struct Zone : public JS::shadow::Zone,
     void setPreservingCode(bool preserving) { gcPreserveCode_ = preserving; }
     bool isPreservingCode() const { return gcPreserveCode_; }
 
-    bool canCollect() {
-        // Zones cannot be collected while in use by other threads.
-        if (usedByExclusiveThread)
-            return false;
-        JSRuntime *rt = runtimeFromAnyThread();
-        if (rt->isAtomsZone(this) && rt->exclusiveThreadsPresent())
-            return false;
-        return true;
-    }
+    bool canCollect();
 
     enum GCState {
         NoGC,
@@ -195,8 +187,8 @@ struct Zone : public JS::shadow::Zone,
         return needsBarrier || runtimeFromMainThread()->gcZeal() == js::gc::ZealVerifierPreValue;
     }
 
-    enum ShouldUpdateIon { DontUpdateIon, UpdateIon };
-    void setNeedsBarrier(bool needs, ShouldUpdateIon updateIon);
+    enum ShouldUpdateJit { DontUpdateJit, UpdateJit };
+    void setNeedsBarrier(bool needs, ShouldUpdateJit updateJit);
     const bool *addressOfNeedsBarrier() const { return &needsBarrier_; }
 
     js::jit::JitZone *getJitZone(JSContext *cx) { return jitZone_ ? jitZone_ : createJitZone(cx); }
@@ -282,7 +274,7 @@ struct Zone : public JS::shadow::Zone,
     GCState gcState_;
     bool gcScheduled_;
     bool gcPreserveCode_;
-    bool ionUsingBarriers_;
+    bool jitUsingBarriers_;
 
     friend bool js::CurrentThreadCanAccessZone(Zone *zone);
     friend class js::gc::GCRuntime;
@@ -311,10 +303,12 @@ class ZonesIter
         end = rt->gc.zones.end();
 
         if (selector == SkipAtoms) {
-            JS_ASSERT(rt->isAtomsZone(*it));
+            MOZ_ASSERT(atAtomsZone(rt));
             it++;
         }
     }
+
+    bool atAtomsZone(JSRuntime *rt);
 
     bool done() const { return it == end; }
 

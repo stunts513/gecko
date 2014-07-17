@@ -26,12 +26,14 @@ import org.mozilla.gecko.PrefsHelper;
 import org.mozilla.gecko.R;
 import org.mozilla.gecko.Telemetry;
 import org.mozilla.gecko.TelemetryContract;
+import org.mozilla.gecko.TelemetryContract.Method;
 import org.mozilla.gecko.background.announcements.AnnouncementsConstants;
 import org.mozilla.gecko.background.common.GlobalConstants;
 import org.mozilla.gecko.background.healthreport.HealthReportConstants;
 import org.mozilla.gecko.db.BrowserContract.SuggestedSites;
 import org.mozilla.gecko.home.HomePanelPicker;
 import org.mozilla.gecko.util.GeckoEventListener;
+import org.mozilla.gecko.util.HardwareUtils;
 import org.mozilla.gecko.util.ThreadUtils;
 import org.mozilla.gecko.widget.FloatingHintEditText;
 
@@ -85,6 +87,11 @@ OnSharedPreferenceChangeListener
 {
     private static final String LOGTAG = "GeckoPreferences";
 
+    // We have a white background, which makes transitions on
+    // some devices look bad. Don't use transitions on those
+    // devices.
+    private static final boolean NO_TRANSITIONS = HardwareUtils.IS_KINDLE_DEVICE;
+
     private static final String NON_PREF_PREFIX = "android.not_a_preference.";
     public static final String INTENT_EXTRA_RESOURCES = "resource";
     public static String PREFS_HEALTHREPORT_UPLOAD_ENABLED = NON_PREF_PREFIX + "healthreport.uploadEnabled";
@@ -130,7 +137,21 @@ OnSharedPreferenceChangeListener
      * Track the last locale so we know whether to redisplay.
      */
     private Locale lastLocale = Locale.getDefault();
+    private boolean localeSwitchingIsEnabled;
 
+    private void startActivityForResultChoosingTransition(final Intent intent, final int requestCode) {
+        startActivityForResult(intent, requestCode);
+        if (NO_TRANSITIONS) {
+            overridePendingTransition(0, 0);
+        }
+    }
+
+    private void finishChoosingTransition() {
+        finish();
+        if (NO_TRANSITIONS) {
+            overridePendingTransition(0, 0);
+        }
+    }
     private void updateActionBarTitle(int title) {
         if (Build.VERSION.SDK_INT >= 14) {
             final String newTitle = getString(title);
@@ -138,7 +159,9 @@ OnSharedPreferenceChangeListener
                 Log.v(LOGTAG, "Setting action bar title to " + newTitle);
 
                 final ActionBar actionBar = getActionBar();
-                actionBar.setTitle(newTitle);
+                if (actionBar != null) {
+                    actionBar.setTitle(newTitle);
+                }
             }
         }
     }
@@ -240,16 +263,18 @@ OnSharedPreferenceChangeListener
             return;
         }
 
+        refreshSuggestedSites();
+
         // Cause the current fragment to redisplay, the hard way.
         // This avoids nonsense with trying to reach inside fragments and force them
         // to redisplay themselves.
         // We also don't need to update the title.
         final Intent intent = (Intent) getIntent().clone();
         intent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
-        startActivityForResult(intent, REQUEST_CODE_PREF_SCREEN);
+        startActivityForResultChoosingTransition(intent, REQUEST_CODE_PREF_SCREEN);
 
         setResult(RESULT_CODE_LOCALE_DID_CHANGE);
-        finish();
+        finishChoosingTransition();
     }
 
     private void checkLocale() {
@@ -267,6 +292,10 @@ OnSharedPreferenceChangeListener
         // Apply the current user-selected locale, if necessary.
         checkLocale();
 
+        // Track this so we can decide whether to show locale options.
+        // See also the workaround below for Bug 1015209.
+        localeSwitchingIsEnabled = BrowserLocaleManager.getInstance().isEnabled();
+
         // For Android v11+ where we use Fragments (v11+ only due to bug 866352),
         // check that PreferenceActivity.EXTRA_SHOW_FRAGMENT has been set
         // (or set it) before super.onCreate() is called so Android can display
@@ -282,10 +311,17 @@ OnSharedPreferenceChangeListener
                 updateTitle(getString(R.string.pref_header_customize));
             }
 
-            // So that Android doesn't put the fragment title (or nothing at
-            // all) in the action bar.
             if (onIsMultiPane()) {
+                // So that Android doesn't put the fragment title (or nothing at
+                // all) in the action bar.
                 updateActionBarTitle(R.string.settings_title);
+
+                if (Build.VERSION.SDK_INT < 13) {
+                    // Affected by Bug 1015209 -- no detach/attach.
+                    // If we try rejigging fragments, we'll crash, so don't
+                    // enable locale switching at all.
+                    localeSwitchingIsEnabled = false;
+                }
             }
         }
 
@@ -347,7 +383,9 @@ OnSharedPreferenceChangeListener
 
         if (Build.VERSION.SDK_INT >= 14) {
             final ActionBar actionBar = getActionBar();
-            actionBar.setHomeButtonEnabled(true);
+            if (actionBar != null) {
+                actionBar.setHomeButtonEnabled(true);
+            }
         }
 
         // N.B., if we ever need to redisplay the locale selection UI without
@@ -396,6 +434,18 @@ OnSharedPreferenceChangeListener
     public void onBuildHeaders(List<Header> target) {
         if (onIsMultiPane()) {
             loadHeadersFromResource(R.xml.preference_headers, target);
+
+            // If locale switching is disabled, remove the section
+            // entirely. This logic will need to be extended when
+            // content language selection (Bug 881510) is implemented.
+            if (!localeSwitchingIsEnabled) {
+                for (Header header : target) {
+                    if (header.id == R.id.pref_header_language) {
+                        target.remove(header);
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -408,6 +458,15 @@ OnSharedPreferenceChangeListener
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.HONEYCOMB) {
             PreferenceScreen screen = getPreferenceScreen();
             mPrefsRequestId = setupPreferences(screen);
+        }
+    }
+
+    @Override
+    public void onBackPressed() {
+        super.onBackPressed();
+
+        if (NO_TRANSITIONS) {
+            overridePendingTransition(0, 0);
         }
     }
 
@@ -465,7 +524,7 @@ OnSharedPreferenceChangeListener
         // the settings screens.
         // We need to start nested PreferenceScreens withStartActivityForResult().
         // Android doesn't let us do that (see Preference.onClick), so we're overriding here.
-        startActivityForResult(intent, REQUEST_CODE_PREF_SCREEN);
+        startActivityForResultChoosingTransition(intent, REQUEST_CODE_PREF_SCREEN);
     }
 
     @Override
@@ -476,9 +535,12 @@ OnSharedPreferenceChangeListener
         // Overriding because we want to use startActivityForResult for Fragment intents.
         Intent intent = onBuildStartFragmentIntent(fragmentName, args, titleRes, shortTitleRes);
         if (resultTo == null) {
-            startActivityForResult(intent, REQUEST_CODE_PREF_SCREEN);
+            startActivityForResultChoosingTransition(intent, REQUEST_CODE_PREF_SCREEN);
         } else {
             resultTo.startActivityForResult(intent, resultRequestCode);
+            if (NO_TRANSITIONS) {
+                overridePendingTransition(0, 0);
+            }
         }
     }
 
@@ -496,7 +558,7 @@ OnSharedPreferenceChangeListener
 
                   // Pass this result up to the parent activity.
                   setResult(RESULT_CODE_EXIT_SETTINGS);
-                  finish();
+                  finishChoosingTransition();
                   break;
               }
               break;
@@ -563,9 +625,20 @@ OnSharedPreferenceChangeListener
     private void setupPreferences(PreferenceGroup preferences, ArrayList<String> prefs) {
         for (int i = 0; i < preferences.getPreferenceCount(); i++) {
             Preference pref = preferences.getPreference(i);
+
+            // Eliminate locale switching if necessary.
+            // This logic will need to be extended when
+            // content language selection (Bug 881510) is implemented.
+            if (!localeSwitchingIsEnabled &&
+                "preferences_locale".equals(pref.getExtras().getString("resource", null))) {
+                preferences.removePreference(pref);
+                i--;
+                continue;
+            }
+
             String key = pref.getKey();
             if (pref instanceof PreferenceGroup) {
-                // If no datareporting is enabled, remove UI.
+                // If datareporting is disabled, remove UI.
                 if (PREFS_DATA_REPORTING_PREFERENCES.equals(key)) {
                     if (!AppConstants.MOZ_DATA_REPORTING) {
                         preferences.removePreference(pref);
@@ -602,6 +675,11 @@ OnSharedPreferenceChangeListener
                     continue;
                 } else if (!AppConstants.MOZ_CRASHREPORTER &&
                            PREFS_CRASHREPORTER_ENABLED.equals(key)) {
+                    preferences.removePreference(pref);
+                    i--;
+                    continue;
+                } else if (AppConstants.RELEASE_BUILD && PREFS_GEO_REPORTING.equals(key)) {
+                    // We don't build wifi/cell tower collection in release builds, so hide the UI.
                     preferences.removePreference(pref);
                     i--;
                     continue;
@@ -645,7 +723,7 @@ OnSharedPreferenceChangeListener
                         @Override
                         public boolean onPreferenceClick(Preference preference) {
                             Intent dialogIntent = new Intent(GeckoPreferences.this, HomePanelPicker.class);
-                            startActivityForResult(dialogIntent, HomePanelPicker.REQUEST_CODE_ADD_PANEL);
+                            startActivityForResultChoosingTransition(dialogIntent, HomePanelPicker.REQUEST_CODE_ADD_PANEL);
                             return true;
                         }
                     });
@@ -695,7 +773,7 @@ OnSharedPreferenceChangeListener
         int itemId = item.getItemId();
         switch (itemId) {
             case android.R.id.home:
-                finish();
+                finishChoosingTransition();
                 return true;
         }
 
@@ -854,9 +932,9 @@ OnSharedPreferenceChangeListener
                     if (null == localeManager.setSelectedLocale(context, newValue)) {
                         localeManager.updateConfiguration(context, Locale.getDefault());
                     }
-                    Telemetry.sendUIEvent(TelemetryContract.Event.LOCALE_BROWSER_UNSELECTED, null,
+                    Telemetry.sendUIEvent(TelemetryContract.Event.LOCALE_BROWSER_UNSELECTED, Method.NONE,
                                           currentLocale == null ? "unknown" : currentLocale);
-                    Telemetry.sendUIEvent(TelemetryContract.Event.LOCALE_BROWSER_SELECTED, null, newValue);
+                    Telemetry.sendUIEvent(TelemetryContract.Event.LOCALE_BROWSER_SELECTED, Method.NONE, newValue);
                 }
 
                 ThreadUtils.postToUiThread(new Runnable() {
@@ -869,6 +947,14 @@ OnSharedPreferenceChangeListener
         });
 
         return true;
+    }
+
+    private void refreshSuggestedSites() {
+        final ContentResolver cr = getApplicationContext().getContentResolver();
+
+        // This will force all active suggested sites cursors
+        // to request a refresh (e.g. cursor loaders).
+        cr.notifyChange(SuggestedSites.CONTENT_URI, null);
     }
 
     @Override
@@ -906,11 +992,7 @@ OnSharedPreferenceChangeListener
             onLocaleSelected(BrowserLocaleManager.getLanguageTag(lastLocale),
                              sharedPreferences.getString(key, null));
         } else if (PREFS_SUGGESTED_SITES.equals(key)) {
-            final ContentResolver cr = getApplicationContext().getContentResolver();
-
-            // This will force all active suggested sites cursors
-            // to request a refresh (e.g. cursor loaders).
-            cr.notifyChange(SuggestedSites.CONTENT_URI, null);
+            refreshSuggestedSites();
         }
     }
 
@@ -936,15 +1018,15 @@ OnSharedPreferenceChangeListener
         } else if (PREFS_ANNOUNCEMENTS_ENABLED.equals(prefName)) {
             // Send a broadcast intent to the product announcements service, either to start or
             // to stop the repeated background checks.
-            broadcastAnnouncementsPref(GeckoAppShell.getContext(), ((Boolean) newValue).booleanValue());
+            broadcastAnnouncementsPref(this, ((Boolean) newValue).booleanValue());
         } else if (PREFS_UPDATER_AUTODOWNLOAD.equals(prefName)) {
-            org.mozilla.gecko.updater.UpdateServiceHelper.registerForUpdates(GeckoAppShell.getContext(), (String) newValue);
+            org.mozilla.gecko.updater.UpdateServiceHelper.registerForUpdates(this, (String) newValue);
         } else if (PREFS_HEALTHREPORT_UPLOAD_ENABLED.equals(prefName)) {
             // The healthreport pref only lives in Android, so we do not persist
             // to Gecko, but we do broadcast intent to the health report
             // background uploader service, which will start or stop the
             // repeated background upload attempts.
-            broadcastHealthReportUploadPref(GeckoAppShell.getContext(), ((Boolean) newValue).booleanValue());
+            broadcastHealthReportUploadPref(this, ((Boolean) newValue).booleanValue());
         } else if (PREFS_GEO_REPORTING.equals(prefName)) {
             // Translate boolean value to int for geo reporting pref.
             newValue = ((Boolean) newValue) ? 1 : 0;
@@ -962,7 +1044,7 @@ OnSharedPreferenceChangeListener
             ((ListPreference) preference).setSummary(newEntry);
         } else if (preference instanceof LinkPreference) {
             setResult(RESULT_CODE_EXIT_SETTINGS);
-            finish();
+            finishChoosingTransition();
         } else if (preference instanceof FontSizePreference) {
             final FontSizePreference fontSizePref = (FontSizePreference) preference;
             fontSizePref.setSummary(fontSizePref.getSavedFontSizeName());
@@ -972,7 +1054,7 @@ OnSharedPreferenceChangeListener
     }
 
     private EditText getTextBox(int aHintText) {
-        EditText input = new FloatingHintEditText(GeckoAppShell.getContext());
+        EditText input = new FloatingHintEditText(this);
         int inputtype = InputType.TYPE_CLASS_TEXT;
         inputtype |= InputType.TYPE_TEXT_VARIATION_PASSWORD | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
         input.setInputType(inputtype);

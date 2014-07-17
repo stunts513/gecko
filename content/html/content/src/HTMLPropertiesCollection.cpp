@@ -426,7 +426,8 @@ PropertyNodeList::GetValues(JSContext* aCx, nsTArray<JS::Value >& aResult,
   JSAutoCompartment ac(aCx, wrapper);
   uint32_t length = mElements.Length();
   for (uint32_t i = 0; i < length; ++i) {
-    JS::Value v = mElements.ElementAt(i)->GetItemValue(aCx, wrapper, aError);
+    JS::Rooted<JS::Value> v(aCx);
+    mElements.ElementAt(i)->GetItemValue(aCx, wrapper, &v, aError);
     if (aError.Failed()) {
       return;
     }
@@ -493,6 +494,9 @@ PropertyNodeList::EnsureFresh()
 PropertyStringList::PropertyStringList(HTMLPropertiesCollection* aCollection)
   : DOMStringList()
   , mCollection(aCollection)
+{ }
+
+PropertyStringList::~PropertyStringList()
 { }
 
 NS_IMPL_CYCLE_COLLECTION_INHERITED(PropertyStringList, DOMStringList,

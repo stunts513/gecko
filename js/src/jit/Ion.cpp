@@ -11,7 +11,6 @@
 
 #include "jscompartment.h"
 #include "jsprf.h"
-#include "jsworkers.h"
 
 #include "gc/Marking.h"
 #include "jit/AliasAnalysis.h"
@@ -41,6 +40,7 @@
 #include "jit/UnreachableCodeElimination.h"
 #include "jit/ValueNumbering.h"
 #include "vm/ForkJoin.h"
+#include "vm/HelperThreads.h"
 #include "vm/TraceLogging.h"
 
 #include "jscompartmentinlines.h"
@@ -226,9 +226,16 @@ JitRuntime::initialize(JSContext *cx)
         }
 
         IonSpew(IonSpew_Codegen, "# Emitting bailout handler");
-        bailoutHandler_ = generateBailoutHandler(cx);
+        bailoutHandler_ = generateBailoutHandler(cx, SequentialExecution);
         if (!bailoutHandler_)
             return false;
+
+#ifdef JS_THREADSAFE
+        IonSpew(IonSpew_Codegen, "# Emitting parallel bailout handler");
+        parallelBailoutHandler_ = generateBailoutHandler(cx, ParallelExecution);
+        if (!parallelBailoutHandler_)
+            return false;
+#endif
 
         IonSpew(IonSpew_Codegen, "# Emitting invalidator");
         invalidator_ = generateInvalidator(cx);
@@ -496,14 +503,14 @@ bool
 JitCompartment::ensureIonStubsExist(JSContext *cx)
 {
     if (!stringConcatStub_) {
-        stringConcatStub_.set(generateStringConcatStub(cx, SequentialExecution));
+        stringConcatStub_ = generateStringConcatStub(cx, SequentialExecution);
         if (!stringConcatStub_)
             return false;
     }
 
 #ifdef JS_THREADSAFE
     if (!parallelStringConcatStub_) {
-        parallelStringConcatStub_.set(generateStringConcatStub(cx, ParallelExecution));
+        parallelStringConcatStub_ = generateStringConcatStub(cx, ParallelExecution);
         if (!parallelStringConcatStub_)
             return false;
     }
@@ -532,6 +539,12 @@ JitCompartment::notifyOfActiveParallelEntryScript(JSContext *cx, HandleScript sc
     script->parallelIonScript()->setIsParallelEntryScript();
     ScriptSet::AddPtr p = activeParallelEntryScripts_->lookupForAdd(script);
     return p || activeParallelEntryScripts_->add(p, script);
+}
+
+bool
+JitCompartment::hasRecentParallelActivity() const
+{
+    return activeParallelEntryScripts_ && !activeParallelEntryScripts_->empty();
 }
 
 void
@@ -564,14 +577,14 @@ static inline void
 FinishAllOffThreadCompilations(JSCompartment *comp)
 {
 #ifdef JS_THREADSAFE
-    AutoLockWorkerThreadState lock;
-    GlobalWorkerThreadState::IonBuilderVector &finished = WorkerThreadState().ionFinishedList();
+    AutoLockHelperThreadState lock;
+    GlobalHelperThreadState::IonBuilderVector &finished = HelperThreadState().ionFinishedList();
 
     for (size_t i = 0; i < finished.length(); i++) {
         IonBuilder *builder = finished[i];
         if (builder->compartment == CompileCompartment::get(comp)) {
             FinishOffThreadBuilder(builder);
-            WorkerThreadState().remove(finished, &i);
+            HelperThreadState().remove(finished, &i);
         }
     }
 #endif
@@ -591,13 +604,6 @@ JitRuntime::Mark(JSTracer *trc)
 void
 JitCompartment::mark(JSTracer *trc, JSCompartment *compartment)
 {
-    // Cancel any active or pending off thread compilations. Note that the
-    // MIR graph does not hold any nursery pointers, so there's no need to
-    // do this for minor GCs.
-    JS_ASSERT(!trc->runtime()->isHeapMinorCollecting());
-    CancelOffThreadIonCompile(compartment, nullptr);
-    FinishAllOffThreadCompilations(compartment);
-
     // Free temporary OSR buffer.
     trc->runtime()->jitRuntime()->freeOsrTempData();
 
@@ -607,10 +613,11 @@ JitCompartment::mark(JSTracer *trc, JSCompartment *compartment)
             JSScript *script = e.front();
 
             // If the script has since been invalidated or was attached by an
-            // off-thread worker too late (i.e., the ForkJoin finished with
+            // off-thread helper too late (i.e., the ForkJoin finished with
             // warmup doing all the work), remove it.
             if (!script->hasParallelIonScript() ||
-                !script->parallelIonScript()->isParallelEntryScript())
+                !script->parallelIonScript()->isParallelEntryScript() ||
+                trc->runtime()->gc.shouldCleanUpEverything())
             {
                 e.removeFront();
                 continue;
@@ -622,17 +629,27 @@ JitCompartment::mark(JSTracer *trc, JSCompartment *compartment)
             // Subtlety: We depend on the tracing of the parallel IonScript's
             // callTargetEntries to propagate the parallel age to the entire
             // call graph.
-            if (ShouldPreserveParallelJITCode(trc->runtime(), script, /* increase = */ true)) {
+            if (script->parallelIonScript()->shouldPreserveParallelCode(IonScript::IncreaseAge)) {
                 MarkScript(trc, const_cast<PreBarrieredScript *>(&e.front()), "par-script");
                 MOZ_ASSERT(script == e.front());
+            } else {
+                script->parallelIonScript()->clearIsParallelEntryScript();
+                e.removeFront();
             }
         }
     }
 }
 
 void
-JitCompartment::sweep(FreeOp *fop)
+JitCompartment::sweep(FreeOp *fop, JSCompartment *compartment)
 {
+    // Cancel any active or pending off thread compilations. Note that the
+    // MIR graph does not hold any nursery pointers, so there's no need to
+    // do this for minor GCs.
+    JS_ASSERT(!fop->runtime()->isHeapMinorCollecting());
+    CancelOffThreadIonCompile(compartment, nullptr);
+    FinishAllOffThreadCompilations(compartment);
+
     stubCodes_->sweep(fop);
 
     // If the sweep removed the ICCall_Fallback stub, nullptr the baselineCallReturnAddr_ field.
@@ -644,11 +661,11 @@ JitCompartment::sweep(FreeOp *fop)
     if (!stubCodes_->lookup(static_cast<uint32_t>(ICStub::SetProp_Fallback)))
         baselineSetPropReturnAddr_ = nullptr;
 
-    if (stringConcatStub_ && !IsJitCodeMarked(stringConcatStub_.unsafeGet()))
-        stringConcatStub_.set(nullptr);
+    if (stringConcatStub_ && !IsJitCodeMarked(&stringConcatStub_))
+        stringConcatStub_ = nullptr;
 
-    if (parallelStringConcatStub_ && !IsJitCodeMarked(parallelStringConcatStub_.unsafeGet()))
-        parallelStringConcatStub_.set(nullptr);
+    if (parallelStringConcatStub_ && !IsJitCodeMarked(&parallelStringConcatStub_))
+        parallelStringConcatStub_ = nullptr;
 
     if (activeParallelEntryScripts_) {
         for (ScriptSet::Enum e(*activeParallelEntryScripts_); !e.empty(); e.popFront()) {
@@ -952,13 +969,8 @@ IonScript::trace(JSTracer *trc)
 
     // No write barrier is needed for the call target list, as it's attached
     // at compilation time and is read only.
-    for (size_t i = 0; i < callTargetEntries(); i++) {
-        // Propagate the parallelAge to the call targets.
-        if (callTargetList()[i]->hasParallelIonScript())
-            callTargetList()[i]->parallelIonScript()->parallelAge_ = parallelAge_;
-
+    for (size_t i = 0; i < callTargetEntries(); i++)
         gc::MarkScriptUnbarriered(trc, &callTargetList()[i], "callTarget");
-    }
 }
 
 /* static */ void
@@ -1019,15 +1031,21 @@ IonScript::copyCallTargetEntries(JSScript **callTargets)
 
 void
 IonScript::copyPatchableBackedges(JSContext *cx, JitCode *code,
-                                  PatchableBackedgeInfo *backedges)
+                                  PatchableBackedgeInfo *backedges,
+                                  MacroAssembler &masm)
 {
     for (size_t i = 0; i < backedgeEntries_; i++) {
-        const PatchableBackedgeInfo &info = backedges[i];
+        PatchableBackedgeInfo &info = backedges[i];
         PatchableBackedge *patchableBackedge = &backedgeList()[i];
 
+        // Convert to actual offsets for the benefit of the ARM backend.
+        info.backedge.fixup(&masm);
+        uint32_t loopHeaderOffset = masm.actualOffset(info.loopHeader->offset());
+        uint32_t interruptCheckOffset = masm.actualOffset(info.interruptCheck->offset());
+
         CodeLocationJump backedge(code, info.backedge);
-        CodeLocationLabel loopHeader(code, CodeOffsetLabel(info.loopHeader->offset()));
-        CodeLocationLabel interruptCheck(code, CodeOffsetLabel(info.interruptCheck->offset()));
+        CodeLocationLabel loopHeader(code, CodeOffsetLabel(loopHeaderOffset));
+        CodeLocationLabel interruptCheck(code, CodeOffsetLabel(interruptCheckOffset));
         new(patchableBackedge) PatchableBackedge(backedge, loopHeader, interruptCheck);
 
         // Point the backedge to either of its possible targets, according to
@@ -1384,8 +1402,8 @@ OptimizeMIR(MIRGenerator *mir)
 
     if (mir->optimizationInfo().gvnEnabled()) {
         AutoTraceLog log(logger, TraceLogger::GVN);
-        ValueNumberer gvn(mir, graph, mir->optimizationInfo().gvnKind() == GVN_Optimistic);
-        if (!gvn.analyze())
+        ValueNumberer gvn(mir, graph);
+        if (!gvn.run(ValueNumberer::UpdateAliasAnalysis))
             return false;
         IonSpewPass("GVN");
         AssertExtendedGraphCoherency(graph);
@@ -1413,8 +1431,7 @@ OptimizeMIR(MIRGenerator *mir)
         // frequently.
         JSScript *script = mir->info().script();
         if (!script || !script->hadFrequentBailouts()) {
-            LICM licm(mir, graph);
-            if (!licm.analyze())
+            if (!LICM(mir, graph))
                 return false;
             IonSpewPass("LICM");
             AssertExtendedGraphCoherency(graph);
@@ -1505,6 +1522,21 @@ OptimizeMIR(MIRGenerator *mir)
         AssertExtendedGraphCoherency(graph);
 
         if (mir->shouldCancel("DCE"))
+            return false;
+    }
+
+    // Make loops contiguious. We do this after GVN/UCE and range analysis,
+    // which can remove CFG edges, exposing more blocks that can be moved.
+    // We also disable this when profiling, since reordering blocks appears
+    // to make the profiler unhappy.
+    {
+        AutoTraceLog log(logger, TraceLogger::MakeLoopsContiguous);
+        if (!MakeLoopsContiguous(graph))
+            return false;
+        IonSpewPass("Make loops contiguous");
+        AssertExtendedGraphCoherency(graph);
+
+        if (mir->shouldCancel("Make loops contiguous"))
             return false;
     }
 
@@ -1659,6 +1691,9 @@ GenerateCode(MIRGenerator *mir, LIRGraph *lir)
 CodeGenerator *
 CompileBackEnd(MIRGenerator *mir)
 {
+    // Everything in CompileBackEnd can potentially run on a helper thread.
+    AutoEnterIonCompilation enter;
+
     if (!OptimizeMIR(mir))
         return nullptr;
 
@@ -1678,9 +1713,9 @@ AttachFinishedCompilations(JSContext *cx)
         return;
 
     types::AutoEnterAnalysis enterTypes(cx);
-    AutoLockWorkerThreadState lock;
+    AutoLockHelperThreadState lock;
 
-    GlobalWorkerThreadState::IonBuilderVector &finished = WorkerThreadState().ionFinishedList();
+    GlobalHelperThreadState::IonBuilderVector &finished = HelperThreadState().ionFinishedList();
 
     TraceLogger *logger = TraceLoggerForMainThread(cx->runtime());
 
@@ -1694,7 +1729,7 @@ AttachFinishedCompilations(JSContext *cx)
             IonBuilder *testBuilder = finished[i];
             if (testBuilder->compartment == CompileCompartment::get(cx->compartment())) {
                 builder = testBuilder;
-                WorkerThreadState().remove(finished, &i);
+                HelperThreadState().remove(finished, &i);
                 break;
             }
         }
@@ -1714,9 +1749,9 @@ AttachFinishedCompilations(JSContext *cx)
 
             bool success;
             {
-                // Release the worker thread lock and root the compiler for GC.
+                // Release the helper thread lock and root the compiler for GC.
                 AutoTempAllocatorRooter root(cx, &builder->alloc());
-                AutoUnlockWorkerThreadState unlock;
+                AutoUnlockHelperThreadState unlock;
                 success = codegen->link(cx, builder->constraints());
             }
 
@@ -1741,19 +1776,12 @@ OffThreadCompilationAvailable(JSContext *cx)
 {
 #ifdef JS_THREADSAFE
     // Even if off thread compilation is enabled, compilation must still occur
-    // on the main thread in some cases. Do not compile off thread during an
-    // incremental GC, as this may trip incremental read barriers.
+    // on the main thread in some cases.
     //
     // Require cpuCount > 1 so that Ion compilation jobs and main-thread
     // execution are not competing for the same resources.
-    //
-    // Skip off thread compilation if PC count profiling is enabled, as
-    // CodeGenerator::maybeCreateScriptCounts will not attach script profiles
-    // when running off thread.
-    return cx->runtime()->canUseParallelIonCompilation()
-        && WorkerThreadState().cpuCount > 1
-        && cx->runtime()->gc.incrementalState == gc::NO_INCREMENTAL
-        && !cx->runtime()->profilingScripts;
+    return cx->runtime()->canUseOffthreadIonCompilation()
+        && HelperThreadState().cpuCount > 1;
 #else
     return false;
 #endif
@@ -1805,7 +1833,7 @@ IonCompile(JSContext *cx, JSScript *script,
     JS_ASSERT(optimizationLevel > Optimization_DontCompile);
 
     // Make sure the script's canonical function isn't lazy. We can't de-lazify
-    // it in a worker thread.
+    // it in a helper thread.
     script->ensureNonLazyCanonicalFunction(cx);
 
     TrackPropertiesForSingletonScopes(cx, script, baselineFrame);
@@ -1888,7 +1916,9 @@ IonCompile(JSContext *cx, JSScript *script,
         builderScript->ionScript()->setRecompiling();
     }
 
-    IonSpewNewFunction(graph, builderScript);
+#ifdef DEBUG
+    IonSpewFunction ionSpewFunction(graph, builderScript);
+#endif
 
     bool succeeded = builder->build();
     builder->clearForBackEnd();
@@ -1923,8 +1953,6 @@ IonCompile(JSContext *cx, JSScript *script,
     }
 
     bool success = codegen->link(cx, builder->constraints());
-
-    IonSpewEndFunction();
 
     return success ? AbortReason_NoAbort : AbortReason_Disable;
 }
@@ -1977,42 +2005,10 @@ CheckScriptSize(JSContext *cx, JSScript* script)
 
     uint32_t numLocalsAndArgs = NumLocalsAndArgs(script);
 
-    if (cx->runtime()->isWorkerRuntime()) {
-        // DOM Workers don't have off thread compilation enabled. Since workers
-        // don't block the browser's event loop, allow them to compile larger
-        // scripts.
-        JS_ASSERT(!cx->runtime()->canUseParallelIonCompilation());
-
-        if (script->length() > MAX_DOM_WORKER_SCRIPT_SIZE ||
-            numLocalsAndArgs > MAX_DOM_WORKER_LOCALS_AND_ARGS)
-        {
-            return Method_CantCompile;
-        }
-
-        return Method_Compiled;
-    }
-
     if (script->length() > MAX_MAIN_THREAD_SCRIPT_SIZE ||
         numLocalsAndArgs > MAX_MAIN_THREAD_LOCALS_AND_ARGS)
     {
-#ifdef JS_THREADSAFE
-        size_t cpuCount = WorkerThreadState().cpuCount;
-#else
-        size_t cpuCount = 1;
-#endif
-        if (cx->runtime()->canUseParallelIonCompilation() && cpuCount > 1) {
-            // Even if off thread compilation is enabled, there are cases where
-            // compilation must still occur on the main thread. Don't compile
-            // in these cases (except when profiling scripts, as compilations
-            // occurring with profiling should reflect those without), but do
-            // not forbid compilation so that the script may be compiled later.
-            if (!OffThreadCompilationAvailable(cx) && !cx->runtime()->profilingScripts) {
-                IonSpew(IonSpew_Abort,
-                        "Script too large for main thread, skipping (%u bytes) (%u locals/args)",
-                        script->length(), numLocalsAndArgs);
-                return Method_Skipped;
-            }
-        } else {
+        if (!OffThreadCompilationAvailable(cx)) {
             IonSpew(IonSpew_Abort, "Script too large (%u bytes) (%u locals/args)",
                     script->length(), numLocalsAndArgs);
             return Method_CantCompile;
@@ -2631,14 +2627,14 @@ InvalidateActivation(FreeOp *fop, uint8_t *jitTop, bool invalidateAll)
         CodeLocationLabel dataLabelToMunge(it.returnAddressToFp());
         ptrdiff_t delta = ionScript->invalidateEpilogueDataOffset() -
                           (it.returnAddressToFp() - ionCode->raw());
-        Assembler::patchWrite_Imm32(dataLabelToMunge, Imm32(delta));
+        Assembler::PatchWrite_Imm32(dataLabelToMunge, Imm32(delta));
 
         CodeLocationLabel osiPatchPoint = SafepointReader::InvalidationPatchPoint(ionScript, si);
         CodeLocationLabel invalidateEpilogue(ionCode, CodeOffsetLabel(ionScript->invalidateEpilogueOffset()));
 
         IonSpew(IonSpew_Invalidate, "   ! Invalidate ionScript %p (ref %u) -> patching osipoint %p",
                 ionScript, ionScript->refcount(), (void *) osiPatchPoint.raw());
-        Assembler::patchWrite_NearCall(osiPatchPoint, invalidateEpilogue);
+        Assembler::PatchWrite_NearCall(osiPatchPoint, invalidateEpilogue);
     }
 
     IonSpew(IonSpew_Invalidate, "END invalidating activation");

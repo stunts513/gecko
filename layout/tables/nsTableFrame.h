@@ -174,13 +174,15 @@ public:
   /** @see nsIFrame::DidSetStyleContext */
   virtual void DidSetStyleContext(nsStyleContext* aOldStyleContext) MOZ_OVERRIDE;
 
-  virtual nsresult AppendFrames(ChildListID     aListID,
-                                nsFrameList&    aFrameList) MOZ_OVERRIDE;
-  virtual nsresult InsertFrames(ChildListID     aListID,
-                                nsIFrame*       aPrevFrame,
-                                nsFrameList&    aFrameList) MOZ_OVERRIDE;
-  virtual nsresult RemoveFrame(ChildListID     aListID,
-                               nsIFrame*       aOldFrame) MOZ_OVERRIDE;
+  virtual void SetInitialChildList(ChildListID     aListID,
+                                   nsFrameList&    aChildList) MOZ_OVERRIDE;
+  virtual void AppendFrames(ChildListID     aListID,
+                            nsFrameList&    aFrameList) MOZ_OVERRIDE;
+  virtual void InsertFrames(ChildListID     aListID,
+                            nsIFrame*       aPrevFrame,
+                            nsFrameList&    aFrameList) MOZ_OVERRIDE;
+  virtual void RemoveFrame(ChildListID     aListID,
+                           nsIFrame*       aOldFrame) MOZ_OVERRIDE;
 
   virtual nsMargin GetUsedBorder() const MOZ_OVERRIDE;
   virtual nsMargin GetUsedPadding() const MOZ_OVERRIDE;
@@ -233,12 +235,6 @@ public:
     * (header, footer, or body)
     */
   bool IsRowGroup(int32_t aDisplayType) const;
-
-  /** Initialize the table frame with a set of children.
-    * @see nsIFrame::SetInitialChildList 
-    */
-  virtual nsresult SetInitialChildList(ChildListID     aListID,
-                                       nsFrameList&    aChildList) MOZ_OVERRIDE;
 
   virtual const nsFrameList& GetChildList(ChildListID aListID) const MOZ_OVERRIDE;
   virtual void GetChildLists(nsTArray<ChildList>* aLists) const MOZ_OVERRIDE;
@@ -377,13 +373,69 @@ public:
   /** return the width of the column at aColIndex    */
   int32_t GetColumnWidth(int32_t aColIndex);
 
-  /** helper to get the cell spacing X style value */
-  nscoord GetCellSpacingX();
+  /** Helper to get the cell spacing X style value.
+   *  The argument refers to the space between column aColIndex and column
+   *  aColIndex + 1.  An index of -1 indicates the padding between the table
+   *  and the left border, an index equal to the number of columns indicates
+   *  the padding between the table and the right border.
+   *
+   *  Although in this class cell spacing does not depend on the index, it
+   *  may be important for overriding classes.
+   */
+  virtual nscoord GetCellSpacingX(int32_t aColIndex);
 
-  /** helper to get the cell spacing Y style value */
+  /** Helper to find the sum of the cell spacing between arbitrary columns.
+   *  The argument refers to the space between column aColIndex and column
+   *  aColIndex + 1.  An index of -1 indicates the padding between the table
+   *  and the left border, an index equal to the number of columns indicates
+   *  the padding between the table and the right border.
+   *
+   *  This method is equivalent to
+   *  nscoord result = 0;
+   *  for (i = aStartColIndex; i < aEndColIndex; i++) {
+   *    result += GetCellSpacingX(i);
+   *  }
+   *  return result;
+   */
+  virtual nscoord GetCellSpacingX(int32_t aStartColIndex,
+                                  int32_t aEndColIndex);
+
+  /** Helper to get the cell spacing Y style value.
+   *  The argument refers to the space between row aRowIndex and row
+   *  aRowIndex + 1.  An index of -1 indicates the padding between the table
+   *  and the top border, an index equal to the number of rows indicates
+   *  the padding between the table and the bottom border.
+   *
+   *  Although in this class cell spacing does not depend on the index, it
+   *  may be important for overriding classes.
+   */
+  virtual nscoord GetCellSpacingY(int32_t aRowIndex);
+
+  /** Helper to find the sum of the cell spacing between arbitrary rows.
+   *  The argument refers to the space between row aRowIndex and row
+   *  aRowIndex + 1.  An index of -1 indicates the padding between the table
+   *  and the top border, an index equal to the number of rows indicates
+   *  the padding between the table and the bottom border.
+   *
+   *  This method is equivalent to
+   *  nscoord result = 0;
+   *  for (i = aStartRowIndex; i < aEndRowIndex; i++) {
+   *    result += GetCellSpacingY(i);
+   *  }
+   *  return result;
+   */
+  virtual nscoord GetCellSpacingY(int32_t aStartRowIndex,
+                                  int32_t aEndRowIndex);
+
+private:
+  /* For the base implementation of nsTableFrame, cell spacing does not depend
+   * on row/column indexing.
+   */
+  nscoord GetCellSpacingX();
   nscoord GetCellSpacingY();
- 
-  virtual nscoord GetBaseline() const MOZ_OVERRIDE;
+
+public:
+  virtual nscoord GetLogicalBaseline(mozilla::WritingMode aWritingMode) const MOZ_OVERRIDE;
   /** return the row span of a cell, taking into account row span magic at the bottom
     * of a table. The row span equals the number of rows spanned by aCell starting at
     * aStartRowIndex, and can be smaller if aStartRowIndex is greater than the row
@@ -528,7 +580,7 @@ protected:
 
   void InitChildReflowState(nsHTMLReflowState& aReflowState);
 
-  virtual int GetLogicalSkipSides(const nsHTMLReflowState* aReflowState = nullptr) const MOZ_OVERRIDE;
+  virtual LogicalSides GetLogicalSkipSides(const nsHTMLReflowState* aReflowState = nullptr) const MOZ_OVERRIDE;
 
 public:
   bool IsRowInserted() const;

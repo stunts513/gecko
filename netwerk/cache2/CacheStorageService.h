@@ -10,11 +10,13 @@
 
 #include "nsITimer.h"
 #include "nsClassHashtable.h"
+#include "nsDataHashtable.h"
 #include "nsString.h"
 #include "nsThreadUtils.h"
 #include "nsProxyRelease.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/Atomics.h"
+#include "mozilla/TimeStamp.h"
 #include "nsTArray.h"
 
 class nsIURI;
@@ -77,8 +79,9 @@ public:
   void Shutdown();
   void DropPrivateBrowsingEntries();
 
-  // Wipes out the new or the old cache directory completely.
-  static void WipeCacheDirectory(uint32_t aVersion);
+  // Takes care of deleting any pending trashes for both cache1 and cache2
+  // as well as the cache directory of an inactive cache version when requested.
+  static void CleaupCacheDirectories(uint32_t aVersion, uint32_t aActive);
 
   static CacheStorageService* Self() { return sSelf; }
   static nsISupports* SelfISupports() { return static_cast<nsICacheStorageService*>(Self()); }
@@ -144,6 +147,12 @@ private:
                              bool aOverwrite);
 
 private:
+  // These are helpers for telemetry monitorying of the memory pools.
+  void TelemetryPrune(TimeStamp &now);
+  void TelemetryRecordEntryCreation(CacheEntry const* entry);
+  void TelemetryRecordEntryRemoval(CacheEntry const* entry);
+
+private:
   // Following methods are thread safe to call.
   friend class CacheStorage;
 
@@ -157,6 +166,15 @@ private:
                            bool aCreateIfNotExist,
                            bool aReplace,
                            CacheEntryHandle** aResult);
+
+  /**
+   * Check existance of an entry.  This may throw NS_ERROR_NOT_AVAILABLE
+   * when the information cannot be obtained synchronously w/o blocking.
+   */
+  nsresult CheckStorageEntry(CacheStorage const* aStorage,
+                             nsIURI* aURI,
+                             const nsACString & aIdExtension,
+                             bool* aResult);
 
   /**
    * Removes the entry from the related entry hash table, if still present
@@ -313,6 +331,12 @@ private:
     nsRefPtr<CacheStorageService> mService;
     uint32_t mWhat;
   };
+
+  // Used just for telemetry purposes, accessed only on the management thread.
+  // Note: not included in the memory reporter, this is not expected to be huge
+  // and also would be complicated to report since reporting happens on the main
+  // thread but this table is manipulated on the management thread.
+  nsDataHashtable<nsCStringHashKey, mozilla::TimeStamp> mPurgeTimeStamps;
 };
 
 template<class T>
@@ -340,5 +364,8 @@ void ProxyReleaseMainThread(nsCOMPtr<T> &object)
 
 #define NS_CACHE_STORAGE_SERVICE_CONTRACTID \
   "@mozilla.org/netwerk/cache-storage-service;1"
+
+#define NS_CACHE_STORAGE_SERVICE_CONTRACTID2 \
+  "@mozilla.org/network/cache-storage-service;1"
 
 #endif

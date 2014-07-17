@@ -32,6 +32,7 @@ interface HmacKeyAlgorithm : KeyAlgorithm {
 [NoInterfaceObject]
 interface RsaKeyAlgorithm : KeyAlgorithm {
   readonly attribute unsigned long modulusLength;
+  [Throws]
   readonly attribute BigInteger publicExponent;
 };
 
@@ -66,6 +67,12 @@ dictionary HmacImportParams : Algorithm {
   AlgorithmIdentifier hash;
 };
 
+dictionary Pbkdf2Params : Algorithm {
+  CryptoOperationData salt;
+  [EnforceRange] unsigned long iterations;
+  AlgorithmIdentifier hash;
+};
+
 dictionary RsaHashedImportParams {
   AlgorithmIdentifier hash;
 };
@@ -88,6 +95,10 @@ dictionary RsaHashedKeyGenParams : RsaKeyGenParams {
   AlgorithmIdentifier hash;
 };
 
+dictionary RsaOaepParams : Algorithm {
+  CryptoOperationData? label;
+};
+
 dictionary DhKeyGenParams : Algorithm {
   BigInteger prime;
   BigInteger generator;
@@ -101,7 +112,7 @@ dictionary EcKeyGenParams : Algorithm {
 /***** The Main API *****/
 
 [Pref="dom.webcrypto.enabled"]
-interface Key {
+interface CryptoKey {
   readonly attribute KeyType type;
   readonly attribute boolean extractable;
   readonly attribute KeyAlgorithm algorithm;
@@ -109,9 +120,9 @@ interface Key {
 };
 
 [Pref="dom.webcrypto.enabled"]
-interface KeyPair {
-  readonly attribute Key publicKey;
-  readonly attribute Key privateKey;
+interface CryptoKeyPair {
+  readonly attribute CryptoKey publicKey;
+  readonly attribute CryptoKey privateKey;
 };
 
 typedef DOMString KeyFormat;
@@ -122,16 +133,16 @@ typedef (object or DOMString) AlgorithmIdentifier;
 [Pref="dom.webcrypto.enabled"]
 interface SubtleCrypto {
   Promise encrypt(AlgorithmIdentifier algorithm,
-                  Key key,
+                  CryptoKey key,
                   CryptoOperationData data);
   Promise decrypt(AlgorithmIdentifier algorithm,
-                  Key key,
+                  CryptoKey key,
                   CryptoOperationData data);
   Promise sign(AlgorithmIdentifier algorithm,
-               Key key,
+               CryptoKey key,
                CryptoOperationData data);
   Promise verify(AlgorithmIdentifier algorithm,
-                 Key key,
+                 CryptoKey key,
                  CryptoOperationData signature,
                  CryptoOperationData data);
   Promise digest(AlgorithmIdentifier algorithm,
@@ -141,12 +152,12 @@ interface SubtleCrypto {
                       boolean extractable,
                       sequence<KeyUsage> keyUsages );
   Promise deriveKey(AlgorithmIdentifier algorithm,
-                    Key baseKey,
+                    CryptoKey baseKey,
                     AlgorithmIdentifier derivedKeyType,
                     boolean extractable,
                     sequence<KeyUsage> keyUsages );
   Promise deriveBits(AlgorithmIdentifier algorithm,
-                     Key baseKey,
+                     CryptoKey baseKey,
                      unsigned long length);
 
   Promise importKey(KeyFormat format,
@@ -154,6 +165,6 @@ interface SubtleCrypto {
                     AlgorithmIdentifier algorithm,
                     boolean extractable,
                     sequence<KeyUsage> keyUsages );
-  Promise exportKey(KeyFormat format, Key key);
+  Promise exportKey(KeyFormat format, CryptoKey key);
 };
 

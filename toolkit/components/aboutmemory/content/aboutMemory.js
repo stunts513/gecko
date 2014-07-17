@@ -1,4 +1,4 @@
-/* -*- Mode: js2; tab-width: 8; indent-tabs-mode: nil; js2-basic-offset: 2 -*-*/
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*-*/
 /* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -26,6 +26,7 @@ const CC = Components.Constructor;
 const KIND_NONHEAP           = Ci.nsIMemoryReporter.KIND_NONHEAP;
 const KIND_HEAP              = Ci.nsIMemoryReporter.KIND_HEAP;
 const KIND_OTHER             = Ci.nsIMemoryReporter.KIND_OTHER;
+
 const UNITS_BYTES            = Ci.nsIMemoryReporter.UNITS_BYTES;
 const UNITS_COUNT            = Ci.nsIMemoryReporter.UNITS_COUNT;
 const UNITS_COUNT_CUMULATIVE = Ci.nsIMemoryReporter.UNITS_COUNT_CUMULATIVE;
@@ -130,6 +131,9 @@ let gFooter;
 
 // The "verbose" checkbox.
 let gVerbose;
+
+// The "anonymize" checkbox.
+let gAnonymize;
 
 // Values for the second argument to updateMainAndFooter.
 let HIDE_FOOTER = 0;
@@ -303,14 +307,13 @@ function onLoad()
 
   let row1 = appendElement(ops, "div", "opsRow");
 
-  let labelDiv =
+  let labelDiv1 =
    appendElementWithText(row1, "div", "opsRowLabel", "Show memory reports");
-  let label = appendElementWithText(labelDiv, "label", "");
-  gVerbose = appendElement(label, "input", "");
+  let label1 = appendElementWithText(labelDiv1, "label", "");
+  gVerbose = appendElement(label1, "input", "");
   gVerbose.type = "checkbox";
   gVerbose.id = "verbose";   // used for testing
-
-  appendTextNode(label, "verbose");
+  appendTextNode(label1, "verbose");
 
   const kEllipsis = "\u2026";
 
@@ -324,8 +327,15 @@ function onLoad()
 
   let row2 = appendElement(ops, "div", "opsRow");
 
-  appendElementWithText(row2, "div", "opsRowLabel", "Save memory reports");
+  let labelDiv2 =
+    appendElementWithText(row2, "div", "opsRowLabel", "Save memory reports");
   appendButton(row2, SvDesc, saveReportsToFile, "Measure and save" + kEllipsis);
+
+  // XXX njn: still not happy with the placement of this checkbox
+  let label2 = appendElementWithText(labelDiv2, "label", "");
+  gAnonymize = appendElement(label2, "input", "");
+  gAnonymize.type = "checkbox";
+  appendTextNode(label2, "anonymize");
 
   let row3 = appendElement(ops, "div", "opsRow");
 
@@ -493,8 +503,8 @@ function updateAboutMemoryFromReporters()
         aDisplayReports();
       }
 
-      gMgr.getReports(handleReport, null,
-                      displayReportsAndFooter, null);
+      gMgr.getReports(handleReport, null, displayReportsAndFooter, null,
+                      gAnonymize.checked);
     }
 
     // Process the reports from the live memory reporters.
@@ -1066,6 +1076,7 @@ function TreeNode(aUnsafeName, aUnits, aIsDegenerate)
   // - _amount
   // - _description
   // - _hideKids (only defined if true)
+  // - _maxAbsDescendant (on-demand, only when gIsDiff is set)
 }
 
 TreeNode.prototype = {
@@ -1080,6 +1091,32 @@ TreeNode.prototype = {
     return undefined;
   },
 
+  // When gIsDiff is false, tree operations -- sorting and determining if a
+  // sub-tree is significant -- are straightforward. But when gIsDiff is true,
+  // the combination of positive and negative values within a tree complicates
+  // things. So for a non-leaf node, instead of just looking at _amount, we
+  // instead look at the maximum absolute value of the node and all of its
+  // descendants.
+  maxAbsDescendant: function() {
+    if (!this._kids) {
+      // No kids? Just return the absolute value of the amount.
+      return max = Math.abs(this._amount);
+    }
+
+    if ('_maxAbsDescendant' in this) {
+      // We've computed this before? Return the saved value.
+      return this._maxAbsDescendant;
+    }
+
+    // Compute the maximum absolute value of all descendants.
+    let max = Math.abs(this._amount);
+    for (let i = 0; i < this._kids.length; i++) {
+      max = Math.max(max, this._kids[i].maxAbsDescendant());
+    }
+    this._maxAbsDescendant = max;
+    return max;
+  },
+
   toString: function() {
     switch (this._units) {
       case UNITS_BYTES:            return formatBytes(this._amount);
@@ -1092,14 +1129,14 @@ TreeNode.prototype = {
   }
 };
 
-// Sort TreeNodes first by size, then by name.  This is particularly important
-// for the about:memory tests, which need a predictable ordering of reporters
-// which have the same amount.
+// Sort TreeNodes first by size, then by name.  The latter is important for the
+// about:memory tests, which need a predictable ordering of reporters which
+// have the same amount.
 TreeNode.compareAmounts = function(aA, aB) {
   let a, b;
   if (gIsDiff) {
-    a = Math.abs(aA._amount);
-    b = Math.abs(aB._amount);
+    a = aA.maxAbsDescendant();
+    b = aB.maxAbsDescendant();
   } else {
     a = aA._amount;
     b = aB._amount;
@@ -1206,6 +1243,12 @@ function addHeapUnclassifiedNode(aT, aHeapAllocatedNode, aHeapTotal)
   if (aHeapAllocatedNode === undefined)
     return false;
 
+  if (aT.findKid("heap-unclassified")) {
+    // heap-unclassified was already calculated, there's nothing left to do.
+    // This can happen when memory reports are exported from areweslimyet.com.
+    return true;
+  }
+
   assert(aHeapAllocatedNode._isDegenerate, "heap-allocated is not degenerate");
   let heapAllocatedBytes = aHeapAllocatedNode._amount;
   let heapUnclassifiedT = new TreeNode("heap-unclassified", UNITS_BYTES);
@@ -1234,8 +1277,13 @@ function sortTreeAndInsertAggregateNodes(aTotalBytes, aT)
 
   function isInsignificant(aT)
   {
-    return !gVerbose.checked &&
-           (100 * aT._amount / aTotalBytes) < kSignificanceThresholdPerc;
+    if (gVerbose.checked)
+      return false;
+
+    let perc = gIsDiff
+             ? 100 * aT.maxAbsDescendant() / Math.abs(aTotalBytes)
+             : 100 * aT._amount / aTotalBytes;
+    return perc < kSignificanceThresholdPerc;
   }
 
   if (!aT._kids) {
@@ -1924,7 +1972,8 @@ function saveReportsToFile()
       updateMainAndFooter("Saved reports to " + file.path, HIDE_FOOTER);
     }
 
-    dumper.dumpMemoryReportsToNamedFile(file.path, finishDumping, null);
+    dumper.dumpMemoryReportsToNamedFile(file.path, finishDumping, null,
+                                        gAnonymize.checked);
   }
 
   let fpCallback = function(aResult) {

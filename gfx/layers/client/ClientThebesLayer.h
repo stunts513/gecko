@@ -27,19 +27,23 @@ class CompositableClient;
 class ShadowableLayer;
 class SpecificLayerAttributes;
 
-class ClientThebesLayer : public ThebesLayer, 
+class ClientThebesLayer : public ThebesLayer,
                           public ClientLayer {
 public:
   typedef RotatedContentBuffer::PaintState PaintState;
   typedef RotatedContentBuffer::ContentType ContentType;
 
-  ClientThebesLayer(ClientLayerManager* aLayerManager) :
+  ClientThebesLayer(ClientLayerManager* aLayerManager,
+                    LayerManager::ThebesLayerCreationHint aCreationHint = LayerManager::NONE) :
     ThebesLayer(aLayerManager,
-                static_cast<ClientLayer*>(MOZ_THIS_IN_INITIALIZER_LIST())),
+                static_cast<ClientLayer*>(MOZ_THIS_IN_INITIALIZER_LIST()),
+                aCreationHint),
     mContentClient(nullptr)
   {
     MOZ_COUNT_CTOR(ClientThebesLayer);
   }
+
+protected:
   virtual ~ClientThebesLayer()
   {
     if (mContentClient) {
@@ -49,6 +53,7 @@ public:
     MOZ_COUNT_DTOR(ClientThebesLayer);
   }
 
+public:
   virtual void SetVisibleRegion(const nsIntRegion& aRegion)
   {
     NS_ASSERTION(ClientManager()->InConstruction(),

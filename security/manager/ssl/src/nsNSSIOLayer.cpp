@@ -13,6 +13,7 @@
 #include "mozilla/Telemetry.h"
 
 #include "prlog.h"
+#include "prmem.h"
 #include "prnetdb.h"
 #include "nsIPrefService.h"
 #include "nsIClientAuthDialogs.h"
@@ -39,6 +40,7 @@
 #include "SharedSSLState.h"
 #include "mozilla/Preferences.h"
 #include "nsContentUtils.h"
+#include "NSSErrorsService.h"
 
 #include "ssl.h"
 #include "sslproto.h"
@@ -141,6 +143,10 @@ nsNSSSocketInfo::nsNSSSocketInfo(SharedSSLState& aState, uint32_t providerFlags)
 {
   mTLSVersionRange.min = 0;
   mTLSVersionRange.max = 0;
+}
+
+nsNSSSocketInfo::~nsNSSSocketInfo()
+{
 }
 
 NS_IMPL_ISUPPORTS_INHERITED(nsNSSSocketInfo, TransportSecurityInfo,
@@ -385,16 +391,19 @@ nsNSSSocketInfo::JoinConnection(const nsACString& npnProtocol,
 
   ScopedCERTCertificate nssCert;
 
-  nsCOMPtr<nsIX509Cert2> cert2 = do_QueryInterface(SSLStatus()->mServerCert);
-  if (cert2)
-    nssCert = cert2->GetCert();
+  nsCOMPtr<nsIX509Cert> cert(SSLStatus()->mServerCert);
+  if (cert) {
+    nssCert = cert->GetCert();
+  }
 
-  if (!nssCert)
+  if (!nssCert) {
     return NS_OK;
+  }
 
   if (CERT_VerifyCertName(nssCert, PromiseFlatCString(hostname).get()) !=
-      SECSuccess)
-    return NS_OK;
+      SECSuccess) {
+      return NS_OK;
+  }
 
   // All tests pass - this is joinable
   mJoined = true;
@@ -1096,7 +1105,7 @@ checkHandshake(int32_t bytesTransfered, bool wasReading,
     // nsHandleSSLError, which has logic to avoid replacing the error message,
     // so without the !socketInfo->GetErrorCode(), it would just be an
     // expensive no-op.)
-    if (!wantRetry && (IS_SSL_ERROR(err) || IS_SEC_ERROR(err)) &&
+    if (!wantRetry && mozilla::psm::IsNSSErrorCode(err) &&
         !socketInfo->GetErrorCode()) {
       RefPtr<SyncRunnableBase> runnable(new SSLErrorRunnable(socketInfo,
                                                              PlainErrorMessage,
@@ -1375,6 +1384,8 @@ public:
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIOBSERVER
   PrefObserver(nsSSLIOLayerHelpers* aOwner) : mOwner(aOwner) {}
+
+protected:
   virtual ~PrefObserver() {}
 private:
   nsSSLIOLayerHelpers* mOwner;
@@ -1878,9 +1889,9 @@ ClientAuthDataRunnable::RunOnTargetThread()
 {
   PLArenaPool* arena = nullptr;
   char** caNameStrings;
-  mozilla::pkix::ScopedCERTCertificate cert;
+  ScopedCERTCertificate cert;
   ScopedSECKEYPrivateKey privKey;
-  mozilla::pkix::ScopedCERTCertList certList;
+  ScopedCERTCertList certList;
   CERTCertListNode* node;
   ScopedCERTCertNicknames nicknames;
   int keyError = 0; // used for private key retrieval error
@@ -2224,7 +2235,7 @@ done:
     PORT_FreeArena(arena, false);
   }
 
-  *mPRetCert = cert.release();
+  *mPRetCert = cert.forget();
   *mPRetKey = privKey.forget();
 
   if (mRV == SECFailure) {

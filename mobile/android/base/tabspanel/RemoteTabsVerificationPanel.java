@@ -8,13 +8,13 @@ import org.mozilla.gecko.R;
 import org.mozilla.gecko.fxa.FirefoxAccounts;
 import org.mozilla.gecko.fxa.login.State;
 import org.mozilla.gecko.tabspanel.TabsPanel.PanelView;
-import org.mozilla.gecko.util.HardwareUtils;
 
 import android.content.Context;
-import android.util.AttributeSet;
 import android.util.Log;
+import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 /**
@@ -22,20 +22,20 @@ import android.widget.TextView;
  * to confirm a Firefox Account. Currently used as one sub-panel in a sequence
  * contained by the {@link RemoteTabsPanel}.
  */
-class RemoteTabsVerificationPanel extends LinearLayout implements PanelView {
+class RemoteTabsVerificationPanel extends ScrollView implements PanelView {
     private static final String LOG_TAG = RemoteTabsVerificationPanel.class.getSimpleName();
+
+    private final LinearLayout containingLayout;
 
     private TabsPanel tabsPanel;
 
-    public RemoteTabsVerificationPanel(Context context, AttributeSet attrs) {
-        super(context, attrs);
-    }
+    public RemoteTabsVerificationPanel(Context context) {
+        super(context);
 
-    @Override
-    protected void onFinishInflate() {
-        super.onFinishInflate();
+        LayoutInflater.from(context).inflate(R.layout.remote_tabs_verification_panel, this);
+        containingLayout = (LinearLayout) findViewById(R.id.remote_tabs_verification_containing_layout);
 
-        final View resendLink = findViewById(R.id.remote_tabs_confirm_resend);
+        final View resendLink = containingLayout.findViewById(R.id.remote_tabs_confirm_resend);
         resendLink.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -57,7 +57,7 @@ class RemoteTabsVerificationPanel extends LinearLayout implements PanelView {
 
     private void refresh() {
         final TextView verificationView =
-                (TextView) findViewById(R.id.remote_tabs_confirm_verification);
+                (TextView) containingLayout.findViewById(R.id.remote_tabs_confirm_verification);
         final String email = FirefoxAccounts.getFirefoxAccountEmail(getContext());
         if (email == null) {
             autoHideTabsPanelOnUnexpectedState("Account email DNE on View refresh.");
@@ -98,11 +98,6 @@ class RemoteTabsVerificationPanel extends LinearLayout implements PanelView {
 
     @Override
     public void show() {
-        // We don't have a tablet implementation of this panel.
-        if (HardwareUtils.isTablet()) {
-            return;
-        }
-
         refresh();
         setVisibility(View.VISIBLE);
     }
@@ -114,6 +109,6 @@ class RemoteTabsVerificationPanel extends LinearLayout implements PanelView {
 
     @Override
     public boolean shouldExpand() {
-        return getOrientation() == LinearLayout.VERTICAL;
+        return containingLayout.getOrientation() == LinearLayout.VERTICAL;
     }
 }

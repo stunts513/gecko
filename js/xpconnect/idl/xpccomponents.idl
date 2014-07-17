@@ -10,6 +10,7 @@
 %}
 
 interface xpcIJSWeakReference;
+interface nsIAddonInterposition;
 interface nsIClassInfo;
 interface nsIComponentManager;
 interface nsIJSCID;
@@ -121,7 +122,7 @@ interface ScheduledGCCallback : nsISupports
 /**
 * interface of Components.utils
 */
-[scriptable, uuid(c9b6f5a0-cfe8-11e3-9c1a-0800200c9a66)]
+[scriptable, uuid(76ef3a80-f24d-11e3-ac10-0800200c9a66)]
 interface nsIXPCComponents_Utils : nsISupports
 {
 
@@ -156,6 +157,19 @@ interface nsIXPCComponents_Utils : nsISupports
                         [optional] in jsval version,
                         [optional] in AUTF8String filename,
                         [optional] in long lineNo);
+
+    /*
+     * getSandboxAddonId is designed to be called from JavaScript only.
+     *
+     * getSandboxAddonId retrieves the add-on ID associated with
+     * a sandbox object. It will return undefined if there
+     * is no add-on ID attached to the sandbox.
+     *
+     * var s = C.u.Sandbox(..., { addonId: "123" });
+     * var id = C.u.getSandboxAddonId(s);
+     */
+    [implicit_jscontext]
+    jsval getSandboxAddonId(in jsval sandbox);
 
     /*
      * getSandboxMetadata is designed to be called from JavaScript only.
@@ -291,6 +305,22 @@ interface nsIXPCComponents_Utils : nsISupports
     /*
      * To be called from JS only.
      *
+     * Return the longest cycle collector slice time since the last
+     * time clearMaxCCTime() was called.
+     */
+    long getMaxCCSliceTimeSinceClear();
+
+    /*
+     * To be called from JS only.
+     *
+     * Reset the internal max slice time value used for
+     * getMaxCCSliceTimeSinceClear().
+     */
+    void clearMaxCCTime();
+
+    /*
+     * To be called from JS only.
+     *
      * Force an immediate shrinking garbage collection cycle.
      */
     void forceShrinkingGC();
@@ -409,6 +439,11 @@ interface nsIXPCComponents_Utils : nsISupports
      * reading/writing a property).
      */
     bool isDeadWrapper(in jsval obj);
+
+    /**
+     * Determines whether this object is a cross-process wrapper.
+     */
+    bool isCrossProcessWrapper(in jsval obj);
 
     /*
      * To be called from JS only. This is for Gecko internal use only, and may
@@ -574,9 +609,12 @@ interface nsIXPCComponents_Utils : nsISupports
     /*
      * Clone an object into a scope.
      * The 3rd argument is an optional options object:
-     * - cloneFunction: boolean. If true, any function in the value is are
+     * - cloneFunctions: boolean. If true, functions in the value are
      *   wrapped in a function forwarder that appears to be a native function in
-     *   the content scope.
+     *   the content scope. Defaults to false.
+     * - wrapReflectors: boolean. If true, DOM objects are passed through the
+     *   clone directly with cross-compartment wrappers. Otherwise, the clone
+     *   fails when such an object is encountered. Defaults to false.
      */
     [implicit_jscontext]
     jsval cloneInto(in jsval value, in jsval scope, [optional] in jsval options);
@@ -603,6 +641,9 @@ interface nsIXPCComponents_Utils : nsISupports
      */
     [implicit_jscontext]
     nsIPrincipal getObjectPrincipal(in jsval obj);
+
+    [implicit_jscontext]
+    void setAddonInterposition(in ACString addonId, in nsIAddonInterposition interposition);
 };
 
 /**

@@ -17,6 +17,7 @@
 #include "nsCOMPtr.h"                   // for nsCOMPtr
 #include "nsHashKeys.h"                 // for nsUint64HashKey
 #include "nsISupportsImpl.h"            // for NS_INLINE_DECL_REFCOUNTING
+#include "ThreadSafeRefcountingWithMainThreadDestruction.h"
 
 class nsIObserver;
 
@@ -25,11 +26,12 @@ namespace layers {
 
 class ClientLayerManager;
 class CompositorParent;
-class FrameMetrics;
+struct FrameMetrics;
 
 class CompositorChild MOZ_FINAL : public PCompositorChild
 {
-  NS_INLINE_DECL_REFCOUNTING(CompositorChild)
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING_WITH_MAIN_THREAD_DESTRUCTION(CompositorChild)
+
 public:
   CompositorChild(ClientLayerManager *aLayerManager);
 
@@ -58,7 +60,7 @@ public:
   virtual bool RecvOverfill(const uint32_t &aOverfill) MOZ_OVERRIDE;
   void AddOverfillObserver(ClientLayerManager* aLayerManager);
 
-  virtual bool RecvDidComposite(const uint64_t& aId) MOZ_OVERRIDE;
+  virtual bool RecvDidComposite(const uint64_t& aId, const uint64_t& aTransactionId) MOZ_OVERRIDE;
 
 private:
   // Private destructor, to discourage deletion outside of Release():

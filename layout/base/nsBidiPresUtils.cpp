@@ -452,17 +452,11 @@ SplitInlineAncestors(nsContainerFrame* aParent,
       }
 
       // The parent's continuation adopts the siblings after the split.
-      rv = newParent->InsertFrames(nsIFrame::kNoReflowPrincipalList, nullptr, tail);
-      if (NS_FAILED(rv)) {
-        return rv;
-      }
+      newParent->InsertFrames(nsIFrame::kNoReflowPrincipalList, nullptr, tail);
     
       // The list name kNoReflowPrincipalList would indicate we don't want reflow
       nsFrameList temp(newParent, newParent);
-      rv = grandparent->InsertFrames(nsIFrame::kNoReflowPrincipalList, parent, temp);
-      if (NS_FAILED(rv)) {
-        return rv;
-      }
+      grandparent->InsertFrames(nsIFrame::kNoReflowPrincipalList, parent, temp);
     }
     
     frame = parent;
@@ -561,10 +555,7 @@ CreateContinuation(nsIFrame*  aFrame,
   // The list name kNoReflowPrincipalList would indicate we don't want reflow
   // XXXbz this needs higher-level framelist love
   nsFrameList temp(*aNewFrame, *aNewFrame);
-  rv = parent->InsertFrames(nsIFrame::kNoReflowPrincipalList, aFrame, temp);
-  if (NS_FAILED(rv)) {
-    return rv;
-  }
+  parent->InsertFrames(nsIFrame::kNoReflowPrincipalList, aFrame, temp);
 
   if (!aIsFluid) {  
     // Split inline ancestor frames
@@ -861,7 +852,6 @@ nsBidiPresUtils::ResolveParagraph(nsBlockFrame* aBlockFrame,
             }
           }
           frame->AdjustOffsetsForBidi(contentOffset, contentOffset + fragmentLength);
-          currentLine->MarkDirty();
         }
       } // isTextFrame
       else {
@@ -1122,6 +1112,7 @@ nsBidiPresUtils::TraverseFrames(nsBlockFrame*              aBlockFrame,
                   CreateContinuation(frame, &next, true);
                   createdContinuation = true;
                 }
+                // Mark the line before the newline as dirty.
                 aBpd->GetLineForFrameAt(aBpd->FrameCount() - 1)->MarkDirty();
               }
               ResolveParagraphWithinBlock(aBlockFrame, aBpd);
@@ -1131,6 +1122,8 @@ nsBidiPresUtils::TraverseFrames(nsBlockFrame*              aBlockFrame,
               } else if (next) {
                 frame = next;
                 aBpd->AppendFrame(frame, aLineIter);
+                // Mark the line after the newline as dirty.
+                aBpd->GetLineForFrameAt(aBpd->FrameCount() - 1)->MarkDirty();
               }
 
               /*

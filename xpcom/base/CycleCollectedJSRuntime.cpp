@@ -66,6 +66,12 @@
 #include "nsCycleCollectionParticipant.h"
 #include "nsCycleCollector.h"
 #include "nsDOMJSUtils.h"
+#include "nsJSUtils.h"
+
+#ifdef MOZ_CRASHREPORTER
+#include "nsExceptionHandler.h"
+#endif
+
 #include "nsIException.h"
 #include "nsThreadUtils.h"
 #include "xpcpublic.h"
@@ -461,16 +467,17 @@ NoteJSChildGrayWrapperShim(void* aData, void* aThing)
 static const JSZoneParticipant sJSZoneCycleCollectorGlobal;
 
 CycleCollectedJSRuntime::CycleCollectedJSRuntime(JSRuntime* aParentRuntime,
-                                                 uint32_t aMaxbytes,
-                                                 JSUseHelperThreads aUseHelperThreads)
+                                                 uint32_t aMaxbytes)
   : mGCThingCycleCollectorGlobal(sGCThingCycleCollectorGlobal)
   , mJSZoneCycleCollectorGlobal(sJSZoneCycleCollectorGlobal)
   , mJSRuntime(nullptr)
   , mJSHolders(512)
+  , mOutOfMemoryState(OOMState::OK)
+  , mLargeAllocationFailureState(OOMState::OK)
 {
   mozilla::dom::InitScriptSettings();
 
-  mJSRuntime = JS_NewRuntime(aMaxbytes, aUseHelperThreads, aParentRuntime);
+  mJSRuntime = JS_NewRuntime(aMaxbytes, JS::DefaultNurseryBytes, aParentRuntime);
   if (!mJSRuntime) {
     MOZ_CRASH();
   }
@@ -485,6 +492,11 @@ CycleCollectedJSRuntime::CycleCollectedJSRuntime(JSRuntime* aParentRuntime,
   JS_SetContextCallback(mJSRuntime, ContextCallback, this);
   JS_SetDestroyZoneCallback(mJSRuntime, XPCStringConvert::FreeZoneCache);
   JS_SetSweepZoneCallback(mJSRuntime, XPCStringConvert::ClearZoneCache);
+
+  static js::DOMCallbacks DOMcallbacks = {
+    InstanceClassHasProtoAtDepth
+  };
+  SetDOMCallbacks(mJSRuntime, &DOMcallbacks);
 
   nsCycleCollector_registerJSRuntime(this);
 }
@@ -554,7 +566,10 @@ CycleCollectedJSRuntime::DescribeGCThing(bool aIsMarked, void* aThing,
       JSFunction* fun = JS_GetObjectFunction(obj);
       JSString* str = JS_GetFunctionDisplayId(fun);
       if (str) {
-        NS_ConvertUTF16toUTF8 fname(JS_GetInternedStringChars(str));
+        JSFlatString* flat = JS_ASSERT_STRING_IS_FLAT(str);
+        nsAutoString chars;
+        AssignJSFlatString(chars, flat);
+        NS_ConvertUTF16toUTF8 fname(chars);
         JS_snprintf(name, sizeof(name),
                     "JS Object (Function - %s)", fname.get());
       } else {
@@ -568,6 +583,7 @@ CycleCollectedJSRuntime::DescribeGCThing(bool aIsMarked, void* aThing,
     static const char trace_types[][11] = {
       "Object",
       "String",
+      "Symbol",
       "Script",
       "LazyScript",
       "IonCode",
@@ -612,7 +628,7 @@ CycleCollectedJSRuntime::NoteGCThingXPCOMChildren(const js::Class* aClasp, JSObj
     NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(aCb, "js::GetObjectPrivate(obj)");
     aCb.NoteXPCOMChild(static_cast<nsISupports*>(js::GetObjectPrivate(aObj)));
   } else {
-    const DOMClass* domClass = GetDOMClass(aObj);
+    const DOMJSClass* domClass = GetDOMClass(aObj);
     if (domClass) {
       NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(aCb, "UnwrapDOMObject(obj)");
       if (domClass->mDOMObjectIsISupports) {
@@ -823,6 +839,14 @@ TraceJSHolder(void* aHolder, nsScriptObjectTracer*& aTracer, void* aArg)
   aTracer->Trace(aHolder, JsGcTracer(), aArg);
 
   return PL_DHASH_NEXT;
+}
+
+void
+mozilla::TraceScriptHolder(nsISupports* aHolder, JSTracer* aTracer)
+{
+  nsXPCOMCycleCollectionParticipant* participant = nullptr;
+  CallQueryInterface(aHolder, &participant);
+  participant->Trace(aHolder, JsGcTracer(), aTracer);
 }
 
 void
@@ -1176,6 +1200,22 @@ CycleCollectedJSRuntime::FinalizeDeferredThings(DeferredFinalizeType aType)
   }
 }
 
+void 
+CycleCollectedJSRuntime::AnnotateAndSetOutOfMemory(OOMState *aStatePtr, OOMState aNewState)
+{
+  *aStatePtr = aNewState;
+#ifdef MOZ_CRASHREPORTER
+  CrashReporter::AnnotateCrashReport(aStatePtr == &mOutOfMemoryState
+                                     ? NS_LITERAL_CSTRING("JSOutOfMemory")
+                                     : NS_LITERAL_CSTRING("JSLargeAllocationFailure"),
+                                     aNewState == OOMState::Reporting
+                                     ? NS_LITERAL_CSTRING("Reporting")
+                                     : aNewState == OOMState::Reported
+                                     ? NS_LITERAL_CSTRING("Reported")
+                                     : NS_LITERAL_CSTRING("Recovered"));
+#endif
+}
+
 void
 CycleCollectedJSRuntime::OnGC(JSGCStatus aStatus)
 {
@@ -1184,6 +1224,15 @@ CycleCollectedJSRuntime::OnGC(JSGCStatus aStatus)
       nsCycleCollector_prepareForGarbageCollection();
       break;
     case JSGC_END: {
+#ifdef MOZ_CRASHREPORTER
+      if (mOutOfMemoryState == OOMState::Reported) {
+        AnnotateAndSetOutOfMemory(&mOutOfMemoryState, OOMState::Recovered);
+      }
+      if (mLargeAllocationFailureState == OOMState::Reported) {
+        AnnotateAndSetOutOfMemory(&mLargeAllocationFailureState, OOMState::Recovered);
+      }
+#endif
+
       /*
        * If the previous GC created a runnable to finalize objects
        * incrementally, and if it hasn't finished yet, finish it now. We
@@ -1210,11 +1259,15 @@ CycleCollectedJSRuntime::OnGC(JSGCStatus aStatus)
 void
 CycleCollectedJSRuntime::OnOutOfMemory()
 {
+  AnnotateAndSetOutOfMemory(&mOutOfMemoryState, OOMState::Reporting);
   CustomOutOfMemoryCallback();
+  AnnotateAndSetOutOfMemory(&mOutOfMemoryState, OOMState::Reported);
 }
 
 void
 CycleCollectedJSRuntime::OnLargeAllocationFailure()
 {
+  AnnotateAndSetOutOfMemory(&mLargeAllocationFailureState, OOMState::Reporting);
   CustomLargeAllocationFailureCallback();
+  AnnotateAndSetOutOfMemory(&mLargeAllocationFailureState, OOMState::Reported);
 }

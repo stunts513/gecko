@@ -1374,16 +1374,13 @@
         ]]></body>
       </method>
 
-#ifdef MAKE_E10S_WORK
       <method name="updateBrowserRemoteness">
         <parameter name="aBrowser"/>
-        <parameter name="aURL"/>
+        <parameter name="aShouldBeRemote"/>
         <body>
           <![CDATA[
-            let shouldBeRemote = this._shouldBrowserBeRemote(aURL);
-
             let isRemote = aBrowser.getAttribute("remote") == "true";
-            if (isRemote == shouldBeRemote)
+            if (isRemote == aShouldBeRemote)
               return false;
 
             let wasActive = document.activeElement == aBrowser;
@@ -1397,13 +1394,13 @@
             // Change the "remote" attribute.
             let parent = aBrowser.parentNode;
             parent.removeChild(aBrowser);
-            aBrowser.setAttribute("remote", shouldBeRemote ? "true" : "false");
+            aBrowser.setAttribute("remote", aShouldBeRemote ? "true" : "false");
             parent.appendChild(aBrowser);
 
             // Restore the progress listener.
             aBrowser.webProgress.addProgressListener(filter, Ci.nsIWebProgress.NOTIFY_ALL);
 
-            if (shouldBeRemote)
+            if (aShouldBeRemote)
               tab.setAttribute("remote", "true");
             else
               tab.removeAttribute("remote");
@@ -1412,6 +1409,18 @@
               aBrowser.focus();
 
             return true;
+          ]]>
+        </body>
+      </method>
+
+#ifdef MAKE_E10S_WORK
+      <method name="updateBrowserRemotenessByURL">
+        <parameter name="aBrowser"/>
+        <parameter name="aURL"/>
+        <body>
+          <![CDATA[
+            let shouldBeRemote = this._shouldBrowserBeRemote(aURL);
+            return this.updateBrowserRemoteness(aBrowser, shouldBeRemote);
           ]]>
         </body>
       </method>
@@ -1598,8 +1607,6 @@
             // allows the TabLabelModified event to be properly dispatched.
             if (!aURI || isBlankPageURL(aURI)) {
               t.label = this.mStringBundle.getString("tabs.emptyTabTitle");
-            } else {
-              t.label = aURI;
             }
 
             this.tabContainer.updateVisibility();
@@ -2273,6 +2280,8 @@
             // Give others a chance to swap state.
             let event = new CustomEvent("SwapDocShells", {"detail": aOtherBrowser});
             ourBrowser.dispatchEvent(event);
+            event = new CustomEvent("SwapDocShells", {"detail": ourBrowser});
+            aOtherBrowser.dispatchEvent(event);
 
             // Swap the docshells
             ourBrowser.swapDocShells(aOtherBrowser);
@@ -2724,14 +2733,14 @@
         <body>
           <![CDATA[
 #ifdef MAKE_E10S_WORK
-            this.updateBrowserRemoteness(this.mCurrentBrowser, aURI);
+            this.updateBrowserRemotenessByURL(this.mCurrentBrowser, aURI);
             try {
 #endif
             return this.mCurrentBrowser.loadURI(aURI, aReferrerURI, aCharset);
 #ifdef MAKE_E10S_WORK
             } catch (e) {
               let url = this.mCurrentBrowser.currentURI.spec;
-              this.updateBrowserRemoteness(this.mCurrentBrowser, url);
+              this.updateBrowserRemotenessByURL(this.mCurrentBrowser, url);
               throw e;
             }
 #endif
@@ -2749,14 +2758,14 @@
         <body>
           <![CDATA[
 #ifdef MAKE_E10S_WORK
-            this.updateBrowserRemoteness(this.mCurrentBrowser, aURI);
+            this.updateBrowserRemotenessByURL(this.mCurrentBrowser, aURI);
             try {
 #endif
             return this.mCurrentBrowser.loadURIWithFlags(aURI, aFlags, aReferrerURI, aCharset, aPostData);
 #ifdef MAKE_E10S_WORK
             } catch (e) {
               let url = this.mCurrentBrowser.currentURI.spec;
-              this.updateBrowserRemoteness(this.mCurrentBrowser, url);
+              this.updateBrowserRemotenessByURL(this.mCurrentBrowser, url);
               throw e;
             }
 #endif
@@ -2885,7 +2894,7 @@
                 onget="return this.mCurrentBrowser.isSyntheticDocument;"
                 readonly="true"/>
 
-      <method name="_handleKeyEvent">
+      <method name="_handleKeyDownEvent">
         <parameter name="aEvent"/>
         <body><![CDATA[
           if (!aEvent.isTrusted) {
@@ -2896,20 +2905,43 @@
           if (aEvent.altKey)
             return;
 
+          // Don't check if the event was already consumed because tab
+          // navigation should always work for better user experience.
+
           if (aEvent.ctrlKey && aEvent.shiftKey && !aEvent.metaKey) {
             switch (aEvent.keyCode) {
               case aEvent.DOM_VK_PAGE_UP:
                 this.moveTabBackward();
-                aEvent.stopPropagation();
                 aEvent.preventDefault();
                 return;
               case aEvent.DOM_VK_PAGE_DOWN:
                 this.moveTabForward();
-                aEvent.stopPropagation();
                 aEvent.preventDefault();
                 return;
             }
           }
+
+#ifndef XP_MACOSX
+          if (aEvent.ctrlKey && !aEvent.shiftKey && !aEvent.metaKey &&
+              aEvent.keyCode == KeyEvent.DOM_VK_F4 &&
+              !this.mCurrentTab.pinned) {
+            this.removeCurrentTab({animate: true});
+            aEvent.preventDefault();
+          }
+#endif
+        ]]></body>
+      </method>
+
+      <method name="_handleKeyPressEvent">
+        <parameter name="aEvent"/>
+        <body><![CDATA[
+          if (!aEvent.isTrusted) {
+            // Don't let untrusted events mess with tabs.
+            return;
+          }
+
+          if (aEvent.altKey)
+            return;
 
           // We need to take care of FAYT-watching as long as the findbar
           // isn't initialized.  The checks on aEvent are copied from
@@ -2940,16 +2972,7 @@
               if (window.getComputedStyle(this, null).direction == "ltr")
                 offset *= -1;
               this.tabContainer.advanceSelectedTab(offset, true);
-              aEvent.stopPropagation();
               aEvent.preventDefault();
-          }
-#else
-          if (aEvent.ctrlKey && !aEvent.shiftKey && !aEvent.metaKey &&
-              aEvent.keyCode == KeyEvent.DOM_VK_F4 &&
-              !this.mCurrentTab.pinned) {
-            this.removeCurrentTab({animate: true});
-            aEvent.stopPropagation();
-            aEvent.preventDefault();
           }
 #endif
         ]]></body>
@@ -2982,8 +3005,11 @@
         <parameter name="aEvent"/>
         <body><![CDATA[
           switch (aEvent.type) {
+            case "keydown":
+              this._handleKeyDownEvent(aEvent);
+              break;
             case "keypress":
-              this._handleKeyEvent(aEvent);
+              this._handleKeyPressEvent(aEvent);
               break;
             case "sizemodechange":
               if (aEvent.target == window) {
@@ -3050,7 +3076,12 @@
           this.mCurrentBrowser = document.getAnonymousElementByAttribute(this, "anonid", "initialBrowser");
 
           this.mCurrentTab = this.tabContainer.firstChild;
-          document.addEventListener("keypress", this, false);
+          const nsIEventListenerService =
+            Components.interfaces.nsIEventListenerService;
+          let els = Components.classes["@mozilla.org/eventlistenerservice;1"]
+                              .getService(nsIEventListenerService);
+          els.addSystemEventListener(document, "keydown", this, false);
+          els.addSystemEventListener(document, "keypress", this, false);
           window.addEventListener("sizemodechange", this, false);
 
           var uniqueId = this._generateUniquePanelID();
@@ -3128,7 +3159,12 @@
             this.mTabListeners[i].destroy();
             this.mTabListeners[i] = null;
           }
-          document.removeEventListener("keypress", this, false);
+          const nsIEventListenerService =
+            Components.interfaces.nsIEventListenerService;
+          let els = Components.classes["@mozilla.org/eventlistenerservice;1"]
+                              .getService(nsIEventListenerService);
+          els.removeSystemEventListener(document, "keydown", this, false);
+          els.removeSystemEventListener(document, "keypress", this, false);
           window.removeEventListener("sizemodechange", this, false);
 
           if (gMultiProcessBrowser) {
@@ -3252,7 +3288,7 @@
           let uri = browser.currentURI;
           let icon = browser.mIconURL;
 
-          this.updateBrowserRemoteness(browser, "about:tabcrashed");
+          this.updateBrowserRemotenessByURL(browser, "about:tabcrashed");
 
           browser.setAttribute("crashedPageTitle", title);
           browser.docShell.displayLoadError(Cr.NS_ERROR_CONTENT_CRASHED, uri, null);
@@ -4130,8 +4166,6 @@
       </method>
 
       <!-- Deprecated stuff, implemented for backwards compatibility. -->
-      <property name="mTabstripClosebutton" readonly="true"
-                onget="return document.getElementById('tabs-closebutton');"/>
       <property name="mAllTabsPopup" readonly="true"
                 onget="return document.getElementById('alltabs-popup');"/>
     </implementation>
@@ -4247,7 +4281,7 @@
         event.stopPropagation();
       ]]></handler>
 
-      <handler event="keypress"><![CDATA[
+      <handler event="keydown" group="system"><![CDATA[
         if (event.altKey || event.shiftKey ||
 #ifdef XP_MACOSX
             !event.metaKey)
@@ -4255,6 +4289,9 @@
             !event.ctrlKey || event.metaKey)
 #endif
           return;
+
+        // Don't check if the event was already consumed because tab navigation
+        // should work always for better user experience.
 
         switch (event.keyCode) {
           case KeyEvent.DOM_VK_UP:
@@ -4274,11 +4311,10 @@
             this.tabbrowser.moveTabToEnd();
             break;
           default:
-            // Stop the keypress event for the above keyboard
+            // Consume the keydown event for the above keyboard
             // shortcuts only.
             return;
         }
-        event.stopPropagation();
         event.preventDefault();
       ]]></handler>
 
@@ -4723,7 +4759,7 @@
 
       <method name="_mouseenter">
         <body><![CDATA[
-          if (this.closing)
+          if (this.hidden || this.closing)
             return;
 
           let tabContainer = this.parentNode;
@@ -4914,6 +4950,9 @@
     <handlers>
       <handler event="popupshowing">
       <![CDATA[
+        document.getElementById("alltabs_undoCloseTab").disabled =
+          SessionStore.getClosedTabCount(window) == 0;
+
         var tabcontainer = gBrowser.tabContainer;
 
         // Listen for changes in the tab bar.

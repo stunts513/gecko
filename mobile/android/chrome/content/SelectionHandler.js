@@ -1,4 +1,4 @@
-// -*- Mode: js2; tab-width: 2; indent-tabs-mode: nil; js2-basic-offset: 2; js2-skip-preprocessor-directives: t; -*-
+// -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -304,9 +304,6 @@ var SelectionHandler = {
 
     this._initTargetInfo(aElement, this.TYPE_SELECTION);
 
-    // Clear any existing selection from the document
-    this._contentWindow.getSelection().removeAllRanges();
-
     // Perform the appropriate selection method, if we can't determine method, or it fails, return
     if (!this._performSelection(aOptions)) {
       this._deactivate();
@@ -390,6 +387,8 @@ var SelectionHandler = {
    */
   _performSelection: function sh_performSelection(aOptions) {
     if (aOptions.mode == this.SELECT_AT_POINT) {
+      // Clear any ranges selected outside SelectionHandler, by code such as Find-In-Page.
+      this._contentWindow.getSelection().removeAllRanges();
       return this._domWinUtils.selectAtPoint(aOptions.x, aOptions.y, Ci.nsIDOMWindowUtils.SELECT_WORDNOSPACE);
     }
 
@@ -404,7 +403,12 @@ var SelectionHandler = {
     }
 
     // Else default to selectALL Document
-    this._getSelectionController().selectAll();
+    let editor = this._getEditor();
+    if (editor) {
+      editor.selectAll();
+    } else {
+      this._getSelectionController().selectAll();
+    }
 
     // Selection is entire HTMLHtmlElement, remove any trailing document whitespace
     let selection = this._getSelection();
@@ -516,7 +520,8 @@ var SelectionHandler = {
       id: "selectall_action",
       icon: "drawable://ab_select_all",
       action: function(aElement) {
-        SelectionHandler.startSelection(aElement)
+        SelectionHandler.startSelection(aElement);
+        UITelemetry.addEvent("action.1", "actionbar", null, "select_all");
       },
       order: 5,
       selector: {
@@ -539,6 +544,7 @@ var SelectionHandler = {
 
         // copySelection closes the selection. Show a caret where we just cut the text.
         SelectionHandler.attachCaret(aElement);
+        UITelemetry.addEvent("action.1", "actionbar", null, "cut");
       },
       order: 4,
       selector: {
@@ -555,6 +561,7 @@ var SelectionHandler = {
       icon: "drawable://ab_copy",
       action: function() {
         SelectionHandler.copySelection();
+        UITelemetry.addEvent("action.1", "actionbar", null, "copy");
       },
       order: 3,
       selector: {
@@ -579,6 +586,7 @@ var SelectionHandler = {
           target.editor.paste(Ci.nsIClipboard.kGlobalClipboard);
           target.focus();
           SelectionHandler._closeSelection();
+          UITelemetry.addEvent("action.1", "actionbar", null, "paste");
         }
       },
       order: 2,
@@ -599,6 +607,7 @@ var SelectionHandler = {
       icon: "drawable://ic_menu_share",
       action: function() {
         SelectionHandler.shareSelection();
+        UITelemetry.addEvent("action.1", "actionbar", null, "share");
       },
       selector: {
         matches: function() {
@@ -616,6 +625,7 @@ var SelectionHandler = {
       action: function() {
         SelectionHandler.searchSelection();
         SelectionHandler._closeSelection();
+        UITelemetry.addEvent("action.1", "actionbar", null, "search");
       },
       order: 1,
       selector: {
@@ -631,6 +641,7 @@ var SelectionHandler = {
       icon: "drawable://phone",
       action: function() {
         SelectionHandler.callSelection();
+        UITelemetry.addEvent("action.1", "actionbar", null, "call");
       },
       order: 1,
       selector: {
@@ -713,6 +724,17 @@ var SelectionHandler = {
     }
 
     return selection.toString().trim();
+  },
+
+  _getEditor: function sh_getEditor() {
+    if (this._targetElement instanceof Ci.nsIDOMNSEditableElement) {
+      return this._targetElement.QueryInterface(Ci.nsIDOMNSEditableElement).editor;
+    }
+    return this._contentWindow.QueryInterface(Ci.nsIInterfaceRequestor)
+                              .getInterface(Ci.nsIWebNavigation)
+                              .QueryInterface(Ci.nsIInterfaceRequestor)
+                              .getInterface(Ci.nsIEditingSession)
+                              .getEditorForWindow(this._contentWindow);
   },
 
   _getSelectionController: function sh_getSelectionController() {

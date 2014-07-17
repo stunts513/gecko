@@ -28,9 +28,9 @@
 #include "MediaStreamGraph.h"
 
 #include "MediaEngineWrapper.h"
-
+#include "mozilla/dom/MediaStreamTrackBinding.h"
 // WebRTC library includes follow
-
+#include "webrtc/common.h"
 // Audio Engine
 #include "webrtc/voice_engine/include/voe_base.h"
 #include "webrtc/voice_engine/include/voe_codec.h"
@@ -43,6 +43,8 @@
 #include "webrtc/voice_engine/include/voe_call_report.h"
 
 // Video Engine
+// conflicts with #include of scoped_ptr.h
+#undef FF
 #include "webrtc/video_engine/include/vie_base.h"
 #include "webrtc/video_engine/include/vie_codec.h"
 #include "webrtc/video_engine/include/vie_render.h"
@@ -93,15 +95,18 @@ class MediaEngineWebRTCVideoSource : public MediaEngineVideoSource
 {
 public:
 #ifdef MOZ_B2G_CAMERA
-  MediaEngineWebRTCVideoSource(int aIndex)
+  MediaEngineWebRTCVideoSource(int aIndex,
+                               dom::MediaSourceEnum aMediaSource = dom::MediaSourceEnum::Camera)
     : mCameraControl(nullptr)
     , mCallbackMonitor("WebRTCCamera.CallbackMonitor")
     , mRotation(0)
     , mBackCamera(false)
     , mCaptureIndex(aIndex)
+    , mMediaSource(aMediaSource)
     , mMonitor("WebRTCCamera.Monitor")
     , mWidth(0)
     , mHeight(0)
+    , mHasDirectListeners(false)
     , mInitDone(false)
     , mInSnapshotMode(false)
     , mSnapshotPath(nullptr)
@@ -121,14 +126,17 @@ public:
    */
   virtual bool IsTextureSupported() { return false; }
 
-  MediaEngineWebRTCVideoSource(webrtc::VideoEngine* aVideoEnginePtr, int aIndex)
+  MediaEngineWebRTCVideoSource(webrtc::VideoEngine* aVideoEnginePtr, int aIndex,
+                               dom::MediaSourceEnum aMediaSource = dom::MediaSourceEnum::Camera)
     : mVideoEngine(aVideoEnginePtr)
     , mCaptureIndex(aIndex)
     , mFps(-1)
     , mMinFps(-1)
+    , mMediaSource(aMediaSource)
     , mMonitor("WebRTCCamera.Monitor")
     , mWidth(0)
     , mHeight(0)
+    , mHasDirectListeners(false)
     , mInitDone(false)
     , mInSnapshotMode(false)
     , mSnapshotPath(nullptr) {
@@ -138,8 +146,6 @@ public:
   }
 #endif
 
-  ~MediaEngineWebRTCVideoSource() { Shutdown(); }
-
   virtual void GetName(nsAString&);
   virtual void GetUUID(nsAString&);
   virtual nsresult Allocate(const VideoTrackConstraintsN &aConstraints,
@@ -147,6 +153,7 @@ public:
   virtual nsresult Deallocate();
   virtual nsresult Start(SourceMediaStream*, TrackID);
   virtual nsresult Stop(SourceMediaStream*, TrackID);
+  virtual void SetDirectListeners(bool aHasListeners);
   virtual nsresult Snapshot(uint32_t aDuration, nsIDOMFile** aFile);
   virtual nsresult Config(bool aEchoOn, uint32_t aEcho,
                           bool aAgcOn, uint32_t aAGC,
@@ -160,6 +167,10 @@ public:
 
   virtual bool IsFake() {
     return false;
+  }
+
+  virtual const dom::MediaSourceEnum GetMediaSource() {
+    return mMediaSource;
   }
 
 #ifndef MOZ_B2G_CAMERA
@@ -203,6 +214,9 @@ public:
     return NS_OK;
   }
 
+protected:
+  ~MediaEngineWebRTCVideoSource() { Shutdown(); }
+
 private:
   static const unsigned int KMaxDeviceNameLength = 128;
   static const unsigned int KMaxUniqueIdLength = 256;
@@ -216,7 +230,7 @@ private:
   mozilla::ReentrantMonitor mCallbackMonitor; // Monitor for camera callback handling
   // This is only modified on MainThread (AllocImpl and DeallocImpl)
   nsRefPtr<ICameraControl> mCameraControl;
-  nsRefPtr<nsIDOMFile> mLastCapture;
+  nsCOMPtr<nsIDOMFile> mLastCapture;
 
   // These are protected by mMonitor below
   int mRotation;
@@ -233,6 +247,7 @@ private:
   int mCaptureIndex;
   int mFps; // Track rate (30 fps by default)
   int mMinFps; // Min rate we want to accept
+  dom::MediaSourceEnum mMediaSource; // source of media (camera | application | screen)
 
   // mMonitor protects mImage access/changes, and transitions of mState
   // from kStarted to kStopped (which are combined with EndTrack() and
@@ -242,6 +257,7 @@ private:
   int mWidth, mHeight;
   nsRefPtr<layers::Image> mImage;
   nsRefPtr<layers::ImageContainer> mImageContainer;
+  bool mHasDirectListeners;
 
   nsTArray<SourceMediaStream *> mSources; // When this goes empty, we shut down HW
 
@@ -263,15 +279,16 @@ class MediaEngineWebRTCAudioSource : public MediaEngineAudioSource,
                                      public webrtc::VoEMediaProcess
 {
 public:
-  MediaEngineWebRTCAudioSource(webrtc::VoiceEngine* aVoiceEnginePtr, int aIndex,
-    const char* name, const char* uuid)
-    : mVoiceEngine(aVoiceEnginePtr)
+  MediaEngineWebRTCAudioSource(nsIThread *aThread, webrtc::VoiceEngine* aVoiceEnginePtr,
+                               int aIndex, const char* name, const char* uuid)
+    : mSamples(0)
+    , mVoiceEngine(aVoiceEnginePtr)
     , mMonitor("WebRTCMic.Monitor")
+    , mThread(aThread)
     , mCapIndex(aIndex)
     , mChannel(-1)
     , mInitDone(false)
     , mStarted(false)
-    , mSamples(0)
     , mEchoOn(false), mAgcOn(false), mNoiseOn(false)
     , mEchoCancel(webrtc::kEcDefault)
     , mAGC(webrtc::kAgcDefault)
@@ -284,7 +301,6 @@ public:
     mDeviceUUID.Assign(NS_ConvertUTF8toUTF16(uuid));
     Init();
   }
-  ~MediaEngineWebRTCAudioSource() { Shutdown(); }
 
   virtual void GetName(nsAString&);
   virtual void GetUUID(nsAString&);
@@ -294,6 +310,7 @@ public:
   virtual nsresult Deallocate();
   virtual nsresult Start(SourceMediaStream*, TrackID);
   virtual nsresult Stop(SourceMediaStream*, TrackID);
+  virtual void SetDirectListeners(bool aHasDirectListeners) {};
   virtual nsresult Snapshot(uint32_t aDuration, nsIDOMFile** aFile);
   virtual nsresult Config(bool aEchoOn, uint32_t aEcho,
                           bool aAgcOn, uint32_t aAGC,
@@ -317,6 +334,15 @@ public:
 
   NS_DECL_THREADSAFE_ISUPPORTS
 
+protected:
+  ~MediaEngineWebRTCAudioSource() { Shutdown(); }
+
+  // mSamples is an int to avoid conversions when comparing/etc to
+  // samplingFreq & length. Making mSamples protected instead of private is a
+  // silly way to avoid -Wunused-private-field warnings when PR_LOGGING is not
+  // #defined. mSamples is not actually expected to be used by a derived class.
+  int mSamples;
+
 private:
   static const unsigned int KMaxDeviceNameLength = 128;
   static const unsigned int KMaxUniqueIdLength = 256;
@@ -336,13 +362,12 @@ private:
   // mSources[] is accessed from webrtc threads.
   Monitor mMonitor;
   nsTArray<SourceMediaStream *> mSources; // When this goes empty, we shut down HW
-
+  nsCOMPtr<nsIThread> mThread;
   int mCapIndex;
   int mChannel;
   TrackID mTrackID;
   bool mInitDone;
   bool mStarted;
-  int mSamples; // int to avoid conversions when comparing/etc to samplingFreq & length
 
   nsString mDeviceName;
   nsString mDeviceUUID;
@@ -356,8 +381,7 @@ private:
   NullTransport *mNullTransport;
 };
 
-class MediaEngineWebRTC : public MediaEngine,
-                          public webrtc::TraceCallback
+class MediaEngineWebRTC : public MediaEngine
 {
 public:
   MediaEngineWebRTC(MediaEnginePrefs &aPrefs);
@@ -366,12 +390,10 @@ public:
   // before invoking Shutdown on this class.
   void Shutdown();
 
-  virtual void EnumerateVideoDevices(nsTArray<nsRefPtr<MediaEngineVideoSource> >*);
-  virtual void EnumerateAudioDevices(nsTArray<nsRefPtr<MediaEngineAudioSource> >*);
-
-  // Webrtc trace callbacks for proxying to NSPR
-  virtual void Print(webrtc::TraceLevel level, const char* message, int length);
-
+  virtual void EnumerateVideoDevices(dom::MediaSourceEnum,
+                                    nsTArray<nsRefPtr<MediaEngineVideoSource> >*);
+  virtual void EnumerateAudioDevices(dom::MediaSourceEnum,
+                                    nsTArray<nsRefPtr<MediaEngineAudioSource> >*);
 private:
   ~MediaEngineWebRTC() {
     Shutdown();
@@ -382,15 +404,25 @@ private:
     gFarendObserver = nullptr;
   }
 
-  Mutex mMutex;
-  // protected with mMutex:
+  nsCOMPtr<nsIThread> mThread;
 
+  Mutex mMutex;
+
+  // protected with mMutex:
+  webrtc::VideoEngine* mScreenEngine;
+  webrtc::VideoEngine* mAppEngine;
   webrtc::VideoEngine* mVideoEngine;
   webrtc::VoiceEngine* mVoiceEngine;
+
+  // specialized configurations
+  webrtc::Config mAppEngineConfig;
+  webrtc::Config mScreenEngineConfig;
 
   // Need this to avoid unneccesary WebRTC calls while enumerating.
   bool mVideoEngineInit;
   bool mAudioEngineInit;
+  bool mScreenEngineInit;
+  bool mAppEngineInit;
   bool mHasTabVideoSource;
 
   // Store devices we've already seen in a hashtable for quick return.

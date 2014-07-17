@@ -26,6 +26,7 @@
 #include "nsCxPusher.h"
 #include "xpcpublic.h"
 #include "nsServiceManagerUtils.h"
+#include "DeletedMessageInfo.h"
 
 namespace mozilla {
 namespace dom {
@@ -97,9 +98,8 @@ GetParamsFromSendMmsMessageRequest(JSContext* aCx,
 
   // receivers
   JS::Rooted<JSObject*> receiverArray(aCx);
-  if (NS_FAILED(nsTArrayToJSArray(aCx,
-                                  aRequest.receivers(),
-                                  receiverArray.address()))) {
+  if (NS_FAILED(nsTArrayToJSArray(aCx, aRequest.receivers(), &receiverArray)))
+  {
     return false;
   }
   if (!JS_DefineProperty(aCx, paramsObj, "receivers", receiverArray, 0)) {
@@ -180,6 +180,7 @@ SmsParent::SmsParent()
   obs->AddObserver(this, kSilentSmsReceivedObserverTopic, false);
   obs->AddObserver(this, kSmsReadSuccessObserverTopic, false);
   obs->AddObserver(this, kSmsReadErrorObserverTopic, false);
+  obs->AddObserver(this, kSmsDeletedObserverTopic, false);
 }
 
 void
@@ -200,6 +201,7 @@ SmsParent::ActorDestroy(ActorDestroyReason why)
   obs->RemoveObserver(this, kSilentSmsReceivedObserverTopic);
   obs->RemoveObserver(this, kSmsReadSuccessObserverTopic);
   obs->RemoveObserver(this, kSmsReadErrorObserverTopic);
+  obs->RemoveObserver(this, kSmsDeletedObserverTopic);
 }
 
 NS_IMETHODIMP
@@ -325,6 +327,17 @@ SmsParent::Observe(nsISupports* aSubject, const char* aTopic,
     return NS_OK;
   }
 
+  if (!strcmp(aTopic, kSmsDeletedObserverTopic)) {
+    nsCOMPtr<nsIDeletedMessageInfo> deletedInfo = do_QueryInterface(aSubject);
+    if (!deletedInfo) {
+      NS_ERROR("Got a 'sms-deleted' topic without a valid message!");
+      return NS_OK;
+    }
+
+    unused << SendNotifyDeletedMessageInfo(
+      static_cast<DeletedMessageInfo*>(deletedInfo.get())->GetData());
+    return NS_OK;
+  }
 
   return NS_OK;
 }

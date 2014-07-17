@@ -65,28 +65,34 @@
 }
 
 .stylesheet-sidebar {
-  width: 230px;
+  max-width: 400px;
+  min-width: 100px;
 }
 
 .theme-light .stylesheet-sidebar {
-  border-left: 1px solid #A6A6A6;
+  border-color: #aaa; /* Splitters */
 }
 
 .theme-dark .stylesheet-sidebar {
-  border-left: 1px solid #606C75;
+  border-color: #000;  /* Splitters */
 }
 
 .theme-light .media-rule-label {
-  border-bottom: 1px solid #CCC;
+  border-bottom-color: #cddae5; /* Grey */
 }
 
 .theme-dark .media-rule-label {
-  border-bottom: 1px solid #343C45;
+  border-bottom-color: #303b47; /* Grey */
 }
 
 .media-rule-label {
   padding: 4px;
   cursor: pointer;
+  border-bottom: 1px solid;
+}
+
+.media-rule-line {
+  -moz-padding-start: 4px;
 }
 
 .theme-light .media-condition-unmatched {
@@ -104,8 +110,15 @@
   background-repeat: no-repeat;
   background-clip: content-box;
   background-position: 0 8px;
+  background-size: 48px 24px;
   width: 24px;
   height: 40px;
+}
+
+@media (min-resolution: 2dppx) {
+  .stylesheet-enabled {
+    background-image: url(itemToggle@2x.png);
+  }
 }
 
 .disabled > .stylesheet-enabled {
@@ -193,11 +206,11 @@ h3 {
 }
 
 .theme-light .csscoverage-report {
-  background: url(background-noise-toolbar.png), #f0f1f2; /* Toolbars */
+  background-color: #f0f1f2; /* Toolbars */
 }
 
 .theme-dark .csscoverage-report {
-  background: url(background-noise-toolbar.png), #343c45; /* Toolbars */
+  background-color: #343c45; /* Toolbars */
 }
 
 .csscoverage-report-container {

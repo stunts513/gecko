@@ -479,6 +479,13 @@ class HashSet
             impl.rekeyAndMaybeRehash(p, new_lookup, new_value);
     }
 
+    // Infallibly rekey one entry with a new key that is equivalent.
+    void rekeyInPlace(Ptr p, const T &new_value)
+    {
+        MOZ_ASSERT(HashPolicy::match(*p, new_value));
+        impl.rekeyInPlace(p, new_value);
+    }
+
     // HashSet is movable
     HashSet(HashSet &&rhs) : impl(mozilla::Move(rhs.impl)) {}
     void operator=(HashSet &&rhs) {
@@ -1009,7 +1016,7 @@ class HashTable : private AllocPolicy
 #endif
 
     friend class mozilla::ReentrancyGuard;
-    mutable mozilla::DebugOnly<bool> entered;
+    mutable mozilla::DebugOnly<bool> mEntered;
     mozilla::DebugOnly<uint64_t>     mutationCount;
 
     // The default initial capacity is 32 (enough to hold 16 elements), but it
@@ -1069,7 +1076,7 @@ class HashTable : private AllocPolicy
         gen(0),
         removedCount(0),
         table(nullptr),
-        entered(false),
+        mEntered(false),
         mutationCount(0)
     {}
 
@@ -1445,7 +1452,7 @@ class HashTable : private AllocPolicy
 
     void finish()
     {
-        MOZ_ASSERT(!entered);
+        MOZ_ASSERT(!mEntered);
 
         if (!table)
             return;
@@ -1627,6 +1634,14 @@ class HashTable : private AllocPolicy
     {
         rekeyWithoutRehash(p, l, k);
         checkOverRemoved();
+    }
+
+    void rekeyInPlace(Ptr p, const Key &k)
+    {
+        MOZ_ASSERT(table);
+        mozilla::ReentrancyGuard g(*this);
+        MOZ_ASSERT(p.found());
+        HashPolicy::rekey(const_cast<Key &>(*p), const_cast<Key &>(k));
     }
 
 #undef METER

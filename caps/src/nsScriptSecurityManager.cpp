@@ -64,14 +64,13 @@
 #include "nsContentUtils.h"
 #include "nsCxPusher.h"
 #include "nsJSUtils.h"
+#include "nsILoadInfo.h"
 
 // This should be probably defined on some other place... but I couldn't find it
 #define WEBAPPS_PERM_NAME "webapps-manage"
 
 using namespace mozilla;
 using namespace mozilla::dom;
-
-static NS_DEFINE_CID(kZipReaderCID, NS_ZIPREADER_CID);
 
 nsIIOService    *nsScriptSecurityManager::sIOService = nullptr;
 nsIStringBundle *nsScriptSecurityManager::sStrBundle = nullptr;
@@ -81,22 +80,6 @@ bool nsScriptSecurityManager::sStrictFileOriginPolicy = true;
 ///////////////////////////
 // Convenience Functions //
 ///////////////////////////
-// Result of this function should not be freed.
-static inline const char16_t *
-IDToString(JSContext *cx, jsid id_)
-{
-    JS::RootedId id(cx, id_);
-    if (JSID_IS_STRING(id))
-        return JS_GetInternedStringChars(JSID_TO_STRING(id));
-
-    JS::Rooted<JS::Value> idval(cx);
-    if (!JS_IdToValue(cx, id, &idval))
-        return nullptr;
-    JSString *str = JS::ToString(cx, idval);
-    if(!str)
-        return nullptr;
-    return JS_GetStringCharsZ(cx, str);
-}
 
 class nsAutoInPrincipalDomainOriginSetter {
 public:
@@ -279,6 +262,20 @@ nsScriptSecurityManager::GetChannelPrincipal(nsIChannel* aChannel,
     if (owner) {
         CallQueryInterface(owner, aPrincipal);
         if (*aPrincipal) {
+            return NS_OK;
+        }
+    }
+
+    // Check whether we have an nsILoadInfo that says what we should do.
+    nsCOMPtr<nsILoadInfo> loadInfo;
+    aChannel->GetLoadInfo(getter_AddRefs(loadInfo));
+    if (loadInfo) {
+        if (loadInfo->GetLoadingSandboxed()) {
+            return CallCreateInstance(NS_NULLPRINCIPAL_CONTRACTID, aPrincipal);
+        }
+
+        if (loadInfo->GetForceInheritPrincipal()) {
+            NS_ADDREF(*aPrincipal = loadInfo->LoadingPrincipal());
             return NS_OK;
         }
     }
@@ -1039,7 +1036,7 @@ nsScriptSecurityManager::CanCreateWrapper(JSContext *cx,
     }
 
     // We give remote-XUL whitelisted domains a free pass here. See bug 932906.
-    if (!xpc::AllowXBLScope(js::GetContextCompartment(cx)))
+    if (!xpc::AllowContentXBLScope(js::GetContextCompartment(cx)))
     {
         return NS_OK;
     }

@@ -57,6 +57,11 @@ function debug(aMsg) {
   aMsg = ("SessionStartup: " + aMsg).replace(/\S{80}/g, "$&\n");
   Services.console.logStringMessage(aMsg);
 }
+function warning(aMsg, aException) {
+  let consoleMsg = Cc["@mozilla.org/scripterror;1"].createInstance(Ci.nsIScriptError);
+consoleMsg.init(aMsg, aException.fileName, null, aException.lineNumber, 0, Ci.nsIScriptError.warningFlag, "component javascript");
+  Services.console.logMessage(consoleMsg);
+}
 
 let gOnceInitializedDeferred = Promise.defer();
 
@@ -107,26 +112,38 @@ SessionStartup.prototype = {
   /**
    * Complete initialization once the Session File has been read
    *
-   * @param stateString
-   *        string The Session State string read from disk
+   * @param source The Session State string read from disk.
+   * @param parsed The object obtained by parsing |source| as JSON.
    */
-  _onSessionFileRead: function (stateString) {
+  _onSessionFileRead: function ({source, parsed}) {
     this._initialized = true;
 
     // Let observers modify the state before it is used
-    let supportsStateString = this._createSupportsString(stateString);
+    let supportsStateString = this._createSupportsString(source);
     Services.obs.notifyObservers(supportsStateString, "sessionstore-state-read", "");
-    stateString = supportsStateString.data;
+    let stateString = supportsStateString.data;
 
-    // No valid session found.
-    if (!stateString) {
+    if (stateString != source) {
+      // The session has been modified by an add-on, reparse.
+      try {
+        this._initialState = JSON.parse(stateString);
+      } catch (ex) {
+        // That's not very good, an add-on has rewritten the initial
+        // state to something that won't parse.
+        warning("Observer rewrote the state to something that won't parse", ex);
+      }
+    } else {
+      // No need to reparse
+      this._initialState = parsed;
+    }
+
+    if (this._initialState == null) {
+      // No valid session found.
       this._sessionType = Ci.nsISessionStartup.NO_SESSION;
       Services.obs.notifyObservers(null, "sessionstore-state-finalized", "");
       gOnceInitializedDeferred.resolve();
       return;
     }
-
-    this._initialState = this._parseStateString(stateString);
 
     let shouldResumeSessionOnce = Services.prefs.getBoolPref("browser.sessionstore.resume_session_once");
     let shouldResumeSession = shouldResumeSessionOnce ||
@@ -148,24 +165,31 @@ SessionStartup.prototype = {
         // If the Crash Monitor could not load a checkpoints file it will
         // provide null. This could occur on the first run after updating to
         // a version including the Crash Monitor, or if the checkpoints file
-        // was removed.
-        //
-        // If this is the first run after an update, sessionstore.js should
-        // still contain the session.state flag to indicate if the session
-        // crashed. If it is not present, we will assume this was not the first
-        // run after update and the checkpoints file was somehow corrupted or
-        // removed by a crash.
-        //
-        // If the session.state flag is present, we will fallback to using it
-        // for crash detection - If the last write of sessionstore.js had it
-        // set to "running", we crashed.
-        let stateFlagPresent = (this._initialState &&
-                                this._initialState.session &&
-                                this._initialState.session.state);
+        // was removed, or on first startup with this profile, or after Firefox Reset.
+
+        if (!this._initialState) {
+          // We have neither sessionstore.js nor a checkpoints file,
+          // assume that this is a first startup with the profile or after
+          // Firefox Reset.
+          this._previousSessionCrashed = false;
+
+        } else {
+          // If this is the first run after an update, sessionstore.js should
+          // still contain the session.state flag to indicate if the session
+          // crashed. If it is not present, we will assume this was not the first
+          // run after update and the checkpoints file was somehow corrupted or
+          // removed by a crash.
+          //
+          // If the session.state flag is present, we will fallback to using it
+          // for crash detection - If the last write of sessionstore.js had it
+          // set to "running", we crashed.
+          let stateFlagPresent = (this._initialState.session &&
+                                  this._initialState.session.state);
 
 
-        this._previousSessionCrashed = !stateFlagPresent ||
-                                       (this._initialState.session.state == STATE_RUNNING_STR);
+          this._previousSessionCrashed = !stateFlagPresent ||
+            (this._initialState.session.state == STATE_RUNNING_STR);
+        }
       }
 
       // Report shutdown success via telemetry. Shortcoming here are
@@ -192,29 +216,6 @@ SessionStartup.prototype = {
       Services.obs.notifyObservers(null, "sessionstore-state-finalized", "");
       gOnceInitializedDeferred.resolve();
     });
-  },
-
-
-  /**
-   * Convert the Session State string into a state object
-   *
-   * @param stateString
-   *        string The Session State string read from disk
-   * @returns {State} a Session State object
-   */
-  _parseStateString: function (stateString) {
-    let state = null;
-    let corruptFile = false;
-
-    try {
-      state = JSON.parse(stateString);
-    } catch (ex) {
-      debug("The session file contained un-parse-able JSON: " + ex);
-      corruptFile = true;
-    }
-    Services.telemetry.getHistogramById("FX_SESSION_RESTORE_CORRUPT_FILE").add(corruptFile);
-
-    return state;
   },
 
   /**

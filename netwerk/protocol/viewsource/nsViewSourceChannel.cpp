@@ -452,6 +452,22 @@ nsViewSourceChannel::SetOwner(nsISupports* aOwner)
 }
 
 NS_IMETHODIMP
+nsViewSourceChannel::GetLoadInfo(nsILoadInfo* *aLoadInfo)
+{
+    NS_ENSURE_TRUE(mChannel, NS_ERROR_FAILURE);
+
+    return mChannel->GetLoadInfo(aLoadInfo);
+}
+
+NS_IMETHODIMP
+nsViewSourceChannel::SetLoadInfo(nsILoadInfo* aLoadInfo)
+{
+    NS_ENSURE_TRUE(mChannel, NS_ERROR_FAILURE);
+
+    return mChannel->SetLoadInfo(aLoadInfo);
+}
+
+NS_IMETHODIMP
 nsViewSourceChannel::GetNotificationCallbacks(nsIInterfaceRequestor* *aNotificationCallbacks)
 {
     NS_ENSURE_TRUE(mChannel, NS_ERROR_FAILURE);
@@ -646,6 +662,20 @@ nsViewSourceChannel::SetAllowPipelining(bool aAllowPipelining)
 {
     return !mHttpChannel ? NS_ERROR_NULL_POINTER :
         mHttpChannel->SetAllowPipelining(aAllowPipelining);
+}
+
+NS_IMETHODIMP
+nsViewSourceChannel::GetAllowSTS(bool *aAllowSTS)
+{
+    return !mHttpChannel ? NS_ERROR_NULL_POINTER :
+        mHttpChannel->GetAllowSTS(aAllowSTS);
+}
+
+NS_IMETHODIMP
+nsViewSourceChannel::SetAllowSTS(bool aAllowSTS)
+{
+    return !mHttpChannel ? NS_ERROR_NULL_POINTER :
+        mHttpChannel->SetAllowSTS(aAllowSTS);
 }
 
 NS_IMETHODIMP

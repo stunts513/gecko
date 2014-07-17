@@ -51,6 +51,14 @@ const STORAGE_INFO_TYPES = [INFO_COLLECTIONS,
                             INFO_COLLECTION_COUNTS,
                             INFO_QUOTA];
 
+// A structure mapping a (boolean) telemetry probe name to a preference name.
+// The probe will record true if the pref is modified, false otherwise.
+const TELEMETRY_CUSTOM_SERVER_PREFS = {
+  WEAVE_CUSTOM_LEGACY_SERVER_CONFIGURATION: "services.sync.serverURL",
+  WEAVE_CUSTOM_FXA_SERVER_CONFIGURATION: "identity.fxaccounts.auth.uri",
+  WEAVE_CUSTOM_TOKEN_SERVER_CONFIGURATION: "services.sync.tokenServerURI",
+};
+
 
 function Sync11Service() {
   this._notify = Utils.notify("weave:service:");
@@ -354,6 +362,12 @@ Sync11Service.prototype = {
     let status = this._checkSetup();
     if (status != STATUS_DISABLED && status != CLIENT_NOT_CONFIGURED) {
       Svc.Obs.notify("weave:engine:start-tracking");
+    }
+
+    // Telemetry probes to indicate if the user is using custom servers.
+    for (let [probeName, prefName] of Iterator(TELEMETRY_CUSTOM_SERVER_PREFS)) {
+      let isCustomized = Services.prefs.prefHasUserValue(prefName);
+      Services.telemetry.getHistogramById(probeName).add(isCustomized);
     }
 
     // Send an event now that Weave service is ready.  We don't do this
@@ -670,17 +684,21 @@ Sync11Service.prototype = {
       return false;
     }
 
-    // Unlock master password, or return.
     // Attaching auth credentials to a request requires access to
     // passwords, which means that Resource.get can throw MP-related
     // exceptions!
-    // Try to fetch the passphrase first, while we still have control.
-    try {
-      this.identity.syncKey;
-    } catch (ex) {
-      this._log.debug("Fetching passphrase threw " + ex +
-                      "; assuming master password locked.");
-      this.status.login = MASTER_PASSWORD_LOCKED;
+    // So we ask the identity to verify the login state after unlocking the
+    // master password (ie, this call is expected to prompt for MP unlock
+    // if necessary) while we still have control.
+    let cb = Async.makeSpinningCallback();
+    this.identity.unlockAndVerifyAuthState().then(
+      result => cb(null, result),
+      cb
+    );
+    let unlockedState = cb.wait();
+    this._log.debug("Fetching unlocked auth state returned " + unlockedState);
+    if (unlockedState != STATUS_OK) {
+      this.status.login = unlockedState;
       return false;
     }
 
@@ -968,7 +986,7 @@ Sync11Service.prototype = {
           && (username || password || passphrase)) {
         Svc.Obs.notify("weave:service:setup-complete");
       }
-      this._log.info("Logging in user " + this.identity.username);
+      this._log.info("Logging in the user.");
       this._updateCachedURLs();
 
       if (!this.verifyLogin()) {

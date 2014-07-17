@@ -53,6 +53,12 @@ int32_t CacheObserver::sAutoMemoryCacheCapacity = -1;
 static uint32_t const kDefaultDiskCacheCapacity = 250 * 1024; // 250 MB
 uint32_t CacheObserver::sDiskCacheCapacity = kDefaultDiskCacheCapacity;
 
+static uint32_t const kDefaultDiskFreeSpaceSoftLimit = 5 * 1024; // 5MB
+uint32_t CacheObserver::sDiskFreeSpaceSoftLimit = kDefaultDiskFreeSpaceSoftLimit;
+
+static uint32_t const kDefaultDiskFreeSpaceHardLimit = 1024; // 1MB
+uint32_t CacheObserver::sDiskFreeSpaceHardLimit = kDefaultDiskFreeSpaceHardLimit;
+
 static bool const kDefaultSmartCacheSizeEnabled = false;
 bool CacheObserver::sSmartCacheSizeEnabled = kDefaultSmartCacheSizeEnabled;
 
@@ -64,6 +70,12 @@ uint32_t CacheObserver::sMaxMemoryEntrySize = kDefaultMaxMemoryEntrySize;
 
 static uint32_t const kDefaultMaxDiskEntrySize = 50 * 1024; // 50 MB
 uint32_t CacheObserver::sMaxDiskEntrySize = kDefaultMaxDiskEntrySize;
+
+static uint32_t const kDefaultMaxDiskChunksMemoryUsage = 10 * 1024; // 10MB
+uint32_t CacheObserver::sMaxDiskChunksMemoryUsage = kDefaultMaxDiskChunksMemoryUsage;
+
+static uint32_t const kDefaultMaxDiskPriorityChunksMemoryUsage = 10 * 1024; // 10MB
+uint32_t CacheObserver::sMaxDiskPriorityChunksMemoryUsage = kDefaultMaxDiskPriorityChunksMemoryUsage;
 
 static uint32_t const kDefaultCompressionLevel = 1;
 uint32_t CacheObserver::sCompressionLevel = kDefaultCompressionLevel;
@@ -145,12 +157,22 @@ CacheObserver::AttachToPreferences()
     &sMemoryCacheCapacity, "browser.cache.memory.capacity", kDefaultMemoryCacheCapacity);
 
   mozilla::Preferences::AddUintVarCache(
+    &sDiskFreeSpaceSoftLimit, "browser.cache.disk.free_space_soft_limit", kDefaultDiskFreeSpaceSoftLimit);
+  mozilla::Preferences::AddUintVarCache(
+    &sDiskFreeSpaceHardLimit, "browser.cache.disk.free_space_hard_limit", kDefaultDiskFreeSpaceHardLimit);
+
+  mozilla::Preferences::AddUintVarCache(
     &sPreloadChunkCount, "browser.cache.disk.preload_chunk_count", kDefaultPreloadChunkCount);
 
   mozilla::Preferences::AddUintVarCache(
     &sMaxDiskEntrySize, "browser.cache.disk.max_entry_size", kDefaultMaxDiskEntrySize);
   mozilla::Preferences::AddUintVarCache(
     &sMaxMemoryEntrySize, "browser.cache.memory.max_entry_size", kDefaultMaxMemoryEntrySize);
+
+  mozilla::Preferences::AddUintVarCache(
+    &sMaxDiskChunksMemoryUsage, "browser.cache.disk.max_chunks_memory_usage", kDefaultMaxDiskChunksMemoryUsage);
+  mozilla::Preferences::AddUintVarCache(
+    &sMaxDiskPriorityChunksMemoryUsage, "browser.cache.disk.max_priority_chunks_memory_usage", kDefaultMaxDiskPriorityChunksMemoryUsage);
 
   // http://mxr.mozilla.org/mozilla-central/source/netwerk/cache/nsCacheEntryDescriptor.cpp#367
   mozilla::Preferences::AddUintVarCache(
@@ -248,21 +270,6 @@ uint32_t const CacheObserver::MemoryCacheCapacity()
 
   // Result is in bytes.
   return sAutoMemoryCacheCapacity = capacity;
-}
-
-void CacheObserver::SchduleAutoDelete()
-{
-  // Auto-delete not set
-  if (sAutoDeleteCacheVersion == -1)
-    return;
-
-  // Don't autodelete the same version of the cache user has setup
-  // to use.
-  int32_t activeVersion = UseNewCache() ? 1 : 0;
-  if (sAutoDeleteCacheVersion == activeVersion)
-    return;
-
-  CacheStorageService::WipeCacheDirectory(sAutoDeleteCacheVersion);
 }
 
 // static
@@ -444,7 +451,8 @@ CacheObserver::Observe(nsISupports* aSubject,
   }
 
   if (!strcmp(aTopic, "sessionstore-windows-restored")) {
-    SchduleAutoDelete();
+    uint32_t activeVersion = UseNewCache() ? 1 : 0;
+    CacheStorageService::CleaupCacheDirectories(sAutoDeleteCacheVersion, activeVersion);
     return NS_OK;
   }
 

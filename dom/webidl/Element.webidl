@@ -28,12 +28,10 @@ interface Element : Node {
 
   [Pure]
            attribute DOMString id;
-/*
-  FIXME Bug 810677 Move className from HTMLElement to Element
+  [Pure]
            attribute DOMString className;
-*/
   [Constant]
-  readonly attribute DOMTokenList? classList;
+  readonly attribute DOMTokenList classList;
 
   [SameObject]
   readonly attribute MozNamedAttrMap attributes;
@@ -203,14 +201,15 @@ partial interface Element {
 
 // http://w3c.github.io/webcomponents/spec/shadow/#extensions-to-element-interface
 partial interface Element {
-  [Throws,Pref="dom.webcomponents.enabled"]
+  [Throws,Func="nsDocument::IsWebComponentsEnabled"]
   ShadowRoot createShadowRoot();
-  [Pref="dom.webcomponents.enabled"]
+  [Func="nsDocument::IsWebComponentsEnabled"]
   NodeList getDestinationInsertionPoints();
-  [Pref="dom.webcomponents.enabled"]
+  [Func="nsDocument::IsWebComponentsEnabled"]
   readonly attribute ShadowRoot? shadowRoot;
 };
 
 Element implements ChildNode;
 Element implements NonDocumentTypeChildNode;
 Element implements ParentNode;
+Element implements Animatable;

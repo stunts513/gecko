@@ -1,4 +1,4 @@
-/* -*- js2-basic-offset: 2; indent-tabs-mode: nil; -*- */
+/* -*- js-indent-level: 2; indent-tabs-mode: nil -*- */
 /* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
@@ -542,6 +542,9 @@ let WebConsoleUtils = {
   get usageCount() {
     if (WebConsoleUtils._usageCount < CONSOLE_ENTRY_THRESHOLD) {
       WebConsoleUtils._usageCount = Services.prefs.getIntPref("devtools.selfxss.count")
+      if (Services.prefs.getBoolPref("devtools.chrome.enabled")) {
+        WebConsoleUtils.usageCount = CONSOLE_ENTRY_THRESHOLD;
+      }
     }
     return WebConsoleUtils._usageCount;
   },
@@ -1745,16 +1748,20 @@ function JSTermHelpers(aOwner)
   };
 
   /**
-   * Print a string to the output, as-is.
+   * Print the String representation of a value to the output, as-is.
    *
-   * @param string aString
-   *        A string you want to output.
+   * @param any aValue
+   *        A value you want to output as a string.
    * @return void
    */
-  aOwner.sandbox.print = function JSTH_print(aString)
+  aOwner.sandbox.print = function JSTH_print(aValue)
   {
     aOwner.helperResult = { rawOutput: true };
-    return String(aString);
+    // Waiving Xrays here allows us to see a closer representation of the
+    // underlying object. This may execute arbitrary content code, but that
+    // code will run with content privileges, and the result will be rendered
+    // inert by coercing it to a String.
+    return String(Cu.waiveXrays(aValue));
   };
 }
 exports.JSTermHelpers = JSTermHelpers;

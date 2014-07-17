@@ -367,6 +367,45 @@ MacroAssemblerX64::handleFailureWithHandlerTail()
     jmp(Operand(rsp, offsetof(ResumeFromException, target)));
 }
 
+template <typename T>
+void
+MacroAssemblerX64::storeUnboxedValue(ConstantOrRegister value, MIRType valueType, const T &dest,
+                                     MIRType slotType)
+{
+    if (valueType == MIRType_Double) {
+        storeDouble(value.reg().typedReg().fpu(), dest);
+        return;
+    }
+
+    // For known integers and booleans, we can just store the unboxed value if
+    // the slot has the same type.
+    if ((valueType == MIRType_Int32 || valueType == MIRType_Boolean) && slotType == valueType) {
+        if (value.constant()) {
+            Value val = value.value();
+            if (valueType == MIRType_Int32)
+                store32(Imm32(val.toInt32()), dest);
+            else
+                store32(Imm32(val.toBoolean() ? 1 : 0), dest);
+        } else {
+            store32(value.reg().typedReg().gpr(), dest);
+        }
+        return;
+    }
+
+    if (value.constant())
+        storeValue(value.value(), dest);
+    else
+        storeValue(ValueTypeFromMIRType(valueType), value.reg().typedReg().gpr(), dest);
+}
+
+template void
+MacroAssemblerX64::storeUnboxedValue(ConstantOrRegister value, MIRType valueType, const Address &dest,
+                                     MIRType slotType);
+
+template void
+MacroAssemblerX64::storeUnboxedValue(ConstantOrRegister value, MIRType valueType, const BaseIndex &dest,
+                                     MIRType slotType);
+
 #ifdef JSGC_GENERATIONAL
 
 void
@@ -380,7 +419,7 @@ MacroAssemblerX64::branchPtrInNurseryRange(Condition cond, Register ptr, Registe
     movePtr(ImmWord(-ptrdiff_t(nursery.start())), ScratchReg);
     addPtr(ptr, ScratchReg);
     branchPtr(cond == Assembler::Equal ? Assembler::Below : Assembler::AboveOrEqual,
-              ScratchReg, Imm32(Nursery::NurserySize), label);
+              ScratchReg, Imm32(nursery.nurserySize()), label);
 }
 
 void
@@ -396,7 +435,7 @@ MacroAssemblerX64::branchValueIsNurseryObject(Condition cond, ValueOperand value
     movePtr(ImmWord(-ptrdiff_t(start.asRawBits())), ScratchReg);
     addPtr(value.valueReg(), ScratchReg);
     branchPtr(cond == Assembler::Equal ? Assembler::Below : Assembler::AboveOrEqual,
-              ScratchReg, Imm32(Nursery::NurserySize), label);
+              ScratchReg, Imm32(nursery.nurserySize()), label);
 }
 
 #endif

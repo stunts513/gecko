@@ -414,12 +414,9 @@ class Descriptor(DescriptorProvider):
             for attribute in ['implicitJSContext', 'resultNotAddRefed']:
                 addExtendedAttribute(attribute, desc.get(attribute, {}))
 
-        self.binaryNames = desc.get('binaryNames', {})
-        if '__legacycaller' not in self.binaryNames:
-            self.binaryNames["__legacycaller"] = "LegacyCall"
-        if '__stringifier' not in self.binaryNames:
-            self.binaryNames["__stringifier"] = "Stringify"
-
+        self._binaryNames = desc.get('binaryNames', {})
+        self._binaryNames.setdefault('__legacycaller', 'LegacyCall')
+        self._binaryNames.setdefault('__stringifier', 'Stringify')
 
         if not self.interface.isExternal():
             self.permissions = dict()
@@ -448,6 +445,18 @@ class Descriptor(DescriptorProvider):
                 if permissionsIndex is not None:
                     self.checkPermissionsIndicesForMembers[m.identifier.name] = permissionsIndex
 
+            self.featureDetectibleThings = set()
+            if self.interface.getExtendedAttribute("FeatureDetectible") is not None:
+                if self.interface.getNavigatorProperty():
+                    self.featureDetectibleThings.add("Navigator.%s" % self.interface.getNavigatorProperty())
+                else:
+                    assert(self.interface.ctor() is not None)
+                    self.featureDetectibleThings.add(self.interface.identifier.name)
+
+            for m in self.interface.members:
+                if m.getExtendedAttribute("FeatureDetectible") is not None:
+                    self.featureDetectibleThings.add("%s.%s" % (self.interface.identifier.name, m.identifier.name))
+
         # Build the prototype chain.
         self.prototypeChain = []
         parent = interface
@@ -456,6 +465,9 @@ class Descriptor(DescriptorProvider):
             parent = parent.parent
         config.maxProtoChainLength = max(config.maxProtoChainLength,
                                          len(self.prototypeChain))
+
+    def binaryNameFor(self, name):
+        return self._binaryNames.get(name, name)
 
     def hasInterfaceOrInterfacePrototypeObject(self):
 

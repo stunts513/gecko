@@ -75,6 +75,10 @@ public class BrowserLocaleManager implements LocaleManager {
         }
     }
 
+    public boolean isEnabled() {
+        return AppConstants.MOZ_LOCALE_SWITCHER;
+    }
+
     /**
      * Gecko uses locale codes like "es-ES", whereas a Java {@link Locale}
      * stringifies as "es_ES".
@@ -201,7 +205,7 @@ public class BrowserLocaleManager implements LocaleManager {
      *
      * If we're currently mirroring the system locale, this method returns the
      * supplied configuration's locale, unless the current activity locale is
-     * correct. , If we're not currently mirroring, this methodupdates the
+     * correct. If we're not currently mirroring, this method updates the
      * configuration object to match the user's currently selected locale, and
      * returns that, unless the current activity locale is correct.
      *

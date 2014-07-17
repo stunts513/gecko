@@ -22,7 +22,6 @@ public class TestTopSitesCursorWrapper extends BrowserTestCase {
     private String[] TOP_SITES_COLUMNS = new String[] { Combined._ID,
                                                         Combined.URL,
                                                         Combined.TITLE,
-                                                        Combined.DISPLAY,
                                                         Combined.BOOKMARK_ID,
                                                         Combined.HISTORY_ID };
 
@@ -33,9 +32,7 @@ public class TestTopSitesCursorWrapper extends BrowserTestCase {
 
     private String[] SUGGESTED_SITES_COLUMNS = new String[] { SuggestedSites._ID,
                                                               SuggestedSites.URL,
-                                                              SuggestedSites.TITLE,
-                                                              SuggestedSites.IMAGE_URL,
-                                                              SuggestedSites.BG_COLOR };
+                                                              SuggestedSites.TITLE };
 
     private final int MIN_COUNT = 6;
 
@@ -51,7 +48,6 @@ public class TestTopSitesCursorWrapper extends BrowserTestCase {
             row.add(-1);
             row.add(TOP_PREFIX + "url" + i);
             row.add(TOP_PREFIX + "title" + i);
-            row.add(Combined.DISPLAY_NORMAL);
             row.add(i);
             row.add(i);
         }
@@ -87,8 +83,6 @@ public class TestTopSitesCursorWrapper extends BrowserTestCase {
             row.add(-1);
             row.add(SUGGESTED_PREFIX + "url" + i);
             row.add(SUGGESTED_PREFIX + "title" + i);
-            row.add(SUGGESTED_PREFIX + "imageUrl" + i);
-            row.add(SUGGESTED_PREFIX + "bgColor" + i);
         }
 
         return c;
@@ -228,35 +222,23 @@ public class TestTopSitesCursorWrapper extends BrowserTestCase {
             if (rowType == TopSites.TYPE_BLANK) {
                 assertTrue(c.isNull(c.getColumnIndex(TopSites.URL)));
                 assertTrue(c.isNull(c.getColumnIndex(TopSites.TITLE)));
-                assertTrue(c.isNull(c.getColumnIndex(TopSites.DISPLAY)));
                 assertTrue(c.isNull(c.getColumnIndex(TopSites.BOOKMARK_ID)));
                 assertTrue(c.isNull(c.getColumnIndex(TopSites.HISTORY_ID)));
-                assertTrue(c.isNull(c.getColumnIndex(TopSites.IMAGE_URL)));
-                assertTrue(c.isNull(c.getColumnIndex(TopSites.BG_COLOR)));
             } else if (rowType == TopSites.TYPE_PINNED) {
                 assertFalse(c.isNull(c.getColumnIndex(TopSites.URL)));
                 assertFalse(c.isNull(c.getColumnIndex(TopSites.TITLE)));
-                assertTrue(c.isNull(c.getColumnIndex(TopSites.DISPLAY)));
                 assertTrue(c.isNull(c.getColumnIndex(TopSites.BOOKMARK_ID)));
                 assertTrue(c.isNull(c.getColumnIndex(TopSites.HISTORY_ID)));
-                assertTrue(c.isNull(c.getColumnIndex(TopSites.IMAGE_URL)));
-                assertTrue(c.isNull(c.getColumnIndex(TopSites.BG_COLOR)));
             } else if (rowType == TopSites.TYPE_TOP) {
                 assertFalse(c.isNull(c.getColumnIndex(TopSites.URL)));
                 assertFalse(c.isNull(c.getColumnIndex(TopSites.TITLE)));
-                assertFalse(c.isNull(c.getColumnIndex(TopSites.DISPLAY)));
                 assertFalse(c.isNull(c.getColumnIndex(TopSites.BOOKMARK_ID)));
                 assertFalse(c.isNull(c.getColumnIndex(TopSites.HISTORY_ID)));
-                assertTrue(c.isNull(c.getColumnIndex(TopSites.IMAGE_URL)));
-                assertTrue(c.isNull(c.getColumnIndex(TopSites.BG_COLOR)));
             } else if (rowType == TopSites.TYPE_SUGGESTED) {
                 assertFalse(c.isNull(c.getColumnIndex(TopSites.URL)));
                 assertFalse(c.isNull(c.getColumnIndex(TopSites.TITLE)));
-                assertTrue(c.isNull(c.getColumnIndex(TopSites.DISPLAY)));
                 assertTrue(c.isNull(c.getColumnIndex(TopSites.BOOKMARK_ID)));
                 assertTrue(c.isNull(c.getColumnIndex(TopSites.HISTORY_ID)));
-                assertFalse(c.isNull(c.getColumnIndex(TopSites.IMAGE_URL)));
-                assertFalse(c.isNull(c.getColumnIndex(TopSites.BG_COLOR)));
             } else {
                 fail("Invalid row type found in the cursor");
             }
@@ -297,7 +279,7 @@ public class TestTopSitesCursorWrapper extends BrowserTestCase {
         Integer[] pinnedPositions = new Integer[] { 0, 1, 4 };
         TopSitesCursorWrapper c = createTopSitesCursorWrapper(2, pinnedPositions, 3);
 
-        assertEquals(9, c.getColumnCount());
+        assertEquals(6, c.getColumnCount());
 
         String[] columnNames = c.getColumnNames();
         assertEquals(columnNames.length, c.getColumnCount());

@@ -571,9 +571,7 @@ MarionetteServerConnection.prototype = {
       "platformVersion": Services.appinfo.platformVersion,
 
       // Supported features
-      "cssSelectorsEnabled": true,
       "handlesAlerts": false,
-      "javascriptEnabled": true,
       "nativeEvents": false,
       "rotatable": isB2G,
       "secureSsl": false,
@@ -718,6 +716,7 @@ MarionetteServerConnection.prototype = {
                     createInstance(Ci.nsIFileInputStream);
       stream.init(this.importedScripts, -1, 0, 0);
       let data = NetUtil.readInputStreamToString(stream, stream.available());
+      stream.close();
       script = data + script;
     }
 
